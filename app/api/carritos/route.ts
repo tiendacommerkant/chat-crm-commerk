@@ -10,18 +10,28 @@ export async function GET(req: Request) {
     const estado = searchParams.get('estado');
     const limite = parseInt(searchParams.get('limit') || '200');
 
-    // Marcar como 'abandonado' los carritos en_progreso con más de 20 min sin actividad
+    const ahora = new Date().toISOString();
     const corte20min = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+
+    // Marcar como 'abandonado' los en_progreso sin actividad > 20 min
     await supabaseAdmin
       .from('carritos_abandonados')
-      .update({ estado: 'abandonado', updated_at: new Date().toISOString() })
+      .update({ estado: 'abandonado', updated_at: ahora })
       .eq('estado', 'en_progreso')
       .lt('shopify_updated_at', corte20min);
+
+    // Reactivar a 'en_progreso' los abandonados que volvieron a tener actividad reciente
+    await supabaseAdmin
+      .from('carritos_abandonados')
+      .update({ estado: 'en_progreso', updated_at: ahora })
+      .eq('estado', 'abandonado')
+      .eq('notificado_whatsapp', false)
+      .gte('shopify_updated_at', corte20min);
 
     let query = supabaseAdmin
       .from('carritos_abandonados')
       .select('*')
-      .order('created_at', { ascending: false })
+      .order('shopify_updated_at', { ascending: false })
       .limit(limite);
 
     if (estado) query = query.eq('estado', estado);
