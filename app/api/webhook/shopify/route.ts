@@ -169,9 +169,10 @@ async function handleCheckout(checkout: ShopifyCheckout) {
     price: parseFloat(i.price),
   }));
 
-  const createdAt = new Date(checkout.created_at);
-  const minutosTranscurridos = (Date.now() - createdAt.getTime()) / 60000;
-  const estado = !isNaN(minutosTranscurridos) && minutosTranscurridos >= ABANDONO_MINUTOS ? 'abandonado' : 'en_progreso';
+  // Usar updated_at para detectar actividad reciente (created_at puede ser días atrás)
+  const ultimaActividad = new Date(checkout.updated_at || checkout.created_at);
+  const minutosInactivo = (Date.now() - ultimaActividad.getTime()) / 60000;
+  const estado = !isNaN(minutosInactivo) && minutosInactivo >= ABANDONO_MINUTOS ? 'abandonado' : 'en_progreso';
 
   await supabaseAdmin.from('carritos_abandonados').upsert({
     shopify_checkout_id: checkoutId,
