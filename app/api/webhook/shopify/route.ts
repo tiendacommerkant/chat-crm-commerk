@@ -155,6 +155,10 @@ async function handleOrderFulfilled(order: ShopifyOrder) {
 
 // ─── Handler checkouts/create + checkouts/update ─────────────────────────────
 async function handleCheckout(checkout: ShopifyCheckout) {
+  // Shopify a veces envía id como undefined en ciertos eventos; usar token como fallback
+  const checkoutId = String(checkout.id ?? checkout.token ?? '');
+  if (!checkoutId) return;
+
   const telefono = extraerTelefonoCheckout(checkout);
   const telefonoFormateado = telefono ? formatearNumeroWhatsApp(telefono) : null;
   const nombre = [checkout.customer?.first_name, checkout.customer?.last_name].filter(Boolean).join(' ') || null;
@@ -167,11 +171,11 @@ async function handleCheckout(checkout: ShopifyCheckout) {
 
   const createdAt = new Date(checkout.created_at);
   const minutosTranscurridos = (Date.now() - createdAt.getTime()) / 60000;
-  const estado = minutosTranscurridos >= ABANDONO_MINUTOS ? 'abandonado' : 'en_progreso';
+  const estado = !isNaN(minutosTranscurridos) && minutosTranscurridos >= ABANDONO_MINUTOS ? 'abandonado' : 'en_progreso';
 
   await supabaseAdmin.from('carritos_abandonados').upsert({
-    shopify_checkout_id: checkout.id.toString(),
-    shopify_token: checkout.token,
+    shopify_checkout_id: checkoutId,
+    shopify_token: checkout.token || null,
     email: checkout.email || null,
     telefono: telefonoFormateado,
     nombre,
@@ -179,8 +183,8 @@ async function handleCheckout(checkout: ShopifyCheckout) {
     items,
     url_checkout: checkout.abandoned_checkout_url || null,
     estado,
-    shopify_created_at: checkout.created_at,
-    shopify_updated_at: checkout.updated_at,
+    shopify_created_at: checkout.created_at || null,
+    shopify_updated_at: checkout.updated_at || null,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'shopify_checkout_id' });
 
@@ -189,13 +193,13 @@ async function handleCheckout(checkout: ShopifyCheckout) {
     const { data: carrito } = await supabaseAdmin
       .from('carritos_abandonados')
       .select('id, notificado_whatsapp')
-      .eq('shopify_checkout_id', checkout.id.toString())
+      .eq('shopify_checkout_id', checkoutId)
       .single();
 
     if (carrito && !carrito.notificado_whatsapp) {
       await notificarCarritoAbandonado({
         id: carrito.id,
-        shopify_checkout_id: checkout.id.toString(),
+        shopify_checkout_id: checkoutId,
         nombre,
         telefono: telefonoFormateado,
         total: parseFloat(checkout.total_price || '0'),
