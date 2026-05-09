@@ -122,17 +122,17 @@ export async function buscarProductosShopify(query: string): Promise<ShopifyProd
  * Mapear producto de Shopify a formato simple para el bot
  */
 export function mapearProductoParaBot(producto: ShopifyProduct) {
-  const variant = producto.variants[0];
-  
+  const variant = producto.variants?.[0];
+
   return {
     shopify_id: producto.id.toString(),
     titulo: producto.title,
     descripcion: producto.body_html?.replace(/<[^>]*>/g, '').substring(0, 200) || '',
-    precio: parseFloat(variant.price),
-    inventario: Math.max(0, variant.inventory_quantity || 0),
+    precio: variant ? parseFloat(variant.price) : 0,
+    inventario: variant ? Math.max(0, variant.inventory_quantity || 0) : 0,
     imagen_url: producto.image?.src || null,
     categoria: producto.product_type || 'General',
-    tags: producto.tags.split(', '),
+    tags: producto.tags ? producto.tags.split(', ') : [],
     activo: producto.status === 'active',
   };
 }

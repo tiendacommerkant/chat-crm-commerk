@@ -60,7 +60,7 @@ async function handleOrderPaid(order: ShopifyOrder) {
   }
 
   // 2. Insertar en pedidos_shopify
-  const items = order.line_items.map((i) => ({
+  const items = (order.line_items || []).map((i) => ({
     title: i.title,
     quantity: i.quantity,
     price: parseFloat(i.price),
@@ -102,7 +102,7 @@ async function handleOrderPaid(order: ShopifyOrder) {
       nombre_cliente: nombreCliente,
       telefono: telefonoFormateado,
       total: parseFloat(order.total_price),
-      items: order.line_items.map((i) => ({ title: i.title, quantity: i.quantity, price: i.price })),
+      items: (order.line_items || []).map((i) => ({ title: i.title, quantity: i.quantity, price: i.price })),
     });
   }
 }
@@ -159,7 +159,7 @@ async function handleCheckout(checkout: ShopifyCheckout) {
   const telefonoFormateado = telefono ? formatearNumeroWhatsApp(telefono) : null;
   const nombre = [checkout.customer?.first_name, checkout.customer?.last_name].filter(Boolean).join(' ') || null;
 
-  const items = checkout.line_items.map((i) => ({
+  const items = (checkout.line_items || []).map((i) => ({
     title: i.title,
     quantity: i.quantity,
     price: parseFloat(i.price),
@@ -200,7 +200,7 @@ async function handleCheckout(checkout: ShopifyCheckout) {
         telefono: telefonoFormateado,
         total: parseFloat(checkout.total_price || '0'),
         url_checkout: checkout.abandoned_checkout_url || null,
-        items: checkout.line_items.map((i) => ({ title: i.title, quantity: i.quantity })),
+        items: (checkout.line_items || []).map((i) => ({ title: i.title, quantity: i.quantity })),
       });
     }
   }
