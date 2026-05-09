@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
@@ -360,6 +360,14 @@ function SeparadorFecha({ fecha }: { fecha: string }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function ConversacionesPage() {
+  return (
+    <Suspense fallback={<div className="flex h-full items-center justify-center"><div className="w-8 h-8 border-4 border-commerk-navy/20 border-t-commerk-navy rounded-full animate-spin" /></div>}>
+      <ConversacionesContent />
+    </Suspense>
+  );
+}
+
+function ConversacionesContent() {
   const [conversaciones, setConversaciones] = useState<Conversacion[]>([]);
   const [activa, setActiva] = useState<Conversacion | null>(null);
   const [mensajes, setMensajes] = useState<Mensaje[]>([]);

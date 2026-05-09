@@ -2,6 +2,8 @@
 import { NextResponse } from 'next/server';
 import { obtenerPedidosShopify, extraerTelefonoPedido } from '@/lib/shopify';
 import { formatearNumeroWhatsApp } from '@/lib/whatsapp';
+
+export const dynamic = 'force-dynamic';
 import { supabaseAdmin } from '@/lib/supabase';
 
 export async function GET(req: Request) {

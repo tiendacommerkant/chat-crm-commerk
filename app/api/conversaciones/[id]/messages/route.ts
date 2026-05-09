@@ -3,7 +3,9 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export const dynamic = 'force-dynamic';
+
+export async function GET(_req: Request, { params }: { params: { id: string } }) {
   try {
     const { id } = params;
 

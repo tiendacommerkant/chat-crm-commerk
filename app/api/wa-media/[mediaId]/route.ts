@@ -2,10 +2,12 @@
 // WhatsApp requiere Authorization header para descargar media; el browser no puede hacerlo directamente
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v18.0';
 
-export async function GET(req: Request, { params }: { params: { mediaId: string } }) {
+export async function GET(_req: Request, { params }: { params: { mediaId: string } }) {
   try {
     const { mediaId } = params;
 

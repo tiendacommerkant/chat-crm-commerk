@@ -3,6 +3,8 @@
 // Llamar desde el frontend cada 60s o desde Vercel Cron
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+
+export const dynamic = 'force-dynamic';
 import { notificarCarritoAbandonado } from '@/lib/notificaciones';
 
 export async function POST() {
