@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
+import { supabase } from '@/lib/supabase';
 import type { CarritoAbandonado } from '@/types';
 
 type EstadoFiltro = 'todos' | 'en_progreso' | 'abandonado' | 'notificado' | 'convertido';
@@ -62,9 +63,20 @@ export default function CarritosPage() {
 
   useEffect(() => { cargarCarritos(); }, [cargarCarritos]);
 
-  // Auto-refresh cada 60 segundos para ver nuevos checkouts
+  // Supabase Realtime: actualiza instantáneamente cuando llega un webhook de Shopify
   useEffect(() => {
-    const interval = setInterval(cargarCarritos, 60000);
+    const channel = supabase
+      .channel('carritos-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'carritos_abandonados' }, () => {
+        cargarCarritos();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [cargarCarritos]);
+
+  // Auto-refresh cada 15 segundos como fallback
+  useEffect(() => {
+    const interval = setInterval(cargarCarritos, 15000);
     return () => clearInterval(interval);
   }, [cargarCarritos]);
 
