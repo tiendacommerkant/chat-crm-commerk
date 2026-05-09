@@ -215,10 +215,11 @@ async function handleProductUpdate(payload: any) {
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
+  let topic = 'unknown';
   try {
     const body = await req.text();
     const hmac = req.headers.get('x-shopify-hmac-sha256');
-    const topic = req.headers.get('x-shopify-topic') || '';
+    topic = req.headers.get('x-shopify-topic') || '';
     const secret = process.env.SHOPIFY_WEBHOOK_SECRET || '';
 
     if (!verificarHmac(body, hmac, secret)) {
@@ -227,31 +228,38 @@ export async function POST(req: Request) {
 
     const payload = JSON.parse(body);
 
-    switch (topic) {
-      case 'orders/paid':
-        await handleOrderPaid(payload as ShopifyOrder);
-        break;
-      case 'orders/cancelled':
-        await handleOrderCancelled(payload as ShopifyOrder);
-        break;
-      case 'orders/fulfilled':
-        await handleOrderFulfilled(payload as ShopifyOrder);
-        break;
-      case 'checkouts/create':
-      case 'checkouts/update':
-        await handleCheckout(payload as ShopifyCheckout);
-        break;
-      case 'products/update':
-      case 'products/create':
-        await handleProductUpdate(payload);
-        break;
-      default:
-        console.log(`Shopify webhook topic no manejado: ${topic}`);
+    // Procesar en try/catch individual para siempre retornar 200
+    // (Shopify deja de reintentar solo con 200; los 500 causan reintentos infinitos)
+    try {
+      switch (topic) {
+        case 'orders/paid':
+          await handleOrderPaid(payload as ShopifyOrder);
+          break;
+        case 'orders/cancelled':
+          await handleOrderCancelled(payload as ShopifyOrder);
+          break;
+        case 'orders/fulfilled':
+          await handleOrderFulfilled(payload as ShopifyOrder);
+          break;
+        case 'checkouts/create':
+        case 'checkouts/update':
+          await handleCheckout(payload as ShopifyCheckout);
+          break;
+        case 'products/update':
+        case 'products/create':
+          await handleProductUpdate(payload);
+          break;
+        default:
+          console.log(`Shopify webhook topic no manejado: ${topic}`);
+      }
+    } catch (handlerError: any) {
+      // Log detallado para diagnóstico pero siempre 200 para evitar reintentos
+      console.error(`[Shopify webhook] Error en handler "${topic}":`, handlerError?.message, handlerError?.stack);
     }
 
     return NextResponse.json({ success: true, topic }, { status: 200 });
-  } catch (error) {
-    console.error('Shopify webhook error:', error);
+  } catch (error: any) {
+    console.error(`[Shopify webhook] Error crítico (topic=${topic}):`, error?.message);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
