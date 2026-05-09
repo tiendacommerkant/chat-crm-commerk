@@ -95,10 +95,13 @@ export default function DashboardPage() {
           { data: abandonados },
           { data: ventas },
           { data: clientes },
+          { data: pedidosHoy },
+          { data: pedidosSemana },
+          { data: pedidosMes },
         ] = await Promise.all([
-          supabase.from('ventas').select('*').gte('created_at', `${hoy}T00:00:00`).eq('estado', 'pagado'),
-          supabase.from('ventas').select('*').gte('created_at', inicioSemana.toISOString()).eq('estado', 'pagado'),
-          supabase.from('ventas').select('*').gte('created_at', inicioMes.toISOString()).eq('estado', 'pagado'),
+          supabase.from('ventas').select('total').gte('created_at', `${hoy}T00:00:00`).eq('estado', 'pagado'),
+          supabase.from('ventas').select('total').gte('created_at', inicioSemana.toISOString()).eq('estado', 'pagado'),
+          supabase.from('ventas').select('total').gte('created_at', inicioMes.toISOString()).eq('estado', 'pagado'),
           supabase.from('clientes').select('id').gte('created_at', `${hoy}T00:00:00`),
           supabase.from('conversaciones').select('id').eq('estado', 'activa'),
           supabase.from('pedidos_shopify').select('*, cliente:clientes(nombre, telefono)').order('shopify_created_at', { ascending: false }).limit(5),
@@ -106,32 +109,41 @@ export default function DashboardPage() {
           supabase.from('carritos_abandonados').select('id').in('estado', ['abandonado', 'notificado']),
           supabase.from('ventas').select('*, cliente:clientes(nombre, telefono)').order('created_at', { ascending: false }).limit(5),
           supabase.from('clientes').select('*').order('created_at', { ascending: false }).limit(5),
+          // Pedidos Shopify pagados hoy
+          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', `${hoy}T00:00:00`).eq('estado_financiero', 'paid'),
+          // Pedidos Shopify pagados esta semana
+          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioSemana.toISOString()).eq('estado_financiero', 'paid'),
+          // Pedidos Shopify pagados este mes
+          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioMes.toISOString()).eq('estado_financiero', 'paid'),
         ]);
 
-        const ingresosHoy = ventasHoy?.reduce((s, v) => s + (v.total || 0), 0) || 0;
-        const ingresosSemana = ventasSemana?.reduce((s, v) => s + (v.total || 0), 0) || 0;
-        const ingresosMes = ventasMes?.reduce((s, v) => s + (v.total || 0), 0) || 0;
-        const totalVentas = ventasMes?.length || 0;
-
-        // Ingresos de pedidos Shopify del mes
-        const { data: pedidosMes } = await supabase
-          .from('pedidos_shopify')
-          .select('total')
-          .gte('shopify_created_at', inicioMes.toISOString())
-          .eq('estado_financiero', 'paid');
+        // Ingresos WhatsApp bot
+        const ingresosWaHoy = ventasHoy?.reduce((s, v) => s + (v.total || 0), 0) || 0;
+        const ingresosWaSemana = ventasSemana?.reduce((s, v) => s + (v.total || 0), 0) || 0;
+        const ingresosWaMes = ventasMes?.reduce((s, v) => s + (v.total || 0), 0) || 0;
+        // Ingresos Shopify
+        const ingresosShopifyHoy = pedidosHoy?.reduce((s, p) => s + (p.total || 0), 0) || 0;
+        const ingresosShopifySemana = pedidosSemana?.reduce((s, p) => s + (p.total || 0), 0) || 0;
         const ingresosShopifyMes = pedidosMes?.reduce((s, p) => s + (p.total || 0), 0) || 0;
 
+        const ventasHoyTotal = (ventasHoy?.length || 0) + (pedidosHoy?.length || 0);
+        const ventasSemanaTotal = (ventasSemana?.length || 0) + (pedidosSemana?.length || 0);
+        const ventasMesTotal = (ventasMes?.length || 0) + (pedidosMes?.length || 0);
+        const ingresosHoy = ingresosWaHoy + ingresosShopifyHoy;
+        const ingresosSemana = ingresosWaSemana + ingresosShopifySemana;
+        const ingresosMesTotal = ingresosWaMes + ingresosShopifyMes;
+
         setMetricas({
-          ventasHoy: ventasHoy?.length || 0,
-          ventasSemana: ventasSemana?.length || 0,
-          ventasMes: totalVentas,
+          ventasHoy: ventasHoyTotal,
+          ventasSemana: ventasSemanaTotal,
+          ventasMes: ventasMesTotal,
           ingresosHoy,
           ingresosSemana,
-          ingresosMes: ingresosMes + ingresosShopifyMes,
+          ingresosMes: ingresosMesTotal,
           clientesNuevos: clientesNuevos?.length || 0,
           conversacionesActivas: convActivas?.length || 0,
           tasaConversion: 0,
-          ticketPromedio: totalVentas ? Math.round(ingresosMes / totalVentas) : 0,
+          ticketPromedio: ventasMesTotal ? Math.round(ingresosMesTotal / ventasMesTotal) : 0,
         });
 
         setPedidosShopify(pedidos || []);
