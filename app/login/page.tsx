@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import { supabase } from '@/lib/supabase';
 
 export default function LoginPage() {
@@ -41,16 +40,11 @@ export default function LoginPage() {
   return (
     <div className="relative min-h-screen flex items-center justify-center overflow-hidden">
 
-      {/* Fondo: foto real */}
-      <div className="absolute inset-0">
-        <Image
-          src="/DSC01664.jpg"
-          alt="Tienda Commerk"
-          fill
-          className="object-cover object-center"
-          priority
-          quality={90}
-        />
+      {/* Fondo: foto real via CSS para máxima compatibilidad */}
+      <div
+        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/DSC01664.jpg')" }}
+      >
         {/* Overlay oscuro gradiente */}
         <div className="absolute inset-0 bg-gradient-to-br from-[#0a1628]/85 via-[#0d1f3c]/75 to-[#0a1628]/90" />
       </div>
@@ -67,15 +61,12 @@ export default function LoginPage() {
 
           {/* Logo */}
           <div className="flex flex-col items-center mb-8">
-            <div className="relative w-48 h-16 mb-5">
-              <Image
-                src="/logos_logo_blanco.png"
-                alt="Commerk"
-                fill
-                className="object-contain"
-                priority
-              />
-            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logos_logo_blanco.png"
+              alt="Commerk"
+              className="h-12 w-auto object-contain mb-5"
+            />
             <h1 className="text-2xl font-bold text-white tracking-tight">
               Bienvenido de vuelta
             </h1>
