@@ -11,6 +11,7 @@ type Conversacion = {
   id: string; estado: string; created_at: string; updated_at: string;
   cliente: Cliente; ultimo_mensaje: UltimoMensaje | null;
   total_mensajes: number; no_leidos: number;
+  bot_activo?: boolean;
 };
 type Mensaje = {
   id: string; conversacion_id: string; tipo: 'user' | 'bot';
@@ -58,6 +59,15 @@ const ESTADO_COLORS: Record<string, string> = {
   cerrada:    'bg-slate-400',
   abandonada: 'bg-amber-400',
 };
+
+const RESPUESTAS_RAPIDAS = [
+  { id: 'saludo',   texto: '¡Hola! 👋 ¿En qué te puedo ayudar hoy?' },
+  { id: 'espera',   texto: '⏳ Dame un momento, estoy verificando tu información.' },
+  { id: 'catalogo', texto: 'Escribe el nombre del producto que te interesa y con gusto te ayudo 🛍️' },
+  { id: 'pago',     texto: '✅ Recibimos tu pago correctamente. ¡Gracias por tu compra!' },
+  { id: 'camino',   texto: '🚚 Tu pedido ya está en camino. Llegará en 1-2 días hábiles.' },
+  { id: 'cierre',   texto: '¡Gracias por contactarnos! 🙏 Si necesitas algo más, aquí estamos.' },
+];
 
 // ─── Audio Player ─────────────────────────────────────────────────────────────
 function AudioPlayer({ src }: { src: string }) {
@@ -380,6 +390,8 @@ function ConversacionesContent() {
   const [mostrarDetalle, setMostrarDetalle] = useState(false);
 
   const [mostrarModal, setMostrarModal] = useState(false);
+  const [botActivo, setBotActivo] = useState(true);
+  const [togglingBot, setTogglingBot] = useState(false);
 
   const searchParams = useSearchParams();
   const clienteIdParam = searchParams.get('cliente');
@@ -403,6 +415,29 @@ function ConversacionesContent() {
 
   useEffect(() => { cargarConversaciones(); }, [cargarConversaciones]);
 
+  const seleccionarConv = useCallback((conv: Conversacion) => {
+    setActiva(conv);
+    setBotActivo(conv.bot_activo !== false);
+  }, []);
+
+  const toggleBot = useCallback(async () => {
+    if (!activa || togglingBot) return;
+    setTogglingBot(true);
+    const nuevo = !botActivo;
+    setBotActivo(nuevo);
+    try {
+      await fetch(`/api/conversaciones/${activa.id}/bot-toggle`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bot_activo: nuevo }),
+      });
+    } catch {
+      setBotActivo(!nuevo); // revertir si falla
+    } finally {
+      setTogglingBot(false);
+    }
+  }, [activa, botActivo, togglingBot]);
+
   const onConversacionCreada = useCallback(async (convId: string) => {
     setMostrarModal(false);
     const res = await fetch('/api/conversaciones');
@@ -410,16 +445,23 @@ function ConversacionesContent() {
     if (json.success) {
       setConversaciones(json.conversaciones);
       const conv = json.conversaciones.find((c: Conversacion) => c.id === convId);
-      if (conv) setActiva(conv);
+      if (conv) seleccionarConv(conv);
     }
-  }, []);
+  }, [seleccionarConv]);
 
   // Auto-seleccionar conversación si viene ?cliente= en la URL
   useEffect(() => {
     if (!clienteIdParam || conversaciones.length === 0) return;
     const conv = conversaciones.find((c) => c.cliente?.id === clienteIdParam);
-    if (conv) setActiva(conv);
-  }, [clienteIdParam, conversaciones]);
+    if (conv) seleccionarConv(conv);
+  }, [clienteIdParam, conversaciones, seleccionarConv]);
+
+  // Pedir permiso para notificaciones del navegador
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, []);
 
   const cargarMensajes = useCallback(async (convId: string) => {
     setCargandoMsgs(true);
@@ -450,10 +492,19 @@ function ConversacionesContent() {
         event: 'INSERT', schema: 'public', table: 'mensajes',
         filter: `conversacion_id=eq.${activa.id}`,
       }, (payload) => {
+        const msg = payload.new as Mensaje;
         setMensajes((prev) => {
-          if (prev.some((m) => m.id === payload.new.id)) return prev;
-          return [...prev, payload.new as Mensaje];
+          if (prev.some((m) => m.id === msg.id)) return prev;
+          return [...prev, msg];
         });
+        // Notificación del navegador si es mensaje del cliente y la pestaña no está enfocada
+        if (msg.tipo === 'user' && document.hidden &&
+            'Notification' in window && Notification.permission === 'granted') {
+          new Notification(`💬 ${activa.cliente?.nombre || activa.cliente?.telefono}`, {
+            body: msg.contenido?.slice(0, 100) || 'Nuevo mensaje de WhatsApp',
+            icon: '/logos_favicon.png',
+          });
+        }
         cargarConversaciones();
       })
       .subscribe();
@@ -559,7 +610,7 @@ function ConversacionesContent() {
               : (conv.ultimo_mensaje.contenido || '').slice(0, 45) + ((conv.ultimo_mensaje.contenido?.length || 0) > 45 ? '…' : '');
 
             return (
-              <button key={conv.id} onClick={() => setActiva(conv)}
+              <button key={conv.id} onClick={() => seleccionarConv(conv)}
                 className={`w-full flex items-start gap-3 px-4 py-3.5 text-left hover:bg-slate-50 transition-colors border-b border-slate-50 ${
                   esActiva ? 'bg-commerk-navy/5 border-l-2 border-l-commerk-navy' : ''
                 }`}
@@ -615,7 +666,22 @@ function ConversacionesContent() {
                 <span className="text-xs text-slate-400">{mensajes.length} msgs</span>
               </div>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-2">
+              {/* Toggle Bot / Agente */}
+              <button
+                onClick={toggleBot}
+                disabled={togglingBot}
+                title={botActivo ? 'Bot activo — clic para tomar control manual' : 'Modo agente — clic para reactivar bot'}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
+                  botActivo
+                    ? 'bg-commerk-green/10 border-commerk-green/30 text-commerk-green hover:bg-commerk-green/20'
+                    : 'bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100'
+                } disabled:opacity-50`}
+              >
+                <span className={`w-2 h-2 rounded-full ${botActivo ? 'bg-commerk-green animate-pulse' : 'bg-amber-500'}`} />
+                {botActivo ? 'Bot' : 'Agente'}
+              </button>
+
               <a href={`https://wa.me/${activa.cliente?.telefono}`} target="_blank" rel="noopener noreferrer"
                 className="p-2 rounded-xl hover:bg-slate-100 transition-colors" title="Abrir en WhatsApp">
                 <svg className="w-5 h-5 text-[#25D366]" fill="currentColor" viewBox="0 0 24 24">
@@ -689,7 +755,19 @@ function ConversacionesContent() {
           </div>
 
           {/* Input respuesta */}
-          <div className="bg-white border-t border-slate-100 px-4 py-3 shrink-0">
+          <div className="bg-white border-t border-slate-100 px-4 pt-2 pb-3 shrink-0">
+            {/* Plantillas rápidas */}
+            <div className="flex gap-1.5 overflow-x-auto pb-2 scrollbar-hide">
+              {RESPUESTAS_RAPIDAS.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => setTextoRespuesta(r.texto)}
+                  className="shrink-0 px-3 py-1 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 hover:bg-commerk-navy hover:text-white transition-all whitespace-nowrap"
+                >
+                  {r.texto.length > 30 ? r.texto.slice(0, 30) + '…' : r.texto}
+                </button>
+              ))}
+            </div>
             <div className="flex items-end gap-2">
               <div className="flex-1">
                 <textarea
@@ -720,7 +798,11 @@ function ConversacionesContent() {
               </button>
             </div>
             <p className="text-[10px] text-slate-400 mt-1 px-1">
-              Enviando a {activa.cliente?.telefono} por WhatsApp
+              {botActivo
+                ? <span className="text-commerk-green font-medium">● Bot activo</span>
+                : <span className="text-amber-600 font-medium">● Modo agente — el bot no responderá</span>
+              }
+              {' · '}Enviando a {activa.cliente?.telefono} por WhatsApp
             </p>
           </div>
         </div>

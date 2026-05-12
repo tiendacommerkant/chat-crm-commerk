@@ -34,6 +34,14 @@ export async function POST(req: Request) {
           const cliente = await buscarOCrearCliente(phone, contact?.profile?.name);
           const conversacion = await obtenerConversacionActiva(cliente.id);
 
+          // Si el agente tomó control, solo guardar el mensaje — no responder con bot
+          const { data: convData } = await supabaseAdmin
+            .from('conversaciones')
+            .select('bot_activo')
+            .eq('id', conversacion.id)
+            .single();
+          const botActivo = convData?.bot_activo !== false; // default true si columna no existe aún
+
           // ─── Determinar contenido y metadata según tipo ───────────────
           let texto = '';
           const metadata: Record<string, any> = {
@@ -97,6 +105,9 @@ export async function POST(req: Request) {
 
           // Guardar mensaje entrante
           await guardarMensaje(conversacion.id, 'user', texto, metadata);
+
+          // Si el agente tomó control manual, no responder con bot
+          if (!botActivo) continue;
 
           // Solo responder con bot si es texto o respuesta interactiva
           if (msgType !== 'text' && msgType !== 'interactive') {
