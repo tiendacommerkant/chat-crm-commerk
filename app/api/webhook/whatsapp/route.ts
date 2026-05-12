@@ -193,6 +193,22 @@ export async function POST(req: Request) {
             continue;
           }
 
+          // ── Acción: transferir al asesor humano (Sofi no puede ayudar) ──
+          if (respuesta.accion === 'transferir_a_asesor') {
+            await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
+              ...respuesta.metadata,
+              tipo_wa: 'text',
+              transferido_a_asesor: true,
+            });
+            await enviarMensajeWhatsApp(phone, respuesta.texto);
+            // Desactivar bot para que el agente tome el control
+            await supabaseAdmin
+              .from('conversaciones')
+              .update({ bot_activo: false, updated_at: new Date().toISOString() })
+              .eq('id', conversacion.id);
+            continue;
+          }
+
           // ── Respuesta normal del bot ───────────────────────────────────
           await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
             ...respuesta.metadata,

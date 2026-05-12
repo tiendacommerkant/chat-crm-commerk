@@ -12,6 +12,9 @@
 import type { BotContext, BotResponse, Producto } from '@/types';
 import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
+import { procesarMensajeSofi } from './ai-sofi';
+
+const USE_AI = process.env.USE_AI_BOT === 'true';
 
 const COSTO_ENVIO = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
@@ -40,12 +43,18 @@ export async function procesarMensajeBot(
   const pendingCantidad: number = ultimoBot?.metadata?.pending_cantidad || 1;
   const pendingDireccion: string = ultimoBot?.metadata?.pending_direccion || '';
 
-  // ── CANCELAR siempre disponible ────────────────────────────────
+  // ── CANCELAR siempre disponible (antes que cualquier IA) ───────
   if (/^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i.test(textoLower)) {
     return {
       texto: '✅ Pedido cancelado. Cuando quieras comprar, solo dime el nombre del producto.\n\nEscribe *catálogo* para ver lo que tenemos.',
       metadata: { awaiting: '' },
     };
+  }
+
+  // ── SOFI IA: toma el control cuando no hay flujo de compra activo
+  // El state machine sigue manejando: cantidad, dirección, confirmación y pago
+  if (USE_AI && awaiting === '') {
+    return await procesarMensajeSofi(texto, context);
   }
 
   // ── MÁQUINA DE ESTADOS ─────────────────────────────────────────

@@ -268,7 +268,7 @@ export interface BotContext {
 
 export interface BotResponse {
   texto: string;
-  accion?: 'generar_link_pago' | 'transferir_humano' | 'cerrar_conversacion';
+  accion?: 'generar_link_pago' | 'transferir_humano' | 'cerrar_conversacion' | 'transferir_a_asesor';
   producto_id?: string;
   metadata?: Record<string, any>;
 }
