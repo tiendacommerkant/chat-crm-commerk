@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Card } from '@/components/ui/card';
 import type { MetricasDashboard } from '@/types';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend,
+} from 'recharts';
 
 // ─── Metric Card ─────────────────────────────────────────────
 function MetricCard({
@@ -72,6 +76,8 @@ export default function DashboardPage() {
   const [enCheckout, setEnCheckout] = useState(0);
   const [carritosAbandonados, setCarritosAbandonados] = useState(0);
   const [actividadReciente, setActividadReciente] = useState<any[]>([]);
+  const [ventasPorDia, setVentasPorDia] = useState<{ dia: string; ingresos: number; ventas: number }[]>([]);
+  const [topProductos, setTopProductos] = useState<{ nombre: string; total: number; cantidad: number }[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -83,6 +89,9 @@ export default function DashboardPage() {
         const inicioMes = new Date();
         inicioMes.setDate(1);
         const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+        const hace7dias = new Date();
+        hace7dias.setDate(hace7dias.getDate() - 6);
+        hace7dias.setHours(0, 0, 0, 0);
 
         const [
           { data: ventasHoy },
@@ -98,6 +107,8 @@ export default function DashboardPage() {
           { data: pedidosHoy },
           { data: pedidosSemana },
           { data: pedidosMes },
+          { data: ventas7d },
+          { data: pedidos7d },
         ] = await Promise.all([
           supabase.from('ventas').select('total').gte('created_at', `${hoy}T00:00:00`).eq('estado', 'pagado'),
           supabase.from('ventas').select('total').gte('created_at', inicioSemana.toISOString()).eq('estado', 'pagado'),
@@ -115,6 +126,10 @@ export default function DashboardPage() {
           supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioSemana.toISOString()).eq('estado_financiero', 'paid'),
           // Pedidos Shopify pagados este mes
           supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioMes.toISOString()).eq('estado_financiero', 'paid'),
+          // Ventas WA últimos 7 días (para gráfico)
+          supabase.from('ventas').select('total, created_at, producto_nombre').gte('created_at', hace7dias.toISOString()).eq('estado', 'pagado'),
+          // Pedidos Shopify últimos 7 días (para gráfico)
+          supabase.from('pedidos_shopify').select('total, shopify_created_at').gte('shopify_created_at', hace7dias.toISOString()).eq('estado_financiero', 'paid'),
         ]);
 
         // Ingresos WhatsApp bot
@@ -167,6 +182,37 @@ export default function DashboardPage() {
         });
         actFeed.sort((a, b) => new Date(b._ts).getTime() - new Date(a._ts).getTime());
         setActividadReciente(actFeed.slice(0, 6));
+
+        // ── Gráfico: ingresos por día (últimos 7 días) ────────────────
+        const dias7 = Array.from({ length: 7 }, (_, i) => {
+          const d = new Date();
+          d.setDate(d.getDate() - (6 - i));
+          return d.toISOString().split('T')[0];
+        });
+        const chartDias = dias7.map((dia) => {
+          const waVentas = (ventas7d || []).filter((v: any) => (v.created_at || '').startsWith(dia));
+          const shVentas = (pedidos7d || []).filter((p: any) => (p.shopify_created_at || '').startsWith(dia));
+          const ingresos = waVentas.reduce((s: number, v: any) => s + (v.total || 0), 0)
+            + shVentas.reduce((s: number, p: any) => s + (p.total || 0), 0);
+          const label = new Date(dia + 'T12:00:00').toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric' });
+          return { dia: label, ingresos, ventas: waVentas.length + shVentas.length };
+        });
+        setVentasPorDia(chartDias);
+
+        // ── Gráfico: top productos (ventas WA últimos 7 días) ─────────
+        const prodMap: Record<string, { total: number; cantidad: number }> = {};
+        (ventas7d || []).forEach((v: any) => {
+          if (!v.producto_nombre) return;
+          const key = v.producto_nombre.length > 22 ? v.producto_nombre.substring(0, 22) + '…' : v.producto_nombre;
+          if (!prodMap[key]) prodMap[key] = { total: 0, cantidad: 0 };
+          prodMap[key].total += v.total || 0;
+          prodMap[key].cantidad += 1;
+        });
+        const topProd = Object.entries(prodMap)
+          .map(([nombre, d]) => ({ nombre, ...d }))
+          .sort((a, b) => b.cantidad - a.cantidad)
+          .slice(0, 5);
+        setTopProductos(topProd);
       } catch (err) {
         console.error('Error cargando métricas:', err);
       } finally {
@@ -310,6 +356,78 @@ export default function DashboardPage() {
             </div>
           </Card>
         </a>
+      </div>
+
+      {/* Gráficos */}
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        {/* Ingresos últimos 7 días */}
+        <Card className="xl:col-span-2 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-bold text-commerk-navy">Ingresos últimos 7 días</h2>
+            <span className="text-xs text-slate-400">WA Bot + Shopify</span>
+          </div>
+          {ventasPorDia.every((d) => d.ingresos === 0) ? (
+            <div className="flex items-center justify-center h-44 text-sm text-slate-400">
+              Sin ventas en los últimos 7 días
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={ventasPorDia} barSize={28} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                <XAxis dataKey="dia" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                <YAxis
+                  tick={{ fontSize: 11, fill: '#94a3b8' }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v) => v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`}
+                />
+                <Tooltip
+                  formatter={(value: number) =>
+                    new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(value)
+                  }
+                  labelStyle={{ fontWeight: 600, color: '#1B3A6B' }}
+                  contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
+                />
+                <Bar dataKey="ingresos" name="Ingresos" fill="#1B3A6B" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+
+        {/* Top productos */}
+        <Card className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-bold text-commerk-navy">Top productos</h2>
+            <span className="text-xs text-slate-400">Últimos 7 días</span>
+          </div>
+          {topProductos.length === 0 ? (
+            <div className="flex items-center justify-center h-44 text-sm text-slate-400">
+              Sin ventas registradas
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {topProductos.map((p, i) => {
+                const maxCantidad = topProductos[0].cantidad;
+                const pct = Math.round((p.cantidad / maxCantidad) * 100);
+                const colores = ['#1B3A6B', '#25D366', '#D4AF37', '#8B1A1A', '#64748b'];
+                return (
+                  <div key={p.nombre}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-slate-700 truncate max-w-[75%]">{p.nombre}</span>
+                      <span className="text-xs font-bold text-commerk-navy ml-2">{p.cantidad} ud.</span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-2">
+                      <div
+                        className="h-2 rounded-full transition-all duration-500"
+                        style={{ width: `${pct}%`, backgroundColor: colores[i] }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
       </div>
 
       {/* Tablas principales */}
