@@ -304,7 +304,7 @@ function respuestaProducto(producto: Producto): BotResponse {
   const disponible = producto.inventario > 0;
   let msg = `${emoji} *${producto.titulo}*\n\n`;
   msg += `💵 Precio: *${formatearPrecioCOP(producto.precio)}*\n`;
-  msg += disponible ? `✅ Disponible (${producto.inventario} en stock)\n` : `❌ Agotado temporalmente\n`;
+  msg += disponible ? `✅ Disponible\n` : `❌ Agotado temporalmente\n`;
   if (producto.descripcion) msg += `\n${producto.descripcion.substring(0, 200)}\n`;
   msg += `\n📦 Envío gratis comprando más de ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}\n`;
   if (disponible) msg += `\n¿Lo quieres? Responde *SI* para comprar o *catálogo* para ver más.`;

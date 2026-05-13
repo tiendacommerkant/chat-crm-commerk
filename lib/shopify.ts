@@ -124,12 +124,24 @@ export async function buscarProductosShopify(query: string): Promise<ShopifyProd
 export function mapearProductoParaBot(producto: ShopifyProduct) {
   const variant = producto.variants?.[0];
 
+  // Inventario ilimitado si Shopify no rastrea stock o permite vender sin stock
+  let inventario = 0;
+  if (variant) {
+    const noRastreo = !variant.inventory_management || (variant.inventory_management as any) === null;
+    const politicaContinue = variant.inventory_policy === 'continue';
+    if (noRastreo || politicaContinue) {
+      inventario = 9999; // ilimitado
+    } else {
+      inventario = Math.max(0, variant.inventory_quantity || 0);
+    }
+  }
+
   return {
     shopify_id: producto.id.toString(),
     titulo: producto.title,
     descripcion: producto.body_html?.replace(/<[^>]*>/g, '').substring(0, 200) || '',
     precio: variant ? parseFloat(variant.price) : 0,
-    inventario: variant ? Math.max(0, variant.inventory_quantity || 0) : 0,
+    inventario,
     imagen_url: producto.image?.src || null,
     categoria: producto.product_type || 'General',
     tags: producto.tags ? producto.tags.split(', ') : [],

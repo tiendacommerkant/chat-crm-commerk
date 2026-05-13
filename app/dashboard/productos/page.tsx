@@ -19,8 +19,7 @@ interface Producto {
 
 function InventarioBadge({ cantidad }: { cantidad: number }) {
   if (cantidad <= 0) return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-red-100 text-red-600">Agotado</span>;
-  if (cantidad <= 5) return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-amber-100 text-amber-600">Bajo ({cantidad})</span>;
-  return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-700">En stock ({cantidad})</span>;
+  return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-700">Disponible</span>;
 }
 
 export default function ProductosPage() {
@@ -79,7 +78,6 @@ export default function ProductosPage() {
 
   const totalActivos = productos.filter((p) => p.activo && p.inventario > 0).length;
   const totalAgotados = productos.filter((p) => p.inventario <= 0).length;
-  const valorInventario = productos.reduce((s, p) => s + p.precio * Math.max(0, p.inventario), 0);
 
   return (
     <div className="p-6 lg:p-8 space-y-6">
@@ -124,9 +122,9 @@ export default function ProductosPage() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
           { label: 'Total productos', value: productos.length, accent: 'navy' },
-          { label: 'En stock', value: totalActivos, accent: 'green' },
+          { label: 'Disponibles', value: totalActivos, accent: 'green' },
           { label: 'Agotados', value: totalAgotados, accent: 'wine' },
-          { label: 'Valor inventario', value: fmt(valorInventario), accent: 'gold' },
+          { label: 'Categorías', value: [...new Set(productos.map((p) => p.categoria).filter(Boolean))].length, accent: 'gold' },
         ].map((s) => (
           <Card key={s.label} className="p-4">
             <p className="text-xs text-slate-500 font-medium">{s.label}</p>
