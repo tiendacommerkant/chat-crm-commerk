@@ -54,7 +54,16 @@ export async function procesarMensajeBot(
 
   // ── CATÁLOGO siempre disponible (antes que cualquier estado o IA) ──
   if (esCatalogo(textoLower)) {
-    return await respuestaCatalogo();
+    try {
+      console.log('[Bot] Catálogo solicitado por:', context.cliente.telefono);
+      return await respuestaCatalogo();
+    } catch (err) {
+      console.error('[Bot] Error en respuestaCatalogo:', err);
+      return {
+        texto: 'Disculpa, tuve un problema cargando el catálogo. Escribe el nombre del producto que buscas y te ayudo. 😊',
+        metadata: { awaiting: '' },
+      };
+    }
   }
 
   // ── SOFI IA: toma el control cuando no hay flujo de compra activo
@@ -305,21 +314,23 @@ function respuestaSaludo(context: BotContext): BotResponse {
 
 async function respuestaCatalogo(): Promise<BotResponse> {
   const productos = await obtenerProductosCache();
+  console.log('[Bot] Productos en caché:', productos.length);
   if (productos.length === 0) {
-    return { texto: 'Lo siento, no hay productos disponibles ahora. Intenta más tarde.', metadata: { awaiting: '' } };
+    return { texto: '📋 No hay productos disponibles ahora. Intenta más tarde o escríbenos directamente.', metadata: { awaiting: '' } };
   }
-  // Disponibles primero, luego agotados
-  const ordenados = [
-    ...productos.filter((p) => p.inventario > 0),
-    ...productos.filter((p) => p.inventario <= 0),
-  ];
+  // Disponibles primero, luego agotados — máx 12 para no exceder límite WhatsApp
+  const disponibles = productos.filter((p) => p.inventario > 0);
+  const agotados = productos.filter((p) => p.inventario <= 0);
+  const ordenados = [...disponibles, ...agotados].slice(0, 12);
+
   let msg = '📋 *CATÁLOGO COMMERK*\n\n';
   ordenados.forEach((p, i) => {
     const emoji = asignarEmojiProducto(p.titulo);
-    const stock = p.inventario > 0 ? '✅' : '❌ Agotado';
+    const stock = p.inventario > 0 ? '✅' : '❌';
     msg += `*${i + 1}.* ${emoji} ${p.titulo}\n💵 ${formatearPrecioCOP(p.precio)} ${stock}\n\n`;
   });
   msg += '_Escribe el *número* del producto para ver detalles y comprarlo._';
+  console.log('[Bot] Mensaje catálogo largo:', msg.length, 'chars');
   return {
     texto: msg,
     metadata: {
