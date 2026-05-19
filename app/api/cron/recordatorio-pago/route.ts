@@ -49,6 +49,30 @@ export async function GET(req: Request) {
       .update({ recordatorio_enviado: true })
       .eq('id', venta.id);
 
+    // Guardar en la conversación para que aparezca en el CRM
+    if (ok && venta.conversacion_id) {
+      const contenido =
+        `⏰ *Recordatorio de pago enviado automáticamente*\n\n` +
+        `Hola ${nombre.split(' ')[0]}, te recordamos que tienes un pago pendiente por *${producto}* por ${total}.\n\n` +
+        `Puedes completar tu pago aquí: https://checkout.wompi.co/l/${linkId}`;
+
+      await supabaseAdmin.from('mensajes').insert({
+        conversacion_id: venta.conversacion_id,
+        tipo: 'bot',
+        contenido,
+        metadata: {
+          tipo_wa: 'template',
+          plantilla: 'recordatorio_pago',
+          evento: 'recordatorio_automatico',
+          awaiting: '',
+        },
+      });
+      await supabaseAdmin
+        .from('conversaciones')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', venta.conversacion_id);
+    }
+
     resultados.push({ id: venta.id, ok });
   }
 

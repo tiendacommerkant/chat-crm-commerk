@@ -11,7 +11,7 @@ export async function POST(req: Request) {
 
     const { data: venta, error } = await supabaseAdmin
       .from('ventas')
-      .select('id, producto_nombre, direccion_envio, cliente:clientes(nombre, telefono)')
+      .select('id, producto_nombre, direccion_envio, conversacion_id, cliente:clientes(nombre, telefono)')
       .eq('id', ventaId)
       .maybeSingle();
 
@@ -30,6 +30,31 @@ export async function POST(req: Request) {
     }
 
     const ok = await enviarPedidoEnCamino(telefono, nombre, producto, direccion);
+
+    // Guardar en la conversación para que aparezca en el CRM
+    if (ok && (venta as any).conversacion_id) {
+      const contenido =
+        `🚚 *¡Tu pedido está en camino!*\n\n` +
+        `Hola ${nombre.split(' ')[0]}, tu pedido de *${producto}* ha sido despachado.\n\n` +
+        `📍 Dirección de entrega: ${direccion}\n\n` +
+        `¡Gracias por comprar en Tienda Commerk! 🎉`;
+
+      await supabaseAdmin.from('mensajes').insert({
+        conversacion_id: (venta as any).conversacion_id,
+        tipo: 'bot',
+        contenido,
+        metadata: {
+          tipo_wa: 'template',
+          plantilla: 'pedido_en_camino',
+          evento: 'pedido_despachado',
+          awaiting: '',
+        },
+      });
+      await supabaseAdmin
+        .from('conversaciones')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', (venta as any).conversacion_id);
+    }
 
     return NextResponse.json({ ok });
   } catch (error: any) {

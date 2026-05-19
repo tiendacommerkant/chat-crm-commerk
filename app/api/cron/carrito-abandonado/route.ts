@@ -44,6 +44,30 @@ export async function GET(req: Request) {
       .update({ carrito_recordatorio_enviado: true })
       .eq('id', venta.id);
 
+    // Guardar en la conversación para que aparezca en el CRM
+    if (ok && venta.conversacion_id) {
+      const contenido =
+        `🛒 *Recordatorio de carrito enviado automáticamente*\n\n` +
+        `Hola ${nombre.split(' ')[0]}, notamos que dejaste *${producto}* (${precio}) en tu carrito.\n\n` +
+        `¿Quieres completar tu compra?`;
+
+      await supabaseAdmin.from('mensajes').insert({
+        conversacion_id: venta.conversacion_id,
+        tipo: 'bot',
+        contenido,
+        metadata: {
+          tipo_wa: 'template',
+          plantilla: 'carrito_abandonado',
+          evento: 'carrito_automatico',
+          awaiting: '',
+        },
+      });
+      await supabaseAdmin
+        .from('conversaciones')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', venta.conversacion_id);
+    }
+
     resultados.push({ id: venta.id, ok });
   }
 
