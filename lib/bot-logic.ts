@@ -218,14 +218,9 @@ export async function procesarMensajeBot(
 
   // Estado: carrito mostrado — esperando "agregar más" o "pagar"
   if (awaiting === 'carrito') {
-    // Agregar más productos
+    // Agregar más productos → mostrar catálogo numerado directamente
     if (/^(agregar|seguir|más|mas|otro|añadir|agregar más|más productos|seguir comprando|ver catálogo)$/i.test(textoLower)) {
-      return {
-        texto:
-          `🛍️ Dime el nombre del producto que quieres agregar o escribe *catálogo* para ver las opciones.\n\n` +
-          `_Tienes ${pendingCart.length} producto${pendingCart.length !== 1 ? 's' : ''} en tu carrito. Escribe *carrito* para verlo._`,
-        metadata: { awaiting: '', pending_cart: pendingCart },
-      };
+      return await respuestaCatalogo(0, pendingCart);
     }
     // Proceder al pago
     if (/^(pagar|pago|finalizar|proceder|checkout|ok|listo|si|sí|dale|confirmar|adelante)$/i.test(textoLower)) {
