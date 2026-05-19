@@ -207,6 +207,11 @@ export async function procesarMensajeBot(
 
   // Estado: esperando número de selección del catálogo
   if (awaiting === 'catalogo_numero') {
+    // "más" → siguiente página
+    if (/^(más|mas|siguiente|next|ver más|ver mas|\+)$/i.test(textoLower)) {
+      const paginaActual: number = ultimoBot?.metadata?.pending_catalog_page || 0;
+      return await respuestaCatalogo(paginaActual + 1);
+    }
     const num = extraerCantidad(texto);
     if (num && num >= 1 && num <= pendingCatalogIds.length) {
       const shopifyId = pendingCatalogIds[num - 1];
@@ -215,8 +220,8 @@ export async function procesarMensajeBot(
       if (producto) return respuestaProducto(producto);
     }
     return {
-      texto: `Por favor escribe el *número* del producto del catálogo (ej: *1*, *2*, *3*).\n\nEscribe *catálogo* para volver a verlo.`,
-      metadata: { awaiting: 'catalogo_numero', pending_catalog_ids: pendingCatalogIds },
+      texto: `Escribe el *número* del producto (ej: *1*, *2*) o *más* para ver más.\n\nEscribe *catálogo* para volver al inicio.`,
+      metadata: { awaiting: 'catalogo_numero', pending_catalog_ids: pendingCatalogIds, pending_catalog_page: ultimoBot?.metadata?.pending_catalog_page || 0 },
     };
   }
 
@@ -312,30 +317,53 @@ function respuestaSaludo(context: BotContext): BotResponse {
   };
 }
 
-async function respuestaCatalogo(): Promise<BotResponse> {
-  const productos = await obtenerProductosCache();
-  console.log('[Bot] Productos en caché:', productos.length);
-  if (productos.length === 0) {
-    return { texto: '📋 No hay productos disponibles ahora. Intenta más tarde o escríbenos directamente.', metadata: { awaiting: '' } };
-  }
-  // Disponibles primero, luego agotados — máx 12 para no exceder límite WhatsApp
-  const disponibles = productos.filter((p) => p.inventario > 0);
-  const agotados = productos.filter((p) => p.inventario <= 0);
-  const ordenados = [...disponibles, ...agotados].slice(0, 12);
+const CATALOGO_POR_PAGINA = 10;
 
-  let msg = '📋 *CATÁLOGO COMMERK*\n\n';
-  ordenados.forEach((p, i) => {
+async function respuestaCatalogo(pagina = 0): Promise<BotResponse> {
+  const productos = await obtenerProductosCache();
+  // Solo productos con precio > 0 — disponibles primero, agotados al final
+  const conPrecio = productos.filter((p) => p.precio > 0);
+  const todos = [
+    ...conPrecio.filter((p) => p.inventario > 0),
+    ...conPrecio.filter((p) => p.inventario <= 0),
+  ];
+  console.log('[Bot] Productos con precio:', todos.length, '| página:', pagina);
+
+  if (todos.length === 0) {
+    return { texto: '📋 No hay productos disponibles ahora. Escríbenos directamente y te ayudamos.', metadata: { awaiting: '' } };
+  }
+
+  // Si página está fuera de rango, volver al inicio
+  const paginaReal = (pagina * CATALOGO_POR_PAGINA) >= todos.length ? 0 : pagina;
+  const inicioReal = paginaReal * CATALOGO_POR_PAGINA;
+  const finReal = Math.min(inicioReal + CATALOGO_POR_PAGINA, todos.length);
+  const pagActual = todos.slice(inicioReal, finReal);
+  const hayMas = finReal < todos.length;
+
+  const encabezado = todos.length > CATALOGO_POR_PAGINA
+    ? `📋 *CATÁLOGO COMMERK* (${inicioReal + 1}-${finReal} de ${todos.length})\n\n`
+    : `📋 *CATÁLOGO COMMERK*\n\n`;
+
+  let msg = encabezado;
+  pagActual.forEach((p, i) => {
+    const num = inicioReal + i + 1;
     const emoji = asignarEmojiProducto(p.titulo);
     const stock = p.inventario > 0 ? '✅' : '❌';
-    msg += `*${i + 1}.* ${emoji} ${p.titulo}\n💵 ${formatearPrecioCOP(p.precio)} ${stock}\n\n`;
+    msg += `*${num}.* ${emoji} ${p.titulo}\n💵 ${formatearPrecioCOP(p.precio)} ${stock}\n\n`;
   });
-  msg += '_Escribe el *número* del producto para ver detalles y comprarlo._';
-  console.log('[Bot] Mensaje catálogo largo:', msg.length, 'chars');
+
+  if (hayMas) {
+    msg += `_Escribe el *número* para ver el producto o *más* para ver los siguientes ${Math.min(CATALOGO_POR_PAGINA, todos.length - finReal)}._`;
+  } else {
+    msg += `_Escribe el *número* del producto para ver detalles y comprarlo._`;
+  }
+
   return {
     texto: msg,
     metadata: {
       awaiting: 'catalogo_numero',
-      pending_catalog_ids: ordenados.map((p) => p.shopify_id),
+      pending_catalog_ids: todos.map((p) => p.shopify_id),
+      pending_catalog_page: paginaReal,
     },
   };
 }
