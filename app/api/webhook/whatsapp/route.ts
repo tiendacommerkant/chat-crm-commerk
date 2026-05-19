@@ -147,10 +147,10 @@ export async function POST(req: Request) {
 
           // ── Acción: generar link de pago Wompi ─────────────────────────
           if (respuesta.accion === 'generar_link_pago' && respuesta.metadata) {
-            const { producto, pending_cantidad, pending_direccion, pending_total, pending_costo_envio } = respuesta.metadata;
-            const cantidad = pending_cantidad || 1;
+            const { pending_cart, pending_direccion, pending_total, pending_costo_envio } = respuesta.metadata;
+            const cart: Array<{ shopify_id: string; titulo: string; precio: number; cantidad: number }> = pending_cart || [];
             const direccion = pending_direccion || 'Sin especificar';
-            const total = pending_total || (producto?.precio || 0) * cantidad;
+            const total = pending_total || cart.reduce((s: number, i: any) => s + i.precio * i.cantidad, 0);
 
             // Guardar mensaje "generando link..."
             await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
@@ -159,12 +159,24 @@ export async function POST(req: Request) {
             });
             await enviarMensajeWhatsApp(phone, respuesta.texto);
 
+            if (cart.length === 0) {
+              const msgError = `⚠️ No se encontraron productos en el carrito. Por favor intenta de nuevo.`;
+              await guardarMensaje(conversacion.id, 'bot', msgError, { tipo_wa: 'text', awaiting: '' });
+              await enviarMensajeWhatsApp(phone, msgError);
+              continue;
+            }
+
             // Generar referencia única
             const referencia = `WA-${Date.now()}-${cliente.id.slice(0, 8)}`;
 
+            // Nombre del link: primer producto o resumen
+            const nombreLink = cart.length === 1
+              ? `${cart[0].titulo} x${cart[0].cantidad}`
+              : `Pedido Commerk (${cart.length} productos)`;
+
             // Crear link de pago en Wompi
             const linkResult = await generarLinkPagoWompi({
-              nombre: `${producto.titulo} x${cantidad}`,
+              nombre: nombreLink,
               descripcion: `Pedido WhatsApp — ${direccion}`,
               monto: total,
               referencia,
@@ -172,27 +184,36 @@ export async function POST(req: Request) {
             });
 
             if (linkResult.success && linkResult.link) {
-              // Registrar venta pendiente en Supabase
-              await registrarVentaPendiente({
-                cliente_id: cliente.id,
-                conversacion_id: conversacion.id,
-                producto_shopify_id: producto.shopify_id,
-                producto_nombre: producto.titulo,
-                producto_precio: producto.precio,
-                cantidad,
-                total,
-                link_pago: linkResult.link,
-                referencia_pago: referencia,
-                direccion_envio: direccion,
-              });
+              // Registrar una venta pendiente por cada ítem del carrito
+              for (const item of cart) {
+                const itemTotal = Math.round((item.precio * item.cantidad / total) * total);
+                await registrarVentaPendiente({
+                  cliente_id: cliente.id,
+                  conversacion_id: conversacion.id,
+                  producto_shopify_id: item.shopify_id,
+                  producto_nombre: item.titulo,
+                  producto_precio: item.precio,
+                  cantidad: item.cantidad,
+                  total: item.precio * item.cantidad,
+                  link_pago: linkResult.link,
+                  referencia_pago: referencia,
+                  direccion_envio: direccion,
+                });
+              }
 
               // Actualizar updated_at de la conversación
               await supabaseAdmin.from('conversaciones').update({ updated_at: new Date().toISOString() }).eq('id', conversacion.id);
 
+              // Construir mensaje con detalle de todos los ítems
+              let resumenItems = '';
+              cart.forEach((item, i) => {
+                resumenItems += `${i + 1}. ${item.titulo} × ${item.cantidad} = ${formatearPrecioCOP(item.precio * item.cantidad)}\n`;
+              });
+
               const msgLink =
                 `🛒 *¡Tu pedido está listo para pagar!*\n\n` +
-                `${producto.titulo} × ${cantidad}\n` +
-                `💵 Total: *${formatearPrecioCOP(total)}*\n` +
+                resumenItems +
+                `\n💵 Total: *${formatearPrecioCOP(total)}*\n` +
                 (pending_costo_envio === 0 ? `🎁 Envío: *GRATIS*\n` : `🚚 Envío incluido\n`) +
                 `\n💳 *Paga de forma segura aquí:*\n${linkResult.link}\n\n` +
                 `_El link es de un solo uso. Una vez confirmado el pago, procesamos tu pedido y te avisamos aquí._ ✅`;
@@ -201,7 +222,7 @@ export async function POST(req: Request) {
                 tipo_wa: 'text',
                 awaiting: 'link_enviado',
                 referencia_pago: referencia,
-                pending_product_id: producto.shopify_id,
+                pending_cart: cart,
               });
               await enviarMensajeWhatsApp(phone, msgLink);
 
