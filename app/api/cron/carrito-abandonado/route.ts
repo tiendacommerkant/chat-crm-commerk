@@ -4,8 +4,8 @@ import { enviarCarritoAbandonado } from '@/lib/whatsapp-templates';
 import { formatearPrecioCOP } from '@/lib/shopify';
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  if (url.searchParams.get('secret') !== process.env.CRON_SECRET) {
+  const authHeader = req.headers.get('authorization');
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
