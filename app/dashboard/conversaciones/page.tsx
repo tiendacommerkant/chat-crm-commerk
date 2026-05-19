@@ -12,6 +12,7 @@ type Conversacion = {
   cliente: Cliente; ultimo_mensaje: UltimoMensaje | null;
   total_mensajes: number; no_leidos: number;
   bot_activo?: boolean;
+  etiqueta?: string | null;
 };
 type Mensaje = {
   id: string; conversacion_id: string; tipo: 'user' | 'bot';
@@ -31,20 +32,22 @@ function iniciales(nombre?: string) {
   return nombre.split(' ').slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 }
 
+const TZ = 'America/Bogota';
+
 function fmtHora(iso: string) {
   const d = new Date(iso);
   const diff = Date.now() - d.getTime();
   if (diff < 60000) return 'ahora';
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
-  if (diff < 86400000) return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-  if (diff < 604800000) return d.toLocaleDateString('es-CO', { weekday: 'short' });
-  return d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' });
+  if (diff < 86400000) return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', timeZone: TZ });
+  if (diff < 604800000) return d.toLocaleDateString('es-CO', { weekday: 'short', timeZone: TZ });
+  return d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', timeZone: TZ });
 }
 
 function fmtFechaCompleta(iso: string) {
   return new Date(iso).toLocaleString('es-CO', {
     day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
+    hour: '2-digit', minute: '2-digit', timeZone: TZ,
   });
 }
 
@@ -59,6 +62,13 @@ const ESTADO_COLORS: Record<string, string> = {
   activa:     'bg-emerald-400',
   cerrada:    'bg-slate-400',
   abandonada: 'bg-amber-400',
+};
+
+const ETIQUETAS: Record<string, { label: string; emoji: string; cls: string }> = {
+  compro:       { label: 'Compró',       emoji: '💰', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  notificado:   { label: 'Notificado',   emoji: '📤', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
+  cerro_venta:  { label: 'Cerró venta',  emoji: '✅', cls: 'bg-purple-100 text-purple-700 border-purple-200' },
+  perdido:      { label: 'Perdido',      emoji: '❌', cls: 'bg-red-100 text-red-600 border-red-200' },
 };
 
 const RESPUESTAS_RAPIDAS = [
@@ -421,6 +431,10 @@ function ConversacionesContent() {
   const [mostrarModal, setMostrarModal] = useState(false);
   const [botActivo, setBotActivo] = useState(true);
   const [togglingBot, setTogglingBot] = useState(false);
+  const [noLeidosPorConv, setNoLeidosPorConv] = useState<Record<string, number>>({});
+  const [etiquetaActiva, setEtiquetaActiva] = useState<string | null>(null);
+  const [guardandoEtiqueta, setGuardandoEtiqueta] = useState(false);
+  const [mostrarEtiquetas, setMostrarEtiquetas] = useState(false);
 
   const searchParams = useSearchParams();
   const clienteIdParam = searchParams.get('cliente');
@@ -447,6 +461,10 @@ function ConversacionesContent() {
   const seleccionarConv = useCallback((conv: Conversacion) => {
     setActiva(conv);
     setBotActivo(conv.bot_activo !== false);
+    setEtiquetaActiva(conv.etiqueta || null);
+    setMostrarEtiquetas(false);
+    // Resetear contador de no leídos al abrir la conversación
+    setNoLeidosPorConv((prev) => ({ ...prev, [conv.id]: 0 }));
   }, []);
 
   const toggleBot = useCallback(async () => {
@@ -466,6 +484,23 @@ function ConversacionesContent() {
       setTogglingBot(false);
     }
   }, [activa, botActivo, togglingBot]);
+
+  const guardarEtiqueta = useCallback(async (nuevaEtiqueta: string | null) => {
+    if (!activa || guardandoEtiqueta) return;
+    setGuardandoEtiqueta(true);
+    setEtiquetaActiva(nuevaEtiqueta);
+    setMostrarEtiquetas(false);
+    try {
+      await fetch(`/api/conversaciones/${activa.id}/etiqueta`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ etiqueta: nuevaEtiqueta }),
+      });
+      cargarConversaciones();
+    } finally {
+      setGuardandoEtiqueta(false);
+    }
+  }, [activa, guardandoEtiqueta, cargarConversaciones]);
 
   const onConversacionCreada = useCallback(async (convId: string) => {
     setMostrarModal(false);
@@ -529,17 +564,25 @@ function ConversacionesContent() {
           });
         }
 
-        // Notificación de navegador para mensajes del cliente
-        if (msg.tipo === 'user' && 'Notification' in window && Notification.permission === 'granted') {
+        // Contador de no leídos + notificación de navegador
+        if (msg.tipo === 'user') {
           const esOtraConv = !activa || msg.conversacion_id !== activa.id;
-          const pestanaOculta = document.hidden;
-          if (esOtraConv || pestanaOculta) {
-            const conv = conversaciones.find((c) => c.id === msg.conversacion_id);
-            const nombre = conv?.cliente?.nombre || conv?.cliente?.telefono || 'WhatsApp';
-            new Notification(`💬 ${nombre}`, {
-              body: msg.contenido?.slice(0, 100) || 'Nuevo mensaje',
-              icon: '/logos_favicon.png',
-            });
+          if (esOtraConv) {
+            setNoLeidosPorConv((prev) => ({
+              ...prev,
+              [msg.conversacion_id]: (prev[msg.conversacion_id] || 0) + 1,
+            }));
+          }
+          if ('Notification' in window && Notification.permission === 'granted') {
+            const pestanaOculta = document.hidden;
+            if (esOtraConv || pestanaOculta) {
+              const conv = conversaciones.find((c) => c.id === msg.conversacion_id);
+              const nombre = conv?.cliente?.nombre || conv?.cliente?.telefono || 'WhatsApp';
+              new Notification(`💬 ${nombre}`, {
+                body: msg.contenido?.slice(0, 100) || 'Nuevo mensaje',
+                icon: '/logos_favicon.png',
+              });
+            }
           }
         }
 
@@ -650,28 +693,48 @@ function ConversacionesContent() {
               : (conv.ultimo_mensaje.contenido || '').slice(0, 45) + ((conv.ultimo_mensaje.contenido?.length || 0) > 45 ? '…' : '');
 
             return (
-              <button key={conv.id} onClick={() => seleccionarConv(conv)}
-                className={`w-full flex items-start gap-3 px-4 py-3.5 text-left hover:bg-slate-50 transition-colors border-b border-slate-50 ${
-                  esActiva ? 'bg-commerk-navy/5 border-l-2 border-l-commerk-navy' : ''
-                }`}
-              >
-                <div className="relative shrink-0">
-                  <div className="w-10 h-10 rounded-full bg-commerk-navy/10 flex items-center justify-center text-commerk-navy font-bold text-sm">
-                    {iniciales(conv.cliente?.nombre)}
-                  </div>
-                  <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${ESTADO_COLORS[conv.estado] || 'bg-slate-300'}`} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-baseline justify-between gap-1">
-                    <p className="text-sm font-semibold text-slate-800 truncate">{nombre}</p>
-                    {conv.ultimo_mensaje && (
-                      <p className="text-[10px] text-slate-400 shrink-0">{fmtHora(conv.ultimo_mensaje.created_at)}</p>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-500 truncate mt-0.5">{preview}</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">{conv.cliente?.telefono}</p>
-                </div>
-              </button>
+              {(() => {
+                const noLeidos = noLeidosPorConv[conv.id] || 0;
+                const etiq = conv.etiqueta ? ETIQUETAS[conv.etiqueta] : null;
+                return (
+                  <button key={conv.id} onClick={() => seleccionarConv(conv)}
+                    className={`w-full flex items-start gap-3 px-4 py-3.5 text-left hover:bg-slate-50 transition-colors border-b border-slate-50 ${
+                      esActiva ? 'bg-commerk-navy/5 border-l-2 border-l-commerk-navy' : ''
+                    } ${noLeidos > 0 && !esActiva ? 'bg-green-50/40' : ''}`}
+                  >
+                    <div className="relative shrink-0">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${noLeidos > 0 && !esActiva ? 'bg-commerk-navy text-white' : 'bg-commerk-navy/10 text-commerk-navy'}`}>
+                        {iniciales(conv.cliente?.nombre)}
+                      </div>
+                      <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${ESTADO_COLORS[conv.estado] || 'bg-slate-300'}`} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1">
+                        <p className={`text-sm truncate ${noLeidos > 0 && !esActiva ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>{nombre}</p>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {noLeidos > 0 && !esActiva && (
+                            <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-commerk-green text-white text-[10px] font-bold flex items-center justify-center">
+                              {noLeidos > 9 ? '9+' : noLeidos}
+                            </span>
+                          )}
+                          {conv.ultimo_mensaje && (
+                            <p className="text-[10px] text-slate-400">{fmtHora(conv.ultimo_mensaje.created_at)}</p>
+                          )}
+                        </div>
+                      </div>
+                      <p className={`text-xs truncate mt-0.5 ${noLeidos > 0 && !esActiva ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>{preview}</p>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <p className="text-[10px] text-slate-400">{conv.cliente?.telefono}</p>
+                        {etiq && (
+                          <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${etiq.cls}`}>
+                            {etiq.emoji} {etiq.label}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })()}
             );
           })}
         </div>
@@ -707,6 +770,47 @@ function ConversacionesContent() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {/* Etiqueta */}
+              <div className="relative">
+                <button
+                  onClick={() => setMostrarEtiquetas(!mostrarEtiquetas)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+                    etiquetaActiva && ETIQUETAS[etiquetaActiva]
+                      ? ETIQUETAS[etiquetaActiva].cls
+                      : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300'
+                  }`}
+                >
+                  {etiquetaActiva && ETIQUETAS[etiquetaActiva]
+                    ? `${ETIQUETAS[etiquetaActiva].emoji} ${ETIQUETAS[etiquetaActiva].label}`
+                    : '🏷️ Etiqueta'}
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {mostrarEtiquetas && (
+                  <div className="absolute right-0 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-100 py-1 min-w-[160px]">
+                    {Object.entries(ETIQUETAS).map(([key, e]) => (
+                      <button
+                        key={key}
+                        onClick={() => guardarEtiqueta(key)}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-slate-50 text-left ${etiquetaActiva === key ? 'bg-slate-50 font-bold' : ''}`}
+                      >
+                        <span>{e.emoji}</span> {e.label}
+                        {etiquetaActiva === key && <span className="ml-auto text-commerk-green">✓</span>}
+                      </button>
+                    ))}
+                    {etiquetaActiva && (
+                      <button
+                        onClick={() => guardarEtiqueta(null)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-400 hover:bg-slate-50 border-t border-slate-100 mt-1"
+                      >
+                        Quitar etiqueta
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Toggle Bot / Agente */}
               <button
                 onClick={toggleBot}

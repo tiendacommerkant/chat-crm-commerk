@@ -15,7 +15,7 @@ export async function GET(req: Request) {
     let query = supabaseAdmin
       .from('conversaciones')
       .select(`
-        id, estado, created_at, updated_at,
+        id, estado, created_at, updated_at, etiqueta,
         cliente:clientes(id, nombre, telefono, email, ciudad),
         mensajes(id, tipo, contenido, metadata, created_at)
       `)
@@ -52,6 +52,7 @@ export async function GET(req: Request) {
           : null,
         total_mensajes: mensajes.length,
         no_leidos: mensajes.filter((m: any) => m.tipo === 'user').length,
+        etiqueta: conv.etiqueta || null,
       };
     });
 

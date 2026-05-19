@@ -160,6 +160,37 @@ export async function notificarCarritoAbandonado(carrito: {
       .from('carritos_abandonados')
       .update({ notificado_whatsapp: true, estado: 'notificado', updated_at: new Date().toISOString() })
       .eq('id', carrito.id);
+
+    // Guardar en la conversación del cliente para que aparezca en el CRM
+    const { data: cliente } = await supabaseAdmin
+      .from('clientes')
+      .select('id')
+      .eq('telefono', telefono)
+      .maybeSingle();
+
+    if (cliente) {
+      const { data: conv } = await supabaseAdmin
+        .from('conversaciones')
+        .select('id')
+        .eq('cliente_id', cliente.id)
+        .eq('estado', 'activa')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (conv) {
+        await supabaseAdmin.from('mensajes').insert({
+          conversacion_id: conv.id,
+          tipo: 'bot',
+          contenido: mensaje,
+          metadata: { tipo_wa: 'text', evento: 'carrito_recuperacion', awaiting: '' },
+        });
+        await supabaseAdmin
+          .from('conversaciones')
+          .update({ updated_at: new Date().toISOString() })
+          .eq('id', conv.id);
+      }
+    }
   }
 
   return resultado;
