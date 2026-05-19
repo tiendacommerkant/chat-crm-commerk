@@ -58,11 +58,11 @@ export async function generarLinkPagoWompi(params: {
     }
 
     const rawData = await response.json();
-    console.log('[Wompi] Respuesta completa:', JSON.stringify(rawData));
-    const data = rawData as { data: WompiPaymentLink };
+    const data = rawData as { data: WompiPaymentLink & { id: string } };
 
-    const link = data.data?.permalink || (data.data as any)?.url || (data.data as any)?.checkout_url;
-    console.log('[Wompi] link extraído:', link);
+    // Wompi no devuelve permalink — se construye con el id del link
+    const link = data.data?.permalink || `https://checkout.wompi.co/l/${data.data?.id}`;
+    console.log('[Wompi] link generado:', link);
 
     return {
       success: true,
