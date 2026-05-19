@@ -483,33 +483,44 @@ function ConversacionesContent() {
     mensajesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes]);
 
-  // Realtime: nuevo mensaje en conversación activa
+  // Realtime: escucha TODOS los mensajes nuevos (cualquier conversación)
   useEffect(() => {
-    if (!activa) return;
-    const ch = supabase
-      .channel(`msgs-${activa.id}`)
+    const chGlobal = supabase
+      .channel('mensajes-global')
       .on('postgres_changes', {
         event: 'INSERT', schema: 'public', table: 'mensajes',
-        filter: `conversacion_id=eq.${activa.id}`,
       }, (payload) => {
         const msg = payload.new as Mensaje;
-        setMensajes((prev) => {
-          if (prev.some((m) => m.id === msg.id)) return prev;
-          return [...prev, msg];
-        });
-        // Notificación del navegador si es mensaje del cliente y la pestaña no está enfocada
-        if (msg.tipo === 'user' && document.hidden &&
-            'Notification' in window && Notification.permission === 'granted') {
-          new Notification(`💬 ${activa.cliente?.nombre || activa.cliente?.telefono}`, {
-            body: msg.contenido?.slice(0, 100) || 'Nuevo mensaje de WhatsApp',
-            icon: '/logos_favicon.png',
+
+        // Si el mensaje es de la conversación activa → agregarlo al chat
+        if (activa && msg.conversacion_id === activa.id) {
+          setMensajes((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg];
           });
         }
+
+        // Notificación de navegador para mensajes del cliente
+        if (msg.tipo === 'user' && 'Notification' in window && Notification.permission === 'granted') {
+          const esOtraConv = !activa || msg.conversacion_id !== activa.id;
+          const pestanaOculta = document.hidden;
+          if (esOtraConv || pestanaOculta) {
+            const conv = conversaciones.find((c) => c.id === msg.conversacion_id);
+            const nombre = conv?.cliente?.nombre || conv?.cliente?.telefono || 'WhatsApp';
+            new Notification(`💬 ${nombre}`, {
+              body: msg.contenido?.slice(0, 100) || 'Nuevo mensaje',
+              icon: '/logos_favicon.png',
+            });
+          }
+        }
+
+        // Siempre recargar la lista de conversaciones para actualizar orden y último mensaje
         cargarConversaciones();
       })
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [activa, cargarConversaciones]);
+
+    return () => { supabase.removeChannel(chGlobal); };
+  }, [activa, conversaciones, cargarConversaciones]);
 
   const enviarRespuesta = async () => {
     if (!textoRespuesta.trim() || !activa || enviando) return;
