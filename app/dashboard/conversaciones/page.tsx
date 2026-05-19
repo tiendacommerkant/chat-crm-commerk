@@ -692,49 +692,45 @@ function ConversacionesContent() {
               : tipoWA === 'template' ? '📤 Notificación enviada'
               : (conv.ultimo_mensaje.contenido || '').slice(0, 45) + ((conv.ultimo_mensaje.contenido?.length || 0) > 45 ? '…' : '');
 
+            const noLeidos = noLeidosPorConv[conv.id] || 0;
+            const etiq = conv.etiqueta ? ETIQUETAS[conv.etiqueta] : null;
             return (
-              {(() => {
-                const noLeidos = noLeidosPorConv[conv.id] || 0;
-                const etiq = conv.etiqueta ? ETIQUETAS[conv.etiqueta] : null;
-                return (
-                  <button key={conv.id} onClick={() => seleccionarConv(conv)}
-                    className={`w-full flex items-start gap-3 px-4 py-3.5 text-left hover:bg-slate-50 transition-colors border-b border-slate-50 ${
-                      esActiva ? 'bg-commerk-navy/5 border-l-2 border-l-commerk-navy' : ''
-                    } ${noLeidos > 0 && !esActiva ? 'bg-green-50/40' : ''}`}
-                  >
-                    <div className="relative shrink-0">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${noLeidos > 0 && !esActiva ? 'bg-commerk-navy text-white' : 'bg-commerk-navy/10 text-commerk-navy'}`}>
-                        {iniciales(conv.cliente?.nombre)}
-                      </div>
-                      <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${ESTADO_COLORS[conv.estado] || 'bg-slate-300'}`} />
+              <button key={conv.id} onClick={() => seleccionarConv(conv)}
+                className={`w-full flex items-start gap-3 px-4 py-3.5 text-left hover:bg-slate-50 transition-colors border-b border-slate-50 ${
+                  esActiva ? 'bg-commerk-navy/5 border-l-2 border-l-commerk-navy' : ''
+                } ${noLeidos > 0 && !esActiva ? 'bg-green-50/40' : ''}`}
+              >
+                <div className="relative shrink-0">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${noLeidos > 0 && !esActiva ? 'bg-commerk-navy text-white' : 'bg-commerk-navy/10 text-commerk-navy'}`}>
+                    {iniciales(conv.cliente?.nombre)}
+                  </div>
+                  <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${ESTADO_COLORS[conv.estado] || 'bg-slate-300'}`} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1">
+                    <p className={`text-sm truncate ${noLeidos > 0 && !esActiva ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>{nombre}</p>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {noLeidos > 0 && !esActiva && (
+                        <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-commerk-green text-white text-[10px] font-bold flex items-center justify-center">
+                          {noLeidos > 9 ? '9+' : noLeidos}
+                        </span>
+                      )}
+                      {conv.ultimo_mensaje && (
+                        <p className="text-[10px] text-slate-400">{fmtHora(conv.ultimo_mensaje.created_at)}</p>
+                      )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1">
-                        <p className={`text-sm truncate ${noLeidos > 0 && !esActiva ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>{nombre}</p>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {noLeidos > 0 && !esActiva && (
-                            <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-commerk-green text-white text-[10px] font-bold flex items-center justify-center">
-                              {noLeidos > 9 ? '9+' : noLeidos}
-                            </span>
-                          )}
-                          {conv.ultimo_mensaje && (
-                            <p className="text-[10px] text-slate-400">{fmtHora(conv.ultimo_mensaje.created_at)}</p>
-                          )}
-                        </div>
-                      </div>
-                      <p className={`text-xs truncate mt-0.5 ${noLeidos > 0 && !esActiva ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>{preview}</p>
-                      <div className="flex items-center gap-1.5 mt-0.5">
-                        <p className="text-[10px] text-slate-400">{conv.cliente?.telefono}</p>
-                        {etiq && (
-                          <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${etiq.cls}`}>
-                            {etiq.emoji} {etiq.label}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })()}
+                  </div>
+                  <p className={`text-xs truncate mt-0.5 ${noLeidos > 0 && !esActiva ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>{preview}</p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <p className="text-[10px] text-slate-400">{conv.cliente?.telefono}</p>
+                    {etiq && (
+                      <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${etiq.cls}`}>
+                        {etiq.emoji} {etiq.label}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </button>
             );
           })}
         </div>
