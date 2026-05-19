@@ -34,6 +34,8 @@ export async function generarLinkPagoWompi(params: {
       redirect_url: params.urlRedireccion || `${process.env.NEXT_PUBLIC_BASE_URL}/pago/confirmacion?ref=${params.referencia}`,
     };
 
+    console.log('[Wompi] KEY presente:', !!WOMPI_PRIVATE_KEY, '| monto COP:', params.monto, '| centavos:', montoEnCentavos);
+
     const response = await fetch(`${WOMPI_API_URL}/payment_links`, {
       method: 'POST',
       headers: {
@@ -43,9 +45,11 @@ export async function generarLinkPagoWompi(params: {
       body: JSON.stringify(payload),
     });
 
+    console.log('[Wompi] HTTP status:', response.status);
+
     if (!response.ok) {
       const error = await response.json();
-      console.error('Error generando link Wompi:', JSON.stringify(error));
+      console.error('[Wompi] Error body:', JSON.stringify(error));
       const detalle =
         error.error?.messages
           ? Object.values(error.error.messages).flat().join(', ')
@@ -54,7 +58,8 @@ export async function generarLinkPagoWompi(params: {
     }
 
     const data: { data: WompiPaymentLink } = await response.json();
-    
+    console.log('[Wompi] permalink:', data.data?.permalink);
+
     return {
       success: true,
       link: data.data.permalink,
