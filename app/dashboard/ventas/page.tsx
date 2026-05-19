@@ -57,6 +57,29 @@ export default function VentasPage() {
   const [filtro, setFiltro] = useState<EstadoFiltro>('todos');
   const [busqueda, setBusqueda] = useState('');
   const [cargando, setCargando] = useState(true);
+  const [enviando, setEnviando] = useState<Set<string>>(new Set());
+  const [enviados, setEnviados] = useState<Set<string>>(new Set());
+
+  async function enviarEnCamino(ventaId: string) {
+    setEnviando((prev) => new Set(prev).add(ventaId));
+    try {
+      const res = await fetch('/api/ventas/en-camino', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ventaId }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setEnviados((prev) => new Set(prev).add(ventaId));
+      } else {
+        alert('Error al enviar: ' + (json.error || 'Intente de nuevo'));
+      }
+    } catch {
+      alert('Error de conexión');
+    } finally {
+      setEnviando((prev) => { const s = new Set(prev); s.delete(ventaId); return s; });
+    }
+  }
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -213,6 +236,7 @@ export default function VentasPage() {
                   <th className="text-center px-5 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide hidden md:table-cell">Uds.</th>
                   <th className="text-right px-5 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Total</th>
                   <th className="text-center px-5 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Estado</th>
+                  <th className="text-center px-5 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide hidden sm:table-cell">Acción</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -255,6 +279,23 @@ export default function VentasPage() {
                     </td>
                     <td className="px-5 py-3.5 text-center">
                       <EstadoBadge estado={v.estado} />
+                    </td>
+                    <td className="px-5 py-3.5 text-center hidden sm:table-cell">
+                      {v.fuente === 'bot' && v.estado === 'pagado' && v.telefono ? (
+                        enviados.has(v.id) ? (
+                          <span className="text-xs font-semibold text-emerald-600 px-2.5 py-1 bg-emerald-50 rounded-full">✓ Enviado</span>
+                        ) : (
+                          <button
+                            onClick={() => enviarEnCamino(v.id)}
+                            disabled={enviando.has(v.id)}
+                            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                          >
+                            {enviando.has(v.id) ? '...' : '🚚 En camino'}
+                          </button>
+                        )
+                      ) : (
+                        <span className="text-slate-300 text-xs">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
