@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/recordatorio-pago?secret=CRON_SECRET_AQUI",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/carrito-abandonado?secret=CRON_SECRET_AQUI",
+      "schedule": "0 10 * * *"
+    }
+  ]
+}

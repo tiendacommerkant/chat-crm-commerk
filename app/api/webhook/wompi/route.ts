@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { supabaseAdmin, actualizarEstadoVenta } from '@/lib/supabase';
 import { crearPedidoShopify, formatearPrecioCOP } from '@/lib/shopify';
 import { enviarMensajeWhatsApp } from '@/lib/whatsapp';
+import { enviarConfirmacionPago } from '@/lib/whatsapp-templates';
 import type { WompiWebhookEvent } from '@/types';
 
 const CONEXA_FORWARD_URL = 'https://wompi-event-shopify.conexa.ai/api/v1/shopify/webhooks/event';
@@ -89,18 +90,19 @@ export async function POST(req: Request) {
 
       const shopifyOrderNum = shopifyResult.orderNumber ? `#${shopifyResult.orderNumber}` : '';
 
-      // 3. Notificar al cliente por WhatsApp
+      // 3. Notificar al cliente por WhatsApp (plantilla aprobada por Meta)
       if (telefono) {
+        const totalFormateado = formatearPrecioCOP(Number(venta.total));
+        await enviarConfirmacionPago(telefono, nombreCliente, venta.producto_nombre, totalFormateado);
+
         const msgConfirmacion =
           `✅ *¡Pago confirmado!*\n\n` +
           `Hola ${nombreCliente.split(' ')[0] || 'amigo'}, recibimos tu pago correctamente.\n\n` +
           `📦 *${venta.producto_nombre}* × ${venta.cantidad}\n` +
-          `💵 Total pagado: *${formatearPrecioCOP(Number(venta.total))}*\n` +
+          `💵 Total pagado: *${totalFormateado}*\n` +
           (shopifyOrderNum ? `🔢 Pedido Shopify: *${shopifyOrderNum}*\n` : '') +
           `\n🚚 Procesaremos y enviaremos tu pedido en las próximas 24-48 horas.\n\n` +
           `¡Gracias por comprar en *Tienda Commerk*! 🎉`;
-
-        await enviarMensajeWhatsApp(telefono, msgConfirmacion);
 
         // 4. Guardar en conversación si existe
         if (venta.conversacion_id) {
@@ -109,7 +111,8 @@ export async function POST(req: Request) {
             tipo: 'bot',
             contenido: msgConfirmacion,
             metadata: {
-              tipo_wa: 'text',
+              tipo_wa: 'template',
+              plantilla: 'confirmacion_pago',
               evento: 'pago_confirmado',
               referencia_pago: reference,
               shopify_order_number: shopifyResult.orderNumber || null,
