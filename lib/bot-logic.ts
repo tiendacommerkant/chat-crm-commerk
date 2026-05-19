@@ -52,6 +52,11 @@ export async function procesarMensajeBot(
     };
   }
 
+  // ── CATÁLOGO siempre disponible (antes que cualquier estado o IA) ──
+  if (esCatalogo(textoLower)) {
+    return await respuestaCatalogo();
+  }
+
   // ── SOFI IA: toma el control cuando no hay flujo de compra activo
   // El state machine sigue manejando: cantidad, dirección, confirmación y pago
   if (USE_AI && awaiting === '') {
@@ -219,8 +224,6 @@ export async function procesarMensajeBot(
   // ── FLUJO NORMAL (sin estado pendiente) ───────────────────────
 
   if (esSaludo(textoLower)) return respuestaSaludo(context);
-
-  if (esCatalogo(textoLower)) return await respuestaCatalogo();
 
   if (esConsultaEnvio(textoLower)) return respuestaEnvio();
 
