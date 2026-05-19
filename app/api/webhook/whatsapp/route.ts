@@ -20,6 +20,30 @@ export async function POST(req: Request) {
     if (body.object === 'whatsapp_business_account') {
       for (const entry of body.entry) {
         for (const change of entry.changes) {
+
+          // ── Actualizaciones de estado (entregado / leído) ─────────────
+          if (change.value?.statuses) {
+            for (const st of change.value.statuses) {
+              const waMsgId: string = st.id;
+              const estado: string = st.status; // 'sent' | 'delivered' | 'read' | 'failed'
+              if (!waMsgId || !estado) continue;
+              // Buscar el mensaje por whatsapp_message_id y actualizar estado_wa
+              const { data: msgs } = await supabaseAdmin
+                .from('mensajes')
+                .select('id, metadata')
+                .eq('metadata->>whatsapp_message_id', waMsgId)
+                .limit(1);
+              if (msgs?.length) {
+                const m = msgs[0];
+                await supabaseAdmin
+                  .from('mensajes')
+                  .update({ metadata: { ...m.metadata, estado_wa: estado } })
+                  .eq('id', m.id);
+              }
+            }
+            continue;
+          }
+
           if (!change.value?.messages) continue;
 
           const message = change.value.messages[0];

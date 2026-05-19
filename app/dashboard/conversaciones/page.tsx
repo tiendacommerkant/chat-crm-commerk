@@ -21,6 +21,7 @@ type Mensaje = {
     caption?: string; filename?: string; plantilla?: string; referencia_id?: string;
     estado_envio?: string; enviado_por?: string; whatsapp_message_id?: string;
     interactive_title?: string; error?: string; latitude?: number; longitude?: number;
+    estado_wa?: 'sent' | 'delivered' | 'read' | 'failed';
   };
 };
 
@@ -75,6 +76,32 @@ function AudioPlayer({ src }: { src: string }) {
     <audio controls className="max-w-[220px] h-10 rounded-full" preload="none">
       <source src={src} />
     </audio>
+  );
+}
+
+// ─── Chulitos estilo WhatsApp ─────────────────────────────────────────────────
+function ChecksWA({ estado }: { estado?: string }) {
+  // 1 chulito gris = enviado al API
+  // 2 chulitos grises = entregado al dispositivo
+  // 2 chulitos azules = leído por el destinatario
+  const leido = estado === 'read';
+  const entregado = estado === 'delivered' || leido;
+  const color = leido ? '#53bdeb' : 'rgba(255,255,255,0.6)';
+
+  if (!entregado) {
+    // 1 solo chulito
+    return (
+      <svg viewBox="0 0 16 11" width="14" height="11" fill="none">
+        <path d="M11.071.653 4.42 7.3 1.943 4.822" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  // 2 chulitos
+  return (
+    <svg viewBox="0 0 18 11" width="16" height="11" fill="none">
+      <path d="M1 5.5 5.5 10 17 1" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 5.5 9.5 10 17 3" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 
@@ -176,9 +203,11 @@ function MensajeBurbuja({ msg }: { msg: Mensaje }) {
           <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{msg.contenido}</p>
         )}
 
-        <p className={`text-[10px] mt-1 text-right ${esUser ? 'text-slate-400' : 'text-white/50'}`}>
+        <p className={`text-[10px] mt-1 text-right flex items-center justify-end gap-1 ${esUser ? 'text-slate-400' : 'text-white/50'}`}>
           {fmtFechaCompleta(msg.created_at)}
-          {!esUser && msg.metadata?.whatsapp_message_id && <span className="ml-1">✓✓</span>}
+          {!esUser && msg.metadata?.whatsapp_message_id && (
+            <ChecksWA estado={msg.metadata?.estado_wa} />
+          )}
         </p>
       </div>
     </div>
