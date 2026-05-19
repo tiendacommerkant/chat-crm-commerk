@@ -42,6 +42,7 @@ export async function procesarMensajeBot(
   const pendingProductId: string = ultimoBot?.metadata?.pending_product_id || '';
   const pendingCantidad: number = ultimoBot?.metadata?.pending_cantidad || 1;
   const pendingDireccion: string = ultimoBot?.metadata?.pending_direccion || '';
+  const pendingCatalogIds: string[] = ultimoBot?.metadata?.pending_catalog_ids || [];
 
   // ── CANCELAR siempre disponible (antes que cualquier IA) ───────
   if (/^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i.test(textoLower)) {
@@ -190,6 +191,21 @@ export async function procesarMensajeBot(
     }
   }
 
+  // Estado: esperando número de selección del catálogo
+  if (awaiting === 'catalogo_numero') {
+    const num = extraerCantidad(texto);
+    if (num && num >= 1 && num <= pendingCatalogIds.length) {
+      const shopifyId = pendingCatalogIds[num - 1];
+      const productos = await obtenerProductosCache();
+      const producto = productos.find((p) => p.shopify_id === shopifyId);
+      if (producto) return respuestaProducto(producto);
+    }
+    return {
+      texto: `Por favor escribe el *número* del producto del catálogo (ej: *1*, *2*, *3*).\n\nEscribe *catálogo* para volver a verlo.`,
+      metadata: { awaiting: 'catalogo_numero', pending_catalog_ids: pendingCatalogIds },
+    };
+  }
+
   // Estado: link ya enviado, cliente puede estar preguntando algo
   if (awaiting === 'link_enviado') {
     if (/(pagué|ya pagué|hice el pago|realicé el pago)/i.test(textoLower)) {
@@ -289,14 +305,25 @@ async function respuestaCatalogo(): Promise<BotResponse> {
   if (productos.length === 0) {
     return { texto: 'Lo siento, no hay productos disponibles ahora. Intenta más tarde.', metadata: { awaiting: '' } };
   }
+  // Disponibles primero, luego agotados
+  const ordenados = [
+    ...productos.filter((p) => p.inventario > 0),
+    ...productos.filter((p) => p.inventario <= 0),
+  ];
   let msg = '📋 *CATÁLOGO COMMERK*\n\n';
-  productos.slice(0, 8).forEach((p) => {
+  ordenados.forEach((p, i) => {
     const emoji = asignarEmojiProducto(p.titulo);
     const stock = p.inventario > 0 ? '✅' : '❌ Agotado';
-    msg += `${emoji} *${p.titulo}*\n💵 ${formatearPrecioCOP(p.precio)} ${stock}\n\n`;
+    msg += `*${i + 1}.* ${emoji} ${p.titulo}\n💵 ${formatearPrecioCOP(p.precio)} ${stock}\n\n`;
   });
-  msg += '_Escribe el nombre del producto que te interesa para ver detalles y comprarlo._';
-  return { texto: msg, metadata: { awaiting: '' } };
+  msg += '_Escribe el *número* del producto para ver detalles y comprarlo._';
+  return {
+    texto: msg,
+    metadata: {
+      awaiting: 'catalogo_numero',
+      pending_catalog_ids: ordenados.map((p) => p.shopify_id),
+    },
+  };
 }
 
 function respuestaProducto(producto: Producto): BotResponse {

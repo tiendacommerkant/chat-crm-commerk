@@ -45,11 +45,12 @@ export async function generarLinkPagoWompi(params: {
 
     if (!response.ok) {
       const error = await response.json();
-      console.error('Error generando link Wompi:', error);
-      return {
-        success: false,
-        error: error.error?.reason || 'Error desconocido',
-      };
+      console.error('Error generando link Wompi:', JSON.stringify(error));
+      const detalle =
+        error.error?.messages
+          ? Object.values(error.error.messages).flat().join(', ')
+          : error.error?.reason || error.message || `HTTP ${response.status}`;
+      return { success: false, error: String(detalle) };
     }
 
     const data: { data: WompiPaymentLink } = await response.json();
