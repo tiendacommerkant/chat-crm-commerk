@@ -14,6 +14,9 @@ export interface Cliente {
   ciudad?: string | null;
   created_at: string;
   updated_at?: string;
+  // NUEVOS:
+  politicas_aceptadas?: boolean;
+  sede_preferida?: string | null;
 }
 
 export interface Conversacion {

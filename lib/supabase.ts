@@ -233,6 +233,19 @@ export async function obtenerProductosCache(): Promise<Producto[]> {
 }
 
 /**
+ * Actualizar datos de un cliente
+ */
+export async function actualizarCliente(
+  id: string,
+  datos: { politicas_aceptadas?: boolean; sede_preferida?: string; nombre?: string; email?: string; ciudad?: string }
+): Promise<void> {
+  await supabaseAdmin
+    .from('clientes')
+    .update({ ...datos, updated_at: new Date().toISOString() })
+    .eq('id', id);
+}
+
+/**
  * Sincronizar producto de Shopify a caché local
  */
 export async function sincronizarProducto(producto: {

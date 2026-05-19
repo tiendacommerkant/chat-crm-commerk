@@ -10,7 +10,7 @@
 // ============================================
 
 import type { BotContext, BotResponse, Producto } from '@/types';
-import { obtenerProductosCache } from './supabase';
+import { obtenerProductosCache, actualizarCliente } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 
@@ -43,6 +43,66 @@ export async function procesarMensajeBot(
   const pendingCantidad: number = ultimoBot?.metadata?.pending_cantidad || 1;
   const pendingDireccion: string = ultimoBot?.metadata?.pending_direccion || '';
   const pendingCatalogIds: string[] = ultimoBot?.metadata?.pending_catalog_ids || [];
+
+  // ── POLÍTICAS: cliente nuevo debe aceptar antes de interactuar ─────
+  if (!context.cliente.politicas_aceptadas) {
+    if (/^(acepto|si acepto|accept|aceptar|de acuerdo|ok acepto|sí acepto)$/i.test(textoLower)) {
+      await actualizarCliente(context.cliente.id, { politicas_aceptadas: true });
+      return {
+        texto:
+          `✅ *¡Gracias por aceptar nuestras políticas!*\n\n` +
+          `🏪 *¿Cuál es la sede más cercana a ti?*\n\n` +
+          `*1.* 🌐 Virtual (envío a domicilio)\n` +
+          `*2.* 🏬 CC Tesoro\n` +
+          `*3.* 🏬 CC Gran Manzana\n` +
+          `*4.* 🏬 Mall Indiana\n` +
+          `*5.* 🏬 Apartadó\n` +
+          `*6.* 🏬 Itagüi\n` +
+          `*7.* 🏬 CC Fabricato\n\n` +
+          `_Escribe el número de tu sede._`,
+        metadata: { awaiting: 'sede' },
+      };
+    }
+    // No ha aceptado → mostrar política (en cualquier mensaje inicial)
+    return {
+      texto:
+        `¡Hola! 👋 Bienvenido a *Tienda Commerk Antioquia*.\n\n` +
+        `Antes de continuar, debes aceptar nuestras *políticas de privacidad*:\n` +
+        `🔒 https://tiendacommerkant.com.co/policies/privacy-policy\n\n` +
+        `🌐 Visita nuestra tienda: https://tiendacommerkant.com.co\n\n` +
+        `Responde *ACEPTO* para continuar. Al hacerlo, aceptas el tratamiento de tus datos personales conforme a nuestra política de privacidad.`,
+      metadata: { awaiting: 'politicas' },
+    };
+  }
+
+  // ── SEDE: cliente aceptó políticas pero no ha elegido sede ─────────
+  if (awaiting === 'sede' || !context.cliente.sede_preferida) {
+    const SEDES: Record<string, string> = {
+      '1': 'Virtual', '2': 'CC Tesoro', '3': 'CC Gran Manzana',
+      '4': 'Mall Indiana', '5': 'Apartadó', '6': 'Itagüi', '7': 'CC Fabricato',
+    };
+    const sedeElegida = SEDES[texto.trim()];
+    if (sedeElegida) {
+      await actualizarCliente(context.cliente.id, { sede_preferida: sedeElegida });
+      const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
+      return {
+        texto:
+          `🏪 *Sede ${sedeElegida}* seleccionada. ¡Perfecto${nombre}!\n\n` +
+          `Soy Sofi, tu asistente de ventas 24/7 🤖✨\n\n` +
+          `📋 *catálogo* — Ver todos los productos\n` +
+          `🚚 *envíos* — Cobertura y costos\n` +
+          `🌐 *tienda* — Ver tienda online\n\n` +
+          `¿En qué te puedo ayudar?`,
+        metadata: { awaiting: '' },
+      };
+    }
+    if (awaiting === 'sede') {
+      return {
+        texto: `Por favor elige tu sede escribiendo el número:\n\n*1.* 🌐 Virtual\n*2.* 🏬 CC Tesoro\n*3.* 🏬 CC Gran Manzana\n*4.* 🏬 Mall Indiana\n*5.* 🏬 Apartadó\n*6.* 🏬 Itagüi\n*7.* 🏬 CC Fabricato`,
+        metadata: { awaiting: 'sede' },
+      };
+    }
+  }
 
   // ── CANCELAR siempre disponible (antes que cualquier IA) ───────
   if (/^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i.test(textoLower)) {
@@ -240,6 +300,13 @@ export async function procesarMensajeBot(
   if (esSaludo(textoLower)) return respuestaSaludo(context);
 
   if (esConsultaEnvio(textoLower)) return respuestaEnvio();
+
+  if (/^(tienda|web|sitio|página|pagina|website|online|comprar online)$/i.test(textoLower)) {
+    return {
+      texto: `🌐 *Visita nuestra tienda online:*\nhttps://tiendacommerkant.com.co\n\nEncuentra todos nuestros productos, promociones y más. 🛍️`,
+      metadata: { awaiting: '' },
+    };
+  }
 
   if (esAgradecimiento(textoLower)) return respuestaAgradecimiento();
 
