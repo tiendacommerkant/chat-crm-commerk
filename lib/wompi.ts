@@ -57,12 +57,16 @@ export async function generarLinkPagoWompi(params: {
       return { success: false, error: String(detalle) };
     }
 
-    const data: { data: WompiPaymentLink } = await response.json();
-    console.log('[Wompi] permalink:', data.data?.permalink);
+    const rawData = await response.json();
+    console.log('[Wompi] Respuesta completa:', JSON.stringify(rawData));
+    const data = rawData as { data: WompiPaymentLink };
+
+    const link = data.data?.permalink || (data.data as any)?.url || (data.data as any)?.checkout_url;
+    console.log('[Wompi] link extraído:', link);
 
     return {
       success: true,
-      link: data.data.permalink,
+      link,
     };
   } catch (error) {
     console.error('Error en generarLinkPagoWompi:', error);
