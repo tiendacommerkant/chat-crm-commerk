@@ -15,8 +15,8 @@ import { obtenerProductosCache, actualizarCliente } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 
-// IA activa por defecto cuando hay API key. Deshabilitar con USE_AI_BOT=false en .env
-const USE_AI = process.env.USE_AI_BOT !== 'false' && !!process.env.ANTHROPIC_API_KEY;
+// Sofi IA activa siempre que ANTHROPIC_API_KEY esté configurada
+const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
 const COSTO_ENVIO = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
@@ -149,7 +149,6 @@ export async function procesarMensajeBot(
   }
 
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
-  console.log(`[Bot] USE_AI=${USE_AI} | USE_AI_BOT=${process.env.USE_AI_BOT} | ANTHROPIC_API_KEY=${!!process.env.ANTHROPIC_API_KEY} | awaiting="${awaiting}"`);
   if (USE_AI && awaiting === '') {
     return await procesarMensajeSofi(texto, context, pendingCart);
   }
