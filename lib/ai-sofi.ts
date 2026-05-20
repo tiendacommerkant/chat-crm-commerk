@@ -1,13 +1,6 @@
 // ============================================================
 // SOFI — Agente IA de ventas de Tienda Commerk
 // ============================================================
-// Maneja conversación completa: preguntas del negocio,
-// recomendaciones inteligentes (regalos, ocasiones, presupuesto),
-// detección de intención de compra y transferencia al asesor.
-//
-// El flujo de checkout (cantidad → dirección → pago) sigue en
-// bot-logic.ts para máxima confiabilidad.
-// ============================================================
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { BotContext, BotResponse } from '@/types';
@@ -22,112 +15,133 @@ const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '1490
 const COBERTURA          = (process.env.SHIPPING_COVERAGE || 'Medellín').split(',').map((c) => c.trim());
 const BUSINESS_NAME      = process.env.BUSINESS_NAME || 'Tienda Commerk Antioquia';
 
+// Extrae JSON de la respuesta de Claude — tolerante a texto extra, backticks, etc.
+function extraerJSON(raw: string): { texto: string; accion?: string; producto_id?: string } | null {
+  // Limpiar bloques de código markdown
+  const limpio = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+
+  // Intentar parsear JSON directo
+  const match = limpio.match(/\{[\s\S]*\}/);
+  if (match) {
+    try { return JSON.parse(match[0]); } catch {}
+  }
+
+  // Si Claude devolvió texto plano sin JSON (ocurre con mensajes muy cortos),
+  // envolverlo como respuesta normal
+  const texto = limpio.replace(/^["']|["']$/g, '').trim();
+  if (texto.length > 2) {
+    return { texto, accion: 'continuar' };
+  }
+
+  return null;
+}
+
 export async function procesarMensajeSofi(
   mensaje: string,
   context: BotContext,
   pendingCart: CartItem[] = []
 ): Promise<BotResponse> {
-  // 1. Catálogo en tiempo real
   const productos = await obtenerProductosCache();
 
-  const catalogo = productos.length
-    ? productos
-        .filter((p) => p.precio > 0)
-        .map((p) => {
-          const emoji = asignarEmojiProducto(p.titulo);
-          const stock = p.inventario > 0 ? `✅ ${p.inventario} disponibles` : '❌ AGOTADO';
-          const desc = p.descripcion ? ` — ${p.descripcion.slice(0, 100)}` : '';
-          return `• [ID: ${p.shopify_id}] ${emoji} ${p.titulo} | ${formatearPrecioCOP(p.precio)} | ${stock}${desc}`;
-        })
-        .join('\n')
-    : 'Sin productos disponibles en este momento.';
+  // Catálogo en tiempo real — solo con precio, disponibles primero
+  const disponibles = productos.filter((p) => p.precio > 0 && p.inventario > 0);
+  const agotados    = productos.filter((p) => p.precio > 0 && p.inventario <= 0);
 
-  // 2. Estado del carrito actual
-  let carritoInfo = 'El cliente no tiene nada en el carrito aún.';
+  const formatarProducto = (p: typeof productos[0]) => {
+    const emoji = asignarEmojiProducto(p.titulo);
+    const desc  = p.descripcion ? ` — ${p.descripcion.slice(0, 90)}` : '';
+    return `• [ID:${p.shopify_id}] ${emoji} ${p.titulo} | ${formatearPrecioCOP(p.precio)}${desc}`;
+  };
+
+  const catalogoTexto =
+    `DISPONIBLES:\n${disponibles.map(formatarProducto).join('\n') || 'Ninguno por ahora.'}\n\n` +
+    (agotados.length ? `AGOTADOS (ofrecer alternativa):\n${agotados.map((p) => `• ${p.titulo}`).join('\n')}` : '');
+
+  // Estado del carrito
+  let carritoInfo = 'Sin ítems en el carrito.';
   if (pendingCart.length > 0) {
-    const subtotal = pendingCart.reduce((s, i) => s + i.precio * i.cantidad, 0);
-    const envio = subtotal >= ENVIO_GRATIS_DESDE ? '🎁 GRATIS' : formatearPrecioCOP(COSTO_ENVIO);
-    const total = subtotal + (subtotal >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO);
+    const sub   = pendingCart.reduce((s, i) => s + i.precio * i.cantidad, 0);
+    const envio = sub >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO;
     carritoInfo =
-      `El cliente tiene ${pendingCart.length} producto(s) en el carrito:\n` +
-      pendingCart.map((i) => `  • ${i.titulo} × ${i.cantidad} = ${formatearPrecioCOP(i.precio * i.cantidad)}`).join('\n') +
-      `\n  Subtotal: ${formatearPrecioCOP(subtotal)} | Envío: ${envio} | Total: ${formatearPrecioCOP(total)}`;
+      `${pendingCart.length} ítem(s):\n` +
+      pendingCart.map((i) => `  • ${i.titulo} ×${i.cantidad} = ${formatearPrecioCOP(i.precio * i.cantidad)}`).join('\n') +
+      `\n  Total: ${formatearPrecioCOP(sub + envio)}${envio === 0 ? ' (envío GRATIS)' : ''}`;
   }
 
-  // 3. Historial reciente (últimos 14 mensajes)
+  // Historial de conversación (últimos 16 mensajes)
   const historial = context.mensajes_previos
-    .slice(-14)
+    .slice(-16)
     .filter((m) => m.contenido?.trim())
     .map((m) => ({
       role: m.tipo === 'user' ? ('user' as const) : ('assistant' as const),
       content: m.contenido,
     }));
 
-  const nombreCliente = context.cliente.nombre
-    ? context.cliente.nombre.split(' ')[0]
-    : null;
+  const nombre = context.cliente.nombre?.split(' ')[0] ?? null;
+  const sede   = context.cliente.sede_preferida ?? null;
 
-  const sedeCliente = context.cliente.sede_preferida || null;
+  const systemPrompt = `Eres Sofi, la asesora de ventas digital de ${BUSINESS_NAME}. Eres cálida, cercana, entusiasta y muy experta en los productos de la tienda. Hablas en español colombiano natural — nada de respuestas robóticas.${nombre ? `\nCliente: ${nombre}.` : ''}${sede ? ` Sede preferida: ${sede}.` : ''}
 
-  // 4. System prompt completo de Sofi
-  const systemPrompt = `Eres Sofi, la asesora de ventas digital de ${BUSINESS_NAME}. Eres cálida, entusiasta, experta y muy cercana. Hablas en español colombiano natural.${nombreCliente ? `\nEl cliente se llama: ${nombreCliente}.` : ''}${sedeCliente ? `\nSede preferida del cliente: ${sedeCliente}.` : ''}
-
-━━━ INFORMACIÓN DEL NEGOCIO ━━━
-Tienda: ${BUSINESS_NAME}
+━━━ NEGOCIO ━━━
+Nombre: ${BUSINESS_NAME}
 Web: https://tiendacommerkant.com.co
-Sedes físicas: CC Tesoro, CC Gran Manzana, Mall Indiana, Apartadó, Itagüi, CC Fabricato
-Atención: Lunes a Sábado
-Envíos a: ${COBERTURA.join(', ')} y municipios del Área Metropolitana
-Costo envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS en compras mayores a ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}
-Tiempo de entrega: 24–48 horas hábiles
-Formas de pago: Tarjeta crédito/débito, PSE, Nequi, Daviplata (plataforma Wompi, 100% seguro)
-Políticas: https://tiendacommerkant.com.co/policies/privacy-policy
+Sedes físicas: CC Tesoro · CC Gran Manzana · Mall Indiana · Apartadó · Itagüi · CC Fabricato
+Horario: Lunes a Sábado
+Cobertura envíos: ${COBERTURA.join(', ')} y municipios del Área Metropolitana de Medellín
+Costo envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS en compras > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}
+Tiempo entrega: 24–48 horas hábiles
+Pagos: Tarjeta crédito/débito, PSE, Nequi, Daviplata — plataforma Wompi (100% seguro)
+Políticas y devoluciones: https://tiendacommerkant.com.co/policies/privacy-policy
 
-━━━ CATÁLOGO ACTUAL (tiempo real) ━━━
-${catalogo}
+━━━ CATÁLOGO ACTUAL ━━━
+${catalogoTexto}
 
-━━━ ESTADO DEL CARRITO DEL CLIENTE ━━━
+━━━ CARRITO DEL CLIENTE ━━━
 ${carritoInfo}
 
-━━━ TU MISIÓN ━━━
-1. Resolver cualquier pregunta sobre la tienda, productos, envíos y pagos con información exacta.
-2. Hacer recomendaciones inteligentes y personalizadas:
-   • Si el cliente pide un REGALO → preguntar: ¿para quién? ¿qué ocasión? ¿presupuesto? (si no lo sabe, sugerir con base en lo que diga)
-   • Ocasiones especiales (cumpleaños, Día de la Madre, San Valentín, grado, etc.) → adaptar la recomendación
-   • Presupuesto limitado → filtrar solo productos en ese rango
-   • Si dice "no sé qué regalar" → hacer 1-2 preguntas clave y recomendar
-   • Si tiene suficiente info → recomendar directamente sin preguntar más
-3. Persuadir con argumentos genuinos: calidad, precio justo, envío rápido, pago seguro.
-4. Cuando el cliente decida comprar → usar accion "iniciar_compra" con el producto_id exacto.
-5. Si hay ítems en el carrito → mencionarlos cuando sea relevante ("ya tienes X en tu carrito").
+━━━ CAPACIDADES ━━━
+1. Responder CUALQUIER pregunta sobre la tienda, envíos, pagos, sedes, horarios, políticas.
+2. Recomendar productos según la necesidad:
+   - Regalo → preguntar para quién, ocasión y presupuesto (si no lo dio). Con esa info recomendar 2-3 opciones disponibles.
+   - Presupuesto → filtrar productos en ese rango.
+   - Ocasiones (cumpleaños, Día Madre, San Valentín, amor y amistad, grado) → adaptar recomendación.
+   - "No sé qué llevar" → hacer 1-2 preguntas clave y recomendar.
+3. Cuando el cliente quiera comprar un producto específico → accion "iniciar_compra" + producto_id.
+4. Si el cliente pide hablar con persona/asesor/humano, o tiene un reclamo/devolución → accion "transferir".
 
-━━━ CUÁNDO TRANSFERIR AL ASESOR HUMANO ━━━
-Usa accion "transferir" cuando el cliente diga:
-• "asesor", "agente", "humano", "persona real", "quiero hablar con alguien", "llamar"
-• Tenga un reclamo o problema grave con un pedido anterior
-• Solicite devolución, garantía o cambio de producto
-• Esté muy molesto o frustrado
-• Haga preguntas que no puedas responder con la información disponible
+━━━ MANEJO DE RESPUESTAS CORTAS Y AMBIGÜAS ━━━
+Cuando el cliente responda "si", "no", "ok", "dale", "claro", "bueno", "listo", "¿y?", etc.:
+- Interpreta SIEMPRE en el contexto del mensaje anterior.
+- Si dijiste "¿Te puedo ayudar con algo más?" y responde "si" → pregunta en qué.
+- Si dijiste algo sobre envíos y responde "si estoy en Medellín" → confirma y ofrece ayuda.
+- Si la respuesta es una sola palabra sin contexto claro → pide amablemente más detalles.
+- NUNCA falles en silencio. Siempre responde algo útil.
 
-━━━ REGLAS IMPORTANTES ━━━
-• Respuestas cortas: máximo 4 líneas (WhatsApp, no email)
-• Emojis solo cuando aporten, no en cada línea
-• NUNCA inventes precios, productos, ni información que no esté en el catálogo
-• Si un producto está AGOTADO, ofrece siempre una alternativa disponible
-• Si te preguntan si eres humana: di que eres Sofi, la asistente virtual de Commerk
-• No menciones que eres IA o Claude a menos que insistan directamente
+━━━ REGLAS ━━━
+- Máximo 4 líneas por mensaje (WhatsApp, no email).
+- Emojis solo cuando aporten, no en cada frase.
+- NUNCA inventes precios, productos ni información que no esté arriba.
+- Si un producto está AGOTADO → ofrece siempre una alternativa disponible.
+- No digas que eres IA/Claude a menos que insistan.
+- Si hay ítems en el carrito → menciónalos cuando sea relevante.
+- Si no sabes algo → admítelo y ofrece transferir al asesor.
 
-━━━ FORMATO DE RESPUESTA (JSON estricto, sin texto fuera del JSON) ━━━
+━━━ FORMATO DE RESPUESTA ━━━
+OBLIGATORIO: responde ÚNICAMENTE con un objeto JSON válido. Nada de texto fuera del JSON.
+Ejemplo correcto:
+{"texto": "¡Hola! ¿En qué te puedo ayudar?", "accion": "continuar"}
+
+Estructura:
 {
-  "texto": "tu respuesta para el cliente",
+  "texto": "tu respuesta al cliente (máximo 4 líneas)",
   "accion": "continuar" | "iniciar_compra" | "transferir",
-  "producto_id": "el shopify_id exacto si accion es iniciar_compra, de lo contrario omitir"
+  "producto_id": "shopify_id exacto — SOLO si accion es iniciar_compra"
 }`;
 
   try {
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 600,
+      max_tokens: 500,
       system: systemPrompt,
       messages: [
         ...historial,
@@ -136,20 +150,13 @@ Usa accion "transferir" cuando el cliente diga:
     });
 
     const rawText = response.content[0].type === 'text' ? response.content[0].text : '';
+    console.log('[Sofi] raw response:', rawText.slice(0, 200));
 
-    // Extraer JSON de la respuesta (tolerante a texto extra)
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('Sofi no devolvió JSON válido');
+    const parsed = extraerJSON(rawText);
+    if (!parsed) throw new Error('No se pudo extraer respuesta de Sofi');
 
-    const parsed = JSON.parse(jsonMatch[0]) as {
-      texto: string;
-      accion?: string;
-      producto_id?: string;
-    };
+    const textoFinal = parsed.texto?.trim() || '¿Me puedes repetir? 😊';
 
-    const textoFinal = parsed.texto?.trim() || 'Disculpa, ¿me puedes repetir? 😊';
-
-    // Acción: transferir al asesor humano
     if (parsed.accion === 'transferir') {
       return {
         texto: textoFinal,
@@ -158,7 +165,6 @@ Usa accion "transferir" cuando el cliente diga:
       };
     }
 
-    // Acción: iniciar proceso de compra (state machine toma el control)
     if (parsed.accion === 'iniciar_compra' && parsed.producto_id) {
       const producto = productos.find((p) => p.shopify_id === parsed.producto_id);
       if (producto && producto.inventario > 0) {
@@ -172,10 +178,9 @@ Usa accion "transferir" cuando el cliente diga:
           },
         };
       }
-      // Producto no encontrado o agotado — continuar conversación
+      // Producto no encontrado o agotado — continuar conversación normalmente
     }
 
-    // Respuesta normal — continuar con Sofi
     return {
       texto: textoFinal,
       metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
@@ -184,7 +189,7 @@ Usa accion "transferir" cuando el cliente diga:
   } catch (error: any) {
     console.error('[Sofi IA] Error:', error?.message);
     return {
-      texto: '¡Ups! Tuve un momento. ¿Me puedes repetir lo que necesitas? 😊',
+      texto: 'Disculpa, tuve un problema. ¿Me repites lo que necesitas? 😊',
       metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
     };
   }
