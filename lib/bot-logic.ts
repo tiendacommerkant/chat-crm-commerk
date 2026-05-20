@@ -149,6 +149,7 @@ export async function procesarMensajeBot(
   }
 
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
+  console.log(`[Bot] USE_AI=${USE_AI} | USE_AI_BOT=${process.env.USE_AI_BOT} | ANTHROPIC_API_KEY=${!!process.env.ANTHROPIC_API_KEY} | awaiting="${awaiting}"`);
   if (USE_AI && awaiting === '') {
     return await procesarMensajeSofi(texto, context, pendingCart);
   }
