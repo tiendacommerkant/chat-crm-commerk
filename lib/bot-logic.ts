@@ -17,7 +17,7 @@ import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
 
-const USE_AI = false;
+const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
 const COSTO_ENVIO = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
