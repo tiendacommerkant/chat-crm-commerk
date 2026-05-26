@@ -1,26 +1,52 @@
 // ============================================
 // LÓGICA DEL BOT - Máquina de estados completa
 // ============================================
-// Estados del pedido (guardados en metadata del último mensaje bot):
-//   awaiting: 'compra'       → mostró producto, esperando si compra
-//   awaiting: 'cantidad'     → esperando cuántas unidades
-//   awaiting: 'carrito'      → ítem agregado, mostró carrito, esperando agregar más o pagar
-//   awaiting: 'direccion'    → esperando dirección de envío
-//   awaiting: 'confirmacion' → resumen mostrado, esperando confirmar/cancelar
-//   awaiting: 'link_enviado' → link de pago ya fue enviado
+// Estados (guardados en metadata del último mensaje bot):
+//   awaiting: 'compra'           → mostró producto, esperando si compra
+//   awaiting: 'cantidad'         → esperando cuántas unidades
+//   awaiting: 'carrito'          → ítem agregado, esperando agregar más o pagar
+//   awaiting: 'direccion'        → esperando dirección de envío
+//   awaiting: 'confirmacion'     → resumen mostrado, esperando confirmar/cancelar
+//   awaiting: 'link_enviado'     → link de pago ya enviado
+//   awaiting: 'mayorista_sede'   → detección mayorista, esperando sede del cliente
 // ============================================
 
 import type { BotContext, BotResponse, Producto } from '@/types';
-import { obtenerProductosCache, actualizarCliente } from './supabase';
+import { obtenerProductosCache, actualizarCliente, supabaseAdmin } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
+import { enviarMensajeWhatsApp } from './whatsapp';
 
-// Sofi IA activa siempre que ANTHROPIC_API_KEY esté configurada
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
 const COSTO_ENVIO = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
 const COBERTURA_ENVIOS = (process.env.SHIPPING_COVERAGE || '').split(',').map((c) => c.trim());
+
+// Sedes físicas con teléfonos para lead mayorista
+const SEDES_FISICAS: Record<string, { nombre: string; telefono: string }> = {
+  '1': { nombre: 'CC Tesoro', telefono: '573156125533' },
+  '2': { nombre: 'CC Fabricato', telefono: '573175402082' },
+  '3': { nombre: 'Autopista Sur - Itagüí', telefono: '573183349171' },
+  '4': { nombre: 'Gran Manzana - Itagüí', telefono: '573156125765' },
+  '5': { nombre: 'Mall Indiana', telefono: '573185608348' },
+  '6': { nombre: 'Urabá - Apartadó', telefono: '573160173928' },
+};
+
+// Banco de términos por producto (brief)
+const ALIASES_PRODUCTO: Array<{ palabrasClave: string[]; tituloContiene: string }> = [
+  { palabrasClave: ['esencial', 'caldas esencial', 'licor caldas', 'licor de ron'], tituloContiene: 'esencial' },
+  { palabrasClave: ['3 años', 'tres años', 'tradicional', 'ron viejo tradicional', 'caldas tradicional'], tituloContiene: 'tradicional' },
+  { palabrasClave: ['oscuro', 'caldas oscuro', 'ron oscuro', 'nuevo ron oscuro'], tituloContiene: 'oscuro' },
+  { palabrasClave: ['juan de la cruz', '5 años', 'cinco años', 'juan cruz', 'caldas 5 años', 'caldas juan'], tituloContiene: 'juan' },
+  { palabrasClave: ['carta de oro', '8 años', 'ocho años', 'caldas 8 años', 'caldas carta'], tituloContiene: 'carta de oro' },
+  { palabrasClave: ['gran reserva', '15 años', 'quince años', 'gre', 'gran reserva especial', 'caldas gran reserva'], tituloContiene: 'gran reserva' },
+  { palabrasClave: ['leon dormido', 'léon dormido', '21 años', 'veintiun años', 'doble roble'], tituloContiene: 'dormido' },
+  { palabrasClave: ['molendero', 'licor de caña', 'caña molendero'], tituloContiene: 'molendero' },
+  { palabrasClave: ['cheers', 'crema ron', 'crema caldas', 'crema de ron'], tituloContiene: 'cheers' },
+  { palabrasClave: ['roble blanco', 'ron blanco', 'caldas blanco', 'cocteleria', 'cocteleria'], tituloContiene: 'roble blanco' },
+  { palabrasClave: ['amarillo', 'manzanares', 'aguardiente amarillo', 'amarillo de manzanares', 'aguardiente caldas'], tituloContiene: 'amarillo' },
+];
 
 export interface CartItem {
   shopify_id: string;
@@ -44,13 +70,12 @@ export async function procesarMensajeBot(
   const texto = mensaje.trim();
   const textoLower = texto.toLowerCase();
 
-  // Detectar estado actual leyendo el último mensaje del bot
+  // Leer estado actual del último mensaje bot
   const ultimoBot = [...context.mensajes_previos].reverse().find((m) => m.tipo === 'bot');
   const awaiting: string = ultimoBot?.metadata?.awaiting || '';
   const pendingProductId: string = ultimoBot?.metadata?.pending_product_id || '';
   const pendingCantidad: number = ultimoBot?.metadata?.pending_cantidad || 1;
   const pendingDireccion: string = ultimoBot?.metadata?.pending_direccion || '';
-  const pendingCatalogIds: string[] = ultimoBot?.metadata?.pending_catalog_ids || [];
   const pendingCart: CartItem[] = ultimoBot?.metadata?.pending_cart || [];
   const pendingTotal: number = ultimoBot?.metadata?.pending_total || 0;
   const pendingSubtotal: number = ultimoBot?.metadata?.pending_subtotal || 0;
@@ -58,7 +83,7 @@ export async function procesarMensajeBot(
 
   // ── POLÍTICAS: cliente nuevo debe aceptar antes de interactuar ─────
   if (!context.cliente.politicas_aceptadas) {
-    if (/^(acepto|si acepto|accept|aceptar|de acuerdo|ok acepto|sí acepto)$/i.test(textoLower)) {
+    if (/^(acepto|si acepto|accept|aceptar|de acuerdo|ok acepto|s[íi] acepto)$/i.test(textoLower)) {
       await actualizarCliente(context.cliente.id, { politicas_aceptadas: true });
       return {
         texto:
@@ -66,11 +91,11 @@ export async function procesarMensajeBot(
           `🏪 *¿Cuál es la sede más cercana a ti?*\n\n` +
           `*1.* 🌐 Virtual (envío a domicilio)\n` +
           `*2.* 🏬 CC Tesoro\n` +
-          `*3.* 🏬 CC Gran Manzana\n` +
-          `*4.* 🏬 Mall Indiana\n` +
-          `*5.* 🏬 Apartadó\n` +
-          `*6.* 🏬 Itagüi\n` +
-          `*7.* 🏬 CC Fabricato\n\n` +
+          `*3.* 🏬 CC Fabricato\n` +
+          `*4.* 🏬 Autopista Sur - Itagüí\n` +
+          `*5.* 🏬 Gran Manzana - Itagüí\n` +
+          `*6.* 🏬 Mall Indiana\n` +
+          `*7.* 🏬 Urabá - Apartadó\n\n` +
           `_Escribe el número de tu sede._`,
         metadata: { awaiting: 'sede' },
       };
@@ -88,28 +113,34 @@ export async function procesarMensajeBot(
 
   // ── SEDE: cliente aceptó políticas pero no ha elegido sede ─────────
   if (awaiting === 'sede' || !context.cliente.sede_preferida) {
-    const SEDES: Record<string, string> = {
-      '1': 'Virtual', '2': 'CC Tesoro', '3': 'CC Gran Manzana',
-      '4': 'Mall Indiana', '5': 'Apartadó', '6': 'Itagüi', '7': 'CC Fabricato',
+    const SEDES_REGISTRO: Record<string, string> = {
+      '1': 'Virtual',
+      '2': 'CC Tesoro',
+      '3': 'CC Fabricato',
+      '4': 'Autopista Sur - Itagüí',
+      '5': 'Gran Manzana - Itagüí',
+      '6': 'Mall Indiana',
+      '7': 'Urabá - Apartadó',
     };
-    const sedeElegida = SEDES[texto.trim()];
+    const sedeElegida = SEDES_REGISTRO[texto.trim()];
     if (sedeElegida) {
       await actualizarCliente(context.cliente.id, { sede_preferida: sedeElegida });
       const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
       return {
         texto:
           `🏪 *Sede ${sedeElegida}* seleccionada. ¡Perfecto${nombre}!\n\n` +
-          `Soy Sofi, tu asistente de ventas 24/7 🤖✨\n\n` +
-          `📋 *catálogo* — Ver todos los productos\n` +
-          `🚚 *envíos* — Cobertura y costos\n` +
-          `🌐 *tienda* — Ver tienda online\n\n` +
-          `¿En qué te puedo ayudar?`,
+          `Soy Sofi, tu asesora de ventas 24/7 ✨\n\n` +
+          `Cuéntame, ¿en qué te puedo ayudar hoy? Puedes preguntarme por cualquier producto, presupuesto de regalo, envíos o lo que necesites. 😊`,
         metadata: { awaiting: '' },
       };
     }
     if (awaiting === 'sede') {
       return {
-        texto: `Por favor elige tu sede escribiendo el número:\n\n*1.* 🌐 Virtual\n*2.* 🏬 CC Tesoro\n*3.* 🏬 CC Gran Manzana\n*4.* 🏬 Mall Indiana\n*5.* 🏬 Apartadó\n*6.* 🏬 Itagüi\n*7.* 🏬 CC Fabricato`,
+        texto:
+          `Por favor elige tu sede escribiendo el número:\n\n` +
+          `*1.* 🌐 Virtual\n*2.* 🏬 CC Tesoro\n*3.* 🏬 CC Fabricato\n` +
+          `*4.* 🏬 Autopista Sur - Itagüí\n*5.* 🏬 Gran Manzana - Itagüí\n` +
+          `*6.* 🏬 Mall Indiana\n*7.* 🏬 Urabá - Apartadó`,
         metadata: { awaiting: 'sede' },
       };
     }
@@ -118,7 +149,7 @@ export async function procesarMensajeBot(
   // ── CANCELAR siempre disponible ───────────────────────────────────
   if (/^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i.test(textoLower)) {
     return {
-      texto: '✅ Pedido cancelado. Cuando quieras comprar, solo dime el nombre del producto.\n\nEscribe *catálogo* para ver lo que tenemos.',
+      texto: '✅ Pedido cancelado. Cuando quieras, cuéntame qué necesitas y te ayudo. 😊',
       metadata: { awaiting: '' },
     };
   }
@@ -127,25 +158,16 @@ export async function procesarMensajeBot(
   if (/^(carrito|mi carrito|ver carrito|ver pedido)$/i.test(textoLower)) {
     if (pendingCart.length === 0) {
       return {
-        texto: '🛒 Tu carrito está vacío.\n\nEscribe *catálogo* para ver los productos disponibles.',
+        texto: '🛒 Tu carrito está vacío. Cuéntame qué producto te interesa y te ayudo. 😊',
         metadata: { awaiting: '' },
       };
     }
     return respuestaCarrito(pendingCart);
   }
 
-  // ── CATÁLOGO siempre disponible ───────────────────────────────────
-  if (esCatalogo(textoLower)) {
-    try {
-      console.log('[Bot] Catálogo solicitado por:', context.cliente.telefono);
-      return await respuestaCatalogo(0, pendingCart);
-    } catch (err) {
-      console.error('[Bot] Error en respuestaCatalogo:', err);
-      return {
-        texto: 'Disculpa, tuve un problema cargando el catálogo. Escribe el nombre del producto que buscas y te ayudo. 😊',
-        metadata: { awaiting: '', pending_cart: pendingCart },
-      };
-    }
+  // ── MAYORISTA: detección antes de Sofi (solo sin flujo activo de compra) ─
+  if (awaiting === '' && esMayorista(textoLower)) {
+    return respuestaMayoristaOpciones(context, texto);
   }
 
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
@@ -155,6 +177,32 @@ export async function procesarMensajeBot(
 
   // ── MÁQUINA DE ESTADOS ─────────────────────────────────────────
 
+  // Estado: esperando elección de sede mayorista
+  if (awaiting === 'mayorista_sede') {
+    const sede = SEDES_FISICAS[texto.trim()];
+    if (sede) {
+      const mensajeOriginal: string = ultimoBot?.metadata?.pending_mayorista_mensaje || '';
+      await enviarLeadASede(sede, context, mensajeOriginal);
+      return {
+        texto:
+          `✅ ¡Perfecto! Tu consulta fue enviada a nuestra sede *${sede.nombre}*.\n\n` +
+          `Un asesor especializado en compras al por mayor te contactará pronto. 😊\n\n` +
+          `_Tienda Commerk Antioquia_`,
+        metadata: { awaiting: '' },
+      };
+    }
+    return {
+      texto:
+        `Por favor escribe el *número* de la sede:\n\n` +
+        `*1.* 🏬 CC Tesoro\n*2.* 🏬 CC Fabricato\n*3.* 🏬 Autopista Sur - Itagüí\n` +
+        `*4.* 🏬 Gran Manzana - Itagüí\n*5.* 🏬 Mall Indiana\n*6.* 🏬 Urabá - Apartadó`,
+      metadata: {
+        awaiting: 'mayorista_sede',
+        pending_mayorista_mensaje: ultimoBot?.metadata?.pending_mayorista_mensaje || '',
+      },
+    };
+  }
+
   // Estado: esperando confirmación de compra (sí/no)
   if (awaiting === 'compra') {
     if (esConfirmacion(textoLower)) {
@@ -162,7 +210,7 @@ export async function procesarMensajeBot(
       const producto = productos.find((p) => p.shopify_id === pendingProductId);
       if (!producto) return respuestaDefault(pendingCart);
       return {
-        texto: `¿Cuántas unidades de *${producto.titulo}* quieres?\n\nResponde con el número (ej: *1*, *2*, *3*) o escribe la cantidad.`,
+        texto: `¿Cuántas unidades de *${producto.titulo}* quieres?\n\nResponde con el número (ej: *1*, *2*, *3*).`,
         metadata: {
           awaiting: 'cantidad',
           pending_product_id: producto.shopify_id,
@@ -173,8 +221,8 @@ export async function procesarMensajeBot(
     if (esNegacion(textoLower)) {
       return {
         texto: pendingCart.length > 0
-          ? `¡Sin problema! 😊\n\n${textoCarritoResumen(pendingCart)}\n\nEscribe *pagar* para finalizar o *catálogo* para seguir explorando.`
-          : '¡Sin problema! 😊 ¿Te gustaría ver otros productos?\n\nEscribe *catálogo* para explorar.',
+          ? `¡Sin problema! 😊\n\n${textoCarritoResumen(pendingCart)}\n\nEscribe *pagar* para finalizar o cuéntame qué más necesitas.`
+          : '¡Sin problema! 😊 Cuéntame qué más necesitas o pregúntame por otro producto.',
         metadata: { awaiting: pendingCart.length > 0 ? 'carrito' : '', pending_cart: pendingCart },
       };
     }
@@ -183,7 +231,13 @@ export async function procesarMensajeBot(
   // Estado: esperando cantidad
   if (awaiting === 'cantidad') {
     const cantidad = extraerCantidad(texto);
-    if (cantidad && cantidad > 0 && cantidad <= 20) {
+
+    // Mayorista: más de 12 unidades
+    if (cantidad && cantidad > 12) {
+      return respuestaMayoristaOpciones(context, `Quiero ${cantidad} unidades`);
+    }
+
+    if (cantidad && cantidad > 0 && cantidad <= 12) {
       const productos = await obtenerProductosCache();
       const producto = productos.find((p) => p.shopify_id === pendingProductId);
       if (!producto) return respuestaDefault(pendingCart);
@@ -195,7 +249,7 @@ export async function procesarMensajeBot(
         };
       }
 
-      // Agregar ítem al carrito (si ya existe el mismo producto, sumar cantidad)
+      // Agregar ítem al carrito (suma si ya existe)
       const itemExistente = pendingCart.findIndex((i) => i.shopify_id === producto.shopify_id);
       let updatedCart: CartItem[];
       if (itemExistente >= 0) {
@@ -219,12 +273,13 @@ export async function procesarMensajeBot(
 
   // Estado: carrito mostrado — esperando "agregar más" o "pagar"
   if (awaiting === 'carrito') {
-    // Agregar más productos → mostrar catálogo numerado directamente
-    if (/^(agregar|seguir|más|mas|otro|añadir|agregar más|más productos|seguir comprando|ver catálogo)$/i.test(textoLower)) {
-      return await respuestaCatalogo(0, pendingCart);
+    if (/^(agregar|seguir|m[aá]s|otro|añadir|agregar m[aá]s|m[aá]s productos|seguir comprando)$/i.test(textoLower)) {
+      return {
+        texto: '¡Claro! Cuéntame qué más te gustaría agregar. 😊',
+        metadata: { awaiting: '', pending_cart: pendingCart },
+      };
     }
-    // Proceder al pago
-    if (/^(pagar|pago|finalizar|proceder|checkout|ok|listo|si|sí|dale|confirmar|adelante)$/i.test(textoLower)) {
+    if (/^(pagar|pago|finalizar|proceder|checkout|ok|listo|si|s[íi]|dale|confirmar|adelante)$/i.test(textoLower)) {
       return {
         texto:
           `📍 *¿A qué dirección te enviamos?*\n\n` +
@@ -234,7 +289,6 @@ export async function procesarMensajeBot(
         metadata: { awaiting: 'direccion', pending_cart: pendingCart },
       };
     }
-    // Si escribe algo más, re-mostrar el carrito con las opciones
     return respuestaCarrito(pendingCart);
   }
 
@@ -247,7 +301,6 @@ export async function procesarMensajeBot(
       };
     }
 
-    // Compatibilidad hacia atrás: si no hay carrito pero hay pending_product_id (flujo antiguo)
     let cart = pendingCart;
     if (cart.length === 0 && pendingProductId) {
       const productos = await obtenerProductosCache();
@@ -290,7 +343,6 @@ export async function procesarMensajeBot(
   // Estado: esperando confirmación final del pedido
   if (awaiting === 'confirmacion') {
     if (esConfirmacion(textoLower)) {
-      // Compatibilidad hacia atrás
       let cart = pendingCart;
       if (cart.length === 0 && pendingProductId) {
         const productos = await obtenerProductosCache();
@@ -320,39 +372,15 @@ export async function procesarMensajeBot(
     }
     if (esNegacion(textoLower)) {
       return {
-        texto: '❌ Pedido cancelado. Cuando quieras, escribe el nombre del producto que deseas.\n\nEscribe *catálogo* para ver todos los productos.',
+        texto: '❌ Pedido cancelado. Cuando quieras, cuéntame qué necesitas y te ayudo. 😊',
         metadata: { awaiting: '' },
       };
     }
   }
 
-  // Estado: esperando número de selección del catálogo
-  if (awaiting === 'catalogo_numero') {
-    if (/^(más|mas|siguiente|next|ver más|ver mas|\+)$/i.test(textoLower)) {
-      const paginaActual: number = ultimoBot?.metadata?.pending_catalog_page || 0;
-      return await respuestaCatalogo(paginaActual + 1, pendingCart);
-    }
-    const num = extraerCantidad(texto);
-    if (num && num >= 1 && num <= pendingCatalogIds.length) {
-      const shopifyId = pendingCatalogIds[num - 1];
-      const productos = await obtenerProductosCache();
-      const producto = productos.find((p) => p.shopify_id === shopifyId);
-      if (producto) return respuestaProducto(producto, pendingCart);
-    }
-    return {
-      texto: `Escribe el *número* del producto (ej: *1*, *2*) o *más* para ver más.\n\nEscribe *catálogo* para volver al inicio.`,
-      metadata: {
-        awaiting: 'catalogo_numero',
-        pending_catalog_ids: pendingCatalogIds,
-        pending_catalog_page: ultimoBot?.metadata?.pending_catalog_page || 0,
-        pending_cart: pendingCart,
-      },
-    };
-  }
-
   // Estado: link ya enviado
   if (awaiting === 'link_enviado') {
-    if (/(pagué|ya pagué|hice el pago|realicé el pago)/i.test(textoLower)) {
+    if (/(pagu[eé]|ya pagu[eé]|hice el pago|realic[eé] el pago)/i.test(textoLower)) {
       return {
         texto: '✅ ¡Perfecto! En cuanto Wompi confirme el pago, te avisamos aquí mismo y procesamos tu pedido. ¡Gracias por comprar con nosotros! 🎉',
         metadata: { awaiting: 'link_enviado' },
@@ -361,12 +389,10 @@ export async function procesarMensajeBot(
   }
 
   // ── FLUJO NORMAL (sin estado pendiente) ───────────────────────
-
   if (esSaludo(textoLower)) return respuestaSaludo(context, pendingCart);
-
   if (esConsultaEnvio(textoLower)) return respuestaEnvio(pendingCart);
 
-  if (/^(tienda|web|sitio|página|pagina|website|online|comprar online)$/i.test(textoLower)) {
+  if (/^(tienda|web|sitio|p[aá]gina|website|online|comprar online)$/i.test(textoLower)) {
     return {
       texto: `🌐 *Visita nuestra tienda online:*\nhttps://tiendacommerkant.com.co\n\nEncuentra todos nuestros productos, promociones y más. 🛍️`,
       metadata: { awaiting: '', pending_cart: pendingCart },
@@ -375,14 +401,14 @@ export async function procesarMensajeBot(
 
   if (esAgradecimiento(textoLower)) return respuestaAgradecimiento(pendingCart);
 
-  // Detección de producto por nombre
+  // Detección de producto por nombre o alias del banco de términos
   const productoMatch = await detectarProducto(textoLower);
   if (productoMatch) return respuestaProducto(productoMatch, pendingCart);
 
-  // Intención de compra genérica sin producto seleccionado
   if (esIntencionCompra(textoLower)) {
+    if (USE_AI) return await procesarMensajeSofi(texto, context, pendingCart);
     return {
-      texto: '¿Qué producto te gustaría comprar? Escribe su nombre o escribe *catálogo* para ver todas las opciones.',
+      texto: '¿Qué producto te gustaría comprar? Cuéntame el nombre o para qué ocasión es y te recomiendo. 😊',
       metadata: { awaiting: '', pending_cart: pendingCart },
     };
   }
@@ -391,42 +417,114 @@ export async function procesarMensajeBot(
 }
 
 // ──────────────────────────────────────────
+// MAYORISTA
+// ──────────────────────────────────────────
+
+function esMayorista(t: string): boolean {
+  return /(compra al mayor|mayorista|para mi negocio|para el negocio|volumen|precio especial|por mayor|al por mayor)/i.test(t);
+}
+
+function respuestaMayoristaOpciones(context: BotContext, mensajeOriginal: string): BotResponse {
+  const nombre = context.cliente.nombre?.split(' ')[0];
+  return {
+    texto:
+      `¡Hola${nombre ? ` ${nombre}` : ''}! Para compras al por mayor te conectamos directamente con la sede más cercana. 🏪\n\n` +
+      `¿Cuál tienda te queda más cerca?\n\n` +
+      `*1.* 🏬 CC Tesoro\n` +
+      `*2.* 🏬 CC Fabricato\n` +
+      `*3.* 🏬 Autopista Sur - Itagüí\n` +
+      `*4.* 🏬 Gran Manzana - Itagüí\n` +
+      `*5.* 🏬 Mall Indiana\n` +
+      `*6.* 🏬 Urabá - Apartadó`,
+    metadata: { awaiting: 'mayorista_sede', pending_mayorista_mensaje: mensajeOriginal },
+  };
+}
+
+async function enviarLeadASede(
+  sede: { nombre: string; telefono: string },
+  context: BotContext,
+  mensajeOriginal: string
+) {
+  const nombre = context.cliente.nombre || 'Sin nombre';
+  const telefono = context.cliente.telefono;
+
+  const mensajeLead =
+    `📋 *Nuevo lead mayorista — Commerk Bot*\n\n` +
+    `👤 Cliente: ${nombre}\n` +
+    `📱 Tel: +${telefono}\n` +
+    `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
+    `_Responde directamente a este número para atender al cliente._`;
+
+  await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
+
+  await supabaseAdmin
+    .from('leads_sedes')
+    .insert({
+      cliente_id: context.cliente.id,
+      telefono_cliente: telefono,
+      nombre_cliente: nombre,
+      sede: sede.nombre,
+      telefono_sede: sede.telefono,
+      mensaje_original: mensajeOriginal || 'compra al por mayor',
+      conversacion_id: context.conversacion?.id || null,
+    })
+    .then(({ error }) => {
+      if (error) console.error('[Lead sede] Error guardando:', error.message);
+    });
+}
+
+// ──────────────────────────────────────────
 // DETECTORES
 // ──────────────────────────────────────────
 
 function esSaludo(t: string) {
-  return /^(hola|buenas|buenos|hey|ola|saludos|buen día|buen dia|buenas tardes|buenas noches)/i.test(t);
-}
-function esCatalogo(t: string) {
-  return /(catalogo|catálogo|productos|que tienen|que venden|opciones|menu|menú|carta|ver todo)/i.test(t);
+  return /^(hola|buenas|buenos|hey|ola|saludos|buen d[íi]a|buenas tardes|buenas noches)/i.test(t);
 }
 function esIntencionCompra(t: string) {
   return /(comprar|quiero comprar|quiero pedir|quiero uno|dame uno|me interesa|añadir|agregar)/i.test(t);
 }
 function esConsultaEnvio(t: string) {
-  return /(envio|envío|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
+  return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
 }
 function esAgradecimiento(t: string) {
-  return /^(gracias|muchas gracias|chevere|chévere|excelente|perfecto|genial|ok gracias|listo gracias)/i.test(t);
+  return /^(gracias|muchas gracias|chevere|ch[eé]vere|excelente|perfecto|genial|ok gracias|listo gracias)/i.test(t);
 }
 function esConfirmacion(t: string) {
-  return /^(si|sí|yes|dale|ok|listo|confirmar|confirmo|proceder|adelante|claro|por supuesto|va|s[íi])$/i.test(t.trim());
+  return /^(si|s[íi]|yes|dale|ok|listo|confirmar|confirmo|proceder|adelante|claro|por supuesto|va)$/i.test(t.trim());
 }
 function esNegacion(t: string) {
-  return /^(no|nope|cancel|cancelar|no gracias|dejalo|déjalo)$/i.test(t.trim());
+  return /^(no|nope|cancel|cancelar|no gracias|dejalo|d[eé]jalo)$/i.test(t.trim());
 }
 function extraerCantidad(t: string): number | null {
   const num = parseInt(t.replace(/[^0-9]/g, ''));
   return isNaN(num) ? null : num;
 }
 
+function quitarAcentos(t: string): string {
+  return t.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
 async function detectarProducto(texto: string): Promise<Producto | null> {
   const productos = await obtenerProductosCache();
+  const t = quitarAcentos(texto);
+
+  // Primero: banco de alias del brief
+  for (const alias of ALIASES_PRODUCTO) {
+    const coincide = alias.palabrasClave.some((k) => t.includes(quitarAcentos(k)));
+    if (coincide) {
+      const prod = productos.find((p) =>
+        quitarAcentos(p.titulo.toLowerCase()).includes(quitarAcentos(alias.tituloContiene))
+      );
+      if (prod) return prod;
+    }
+  }
+
+  // Fallback: palabras largas del título
   return (
     productos.find((p) => {
-      const titulo = p.titulo.toLowerCase();
+      const titulo = quitarAcentos(p.titulo.toLowerCase());
       const palabras = titulo.split(' ').filter((w) => w.length > 3);
-      return palabras.some((w) => texto.includes(w));
+      return palabras.some((w) => t.includes(w));
     }) || null
   );
 }
@@ -480,66 +578,10 @@ function respuestaSaludo(context: BotContext, cart: CartItem[] = []): BotRespons
   return {
     texto:
       `¡Hola${nombre}! 👋 Bienvenido a *Tienda Commerk Antioquia*.\n\n` +
-      `Soy tu asistente de ventas 24/7. Puedo ayudarte con:\n\n` +
-      `📋 *catálogo* — Ver todos los productos\n` +
-      `🚚 *envíos* — Cobertura y costos\n` +
-      `🛒 Escribe el nombre del producto para comprarlo\n\n` +
-      `¿En qué te puedo ayudar?` + avisoCarrito,
+      `Soy Sofi, tu asesora de ventas 24/7 ✨\n\n` +
+      `Cuéntame, ¿en qué te puedo ayudar? Puedes preguntarme por productos, precios, regalos, envíos o lo que necesites. 😊` +
+      avisoCarrito,
     metadata: { awaiting: '', pending_cart: cart },
-  };
-}
-
-const CATALOGO_POR_PAGINA = 10;
-
-async function respuestaCatalogo(pagina = 0, cart: CartItem[] = []): Promise<BotResponse> {
-  const productos = await obtenerProductosCache();
-  const conPrecio = productos.filter((p) => p.precio > 0);
-  const todos = [
-    ...conPrecio.filter((p) => p.inventario > 0),
-    ...conPrecio.filter((p) => p.inventario <= 0),
-  ];
-  console.log('[Bot] Productos con precio:', todos.length, '| página:', pagina);
-
-  if (todos.length === 0) {
-    return { texto: '📋 No hay productos disponibles ahora. Escríbenos directamente y te ayudamos.', metadata: { awaiting: '', pending_cart: cart } };
-  }
-
-  const paginaReal = (pagina * CATALOGO_POR_PAGINA) >= todos.length ? 0 : pagina;
-  const inicioReal = paginaReal * CATALOGO_POR_PAGINA;
-  const finReal = Math.min(inicioReal + CATALOGO_POR_PAGINA, todos.length);
-  const pagActual = todos.slice(inicioReal, finReal);
-  const hayMas = finReal < todos.length;
-
-  const encabezado = todos.length > CATALOGO_POR_PAGINA
-    ? `📋 *CATÁLOGO COMMERK* (${inicioReal + 1}-${finReal} de ${todos.length})\n\n`
-    : `📋 *CATÁLOGO COMMERK*\n\n`;
-
-  let msg = encabezado;
-  pagActual.forEach((p, i) => {
-    const num = inicioReal + i + 1;
-    const emoji = asignarEmojiProducto(p.titulo);
-    const stock = p.inventario > 0 ? '✅' : '❌';
-    msg += `*${num}.* ${emoji} ${p.titulo}\n💵 ${formatearPrecioCOP(p.precio)} ${stock}\n\n`;
-  });
-
-  if (cart.length > 0) {
-    msg += `🛒 _Tienes ${cart.length} producto${cart.length !== 1 ? 's' : ''} en tu carrito._\n\n`;
-  }
-
-  if (hayMas) {
-    msg += `_Escribe el *número* para ver el producto o *más* para ver los siguientes ${Math.min(CATALOGO_POR_PAGINA, todos.length - finReal)}._`;
-  } else {
-    msg += `_Escribe el *número* del producto para ver detalles y comprarlo._`;
-  }
-
-  return {
-    texto: msg,
-    metadata: {
-      awaiting: 'catalogo_numero',
-      pending_catalog_ids: todos.map((p) => p.shopify_id),
-      pending_catalog_page: paginaReal,
-      pending_cart: cart,
-    },
   };
 }
 
@@ -559,7 +601,7 @@ function respuestaProducto(producto: Producto, cart: CartItem[] = []): BotRespon
   if (disponible) {
     msg += cart.length > 0
       ? `\n¿Lo agregas al carrito? Responde *SI* para agregar o *carrito* para ver tu pedido.`
-      : `\n¿Lo quieres? Responde *SI* para comprar o *catálogo* para ver más.`;
+      : `\n¿Lo quieres? Responde *SI* para comprar o pregúntame por otro producto.`;
   }
 
   return {
@@ -583,7 +625,7 @@ function respuestaEnvio(cart: CartItem[] = []): BotResponse {
       `💵 Costo de envío: ${formatearPrecioCOP(COSTO_ENVIO)}\n` +
       `🎁 *GRATIS* en compras mayores a ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}\n\n` +
       `⏰ Entregas L-S en 24-48 horas\n\n` +
-      `¿Te gustaría ver el catálogo? Escribe *catálogo*` + avisoCarrito,
+      `¿Necesitas algo más? Cuéntame. 😊` + avisoCarrito,
     metadata: { awaiting: cart.length > 0 ? 'carrito' : '', pending_cart: cart },
   };
 }
@@ -593,7 +635,7 @@ function respuestaAgradecimiento(cart: CartItem[] = []): BotResponse {
     ? `\n\n🛒 _Tienes ${cart.length} producto${cart.length !== 1 ? 's' : ''} en tu carrito. Escribe *carrito* para verlo._`
     : '';
   return {
-    texto: '¡De nada! 😊 Estoy aquí 24/7 para ayudarte. Si necesitas algo más, solo escríbeme.' + avisoCarrito,
+    texto: '¡De nada! 😊 Aquí estoy 24/7 para lo que necesites.' + avisoCarrito,
     metadata: { awaiting: cart.length > 0 ? 'carrito' : '', pending_cart: cart },
   };
 }
@@ -604,12 +646,8 @@ function respuestaDefault(cart: CartItem[] = []): BotResponse {
     : '';
   return {
     texto:
-      `Disculpa, no entendí bien tu mensaje. 🤔\n\n` +
-      `Puedes escribir:\n` +
-      `📋 *catálogo* — Ver productos\n` +
-      `🚚 *envíos* — Cobertura y costos\n` +
-      `🛒 *carrito* — Ver tu carrito\n` +
-      `Nombre del producto — Para comprarlo\n\n` +
+      `Disculpa, no entendí bien. 🤔\n\n` +
+      `Puedes preguntarme por cualquier producto, presupuesto de regalo, envíos o lo que necesites.\n\n` +
       `¿En qué te puedo ayudar?` + avisoCarrito,
     metadata: { awaiting: cart.length > 0 ? 'carrito' : '', pending_cart: cart },
   };

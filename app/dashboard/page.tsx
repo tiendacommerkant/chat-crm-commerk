@@ -6,7 +6,6 @@ import { Card } from '@/components/ui/card';
 import type { MetricasDashboard } from '@/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend,
 } from 'recharts';
 
 // ─── Metric Card ─────────────────────────────────────────────
@@ -79,6 +78,8 @@ export default function DashboardPage() {
   const [ventasPorDia, setVentasPorDia] = useState<{ dia: string; ingresos: number; ventas: number }[]>([]);
   const [topProductos, setTopProductos] = useState<{ nombre: string; total: number; cantidad: number }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [leadsSedes, setLeadsSedes] = useState<{ sede: string; total: number; ultimo_lead: string | null }[]>([]);
+  const [totalLeads, setTotalLeads] = useState(0);
 
   useEffect(() => {
     async function cargarDatos() {
@@ -213,6 +214,16 @@ export default function DashboardPage() {
           .sort((a, b) => b.cantidad - a.cantidad)
           .slice(0, 5);
         setTopProductos(topProd);
+
+        // ── Leads mayoristas por sede ─────────────────────────────
+        const leadsRes = await fetch('/api/leads-sedes');
+        if (leadsRes.ok) {
+          const leadsData = await leadsRes.json();
+          if (leadsData.success) {
+            setLeadsSedes(leadsData.por_sede || []);
+            setTotalLeads(leadsData.total_leads || 0);
+          }
+        }
       } catch (err) {
         console.error('Error cargando métricas:', err);
       } finally {
@@ -524,6 +535,38 @@ export default function DashboardPage() {
           </div>
         </Card>
       </div>
+
+      {/* Leads mayoristas por sede */}
+      <Card className="overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h2 className="font-bold text-commerk-navy">Leads Mayoristas por Sede</h2>
+            <span className="text-xs bg-commerk-navy/10 text-commerk-navy px-2 py-0.5 rounded-full font-semibold">{totalLeads} total</span>
+          </div>
+          <span className="text-xs text-slate-400">Redirigidos desde el bot</span>
+        </div>
+        <div className="p-6">
+          {leadsSedes.length === 0 ? (
+            <p className="text-sm text-slate-400 text-center py-4">Sin leads mayoristas aún</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {leadsSedes.map((item) => {
+                const pct = totalLeads > 0 ? Math.round((item.total / totalLeads) * 100) : 0;
+                return (
+                  <div key={item.sede} className="bg-slate-50 rounded-xl p-4 flex flex-col gap-1">
+                    <p className="text-xs font-semibold text-slate-600 truncate">{item.sede}</p>
+                    <p className="text-2xl font-bold text-commerk-navy">{item.total}</p>
+                    <div className="w-full bg-slate-200 rounded-full h-1.5 mt-1">
+                      <div className="h-1.5 rounded-full bg-commerk-navy" style={{ width: `${pct}%` }} />
+                    </div>
+                    <p className="text-xs text-slate-400">{pct}% del total</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Card>
 
       {/* Tablas secundarias */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
