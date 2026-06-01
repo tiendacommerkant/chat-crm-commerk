@@ -38,39 +38,43 @@ async function handleOrderPaid(order: ShopifyOrder) {
   const nombreCliente = [order.customer?.first_name, order.customer?.last_name].filter(Boolean).join(' ') || 'Cliente';
   const telefonoFormateado = telefono ? formatearNumeroWhatsApp(telefono) : null;
 
+  // Pedidos creados por el bot tienen el tag "bot" — no re-notificar por WA
+  const esPedidoBot = String((order as any).tags || '').includes('bot');
+
   // 1. Buscar o crear cliente en CRM
+  // IMPORTANTE: usar maybeSingle() — .single() lanza error si el cliente no existe
   let clienteId: string | null = null;
   if (telefonoFormateado) {
     const { data: clienteExistente } = await supabaseAdmin
       .from('clientes')
       .select('id')
       .eq('telefono', telefonoFormateado)
-      .single();
+      .maybeSingle();
 
     if (clienteExistente) {
       clienteId = clienteExistente.id;
     } else {
       const { data: nuevoCliente } = await supabaseAdmin
         .from('clientes')
-        .insert({ telefono: telefonoFormateado, nombre: nombreCliente, email: order.email })
+        .insert({ telefono: telefonoFormateado, nombre: nombreCliente, email: order.email || null })
         .select('id')
-        .single();
+        .maybeSingle();
       clienteId = nuevoCliente?.id || null;
     }
   }
 
-  // 2. Insertar en pedidos_shopify
+  // 2. Guardar en pedidos_shopify — SIEMPRE primero, antes de cualquier notificación
   const items = (order.line_items || []).map((i) => ({
     title: i.title,
     quantity: i.quantity,
     price: parseFloat(i.price),
   }));
 
-  await supabaseAdmin.from('pedidos_shopify').upsert({
+  const { error: upsertError } = await supabaseAdmin.from('pedidos_shopify').upsert({
     shopify_order_id: order.id,
     shopify_order_number: order.order_number.toString(),
     cliente_id: clienteId,
-    email: order.email,
+    email: order.email || null,
     telefono: telefonoFormateado,
     nombre_cliente: nombreCliente,
     total: parseFloat(order.total_price),
@@ -85,17 +89,31 @@ async function handleOrderPaid(order: ShopifyOrder) {
     updated_at: new Date().toISOString(),
   }, { onConflict: 'shopify_order_id' });
 
-  // 3. Marcar carrito como convertido si existía
+  if (upsertError) {
+    // Error grave: el pedido no se guardó — lanzar para que quede en logs
+    throw new Error(`[pedidos_shopify upsert] ${upsertError.message}`);
+  }
+
+  // 3. Marcar carrito como convertido — por email Y por teléfono
+  const ts = new Date().toISOString();
   if (order.email) {
     await supabaseAdmin
       .from('carritos_abandonados')
-      .update({ estado: 'convertido', updated_at: new Date().toISOString() })
+      .update({ estado: 'convertido', updated_at: ts })
       .eq('email', order.email)
       .in('estado', ['en_progreso', 'abandonado', 'notificado']);
   }
-
-  // 4. Notificar por WhatsApp
   if (telefonoFormateado) {
+    await supabaseAdmin
+      .from('carritos_abandonados')
+      .update({ estado: 'convertido', updated_at: ts })
+      .eq('telefono', telefonoFormateado)
+      .in('estado', ['en_progreso', 'abandonado', 'notificado']);
+  }
+
+  // 4. Notificar por WhatsApp SOLO para pedidos del sitio web
+  // Los pedidos del bot (tag "bot") ya recibieron notificación en el webhook de Wompi
+  if (telefonoFormateado && !esPedidoBot) {
     await notificarPedidoConfirmado({
       shopify_order_id: order.id.toString(),
       shopify_order_number: order.order_number.toString(),
@@ -103,7 +121,7 @@ async function handleOrderPaid(order: ShopifyOrder) {
       telefono: telefonoFormateado,
       total: parseFloat(order.total_price),
       items: (order.line_items || []).map((i) => ({ title: i.title, quantity: i.quantity, price: i.price })),
-    });
+    }).catch((err) => console.error('[handleOrderPaid] Error WA notification:', err?.message));
   }
 }
 
