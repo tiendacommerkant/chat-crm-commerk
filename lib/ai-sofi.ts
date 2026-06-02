@@ -139,15 +139,18 @@ Estructura:
 }`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      max_tokens: 500,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...historial,
-        { role: 'user', content: mensaje },
-      ],
-    });
+    const response = await openai.chat.completions.create(
+      {
+        model: 'gpt-4o-mini',
+        max_tokens: 500,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...historial,
+          { role: 'user', content: mensaje },
+        ],
+      },
+      { timeout: 7000 } // 7s máximo para no agotar el límite de Vercel (10s)
+    );
 
     const rawText = response.choices[0]?.message?.content || '';
     console.log('[Sofi] raw response:', rawText.slice(0, 200));

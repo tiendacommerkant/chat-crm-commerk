@@ -135,7 +135,7 @@ export async function POST(req: Request) {
 
           // Solo responder con bot si es texto o respuesta interactiva
           if (msgType !== 'text' && msgType !== 'interactive') {
-            const msgAcuse = '¡Hola! Recibimos tu mensaje. ¿En qué te podemos ayudar? 😊\n\nEscribe *catálogo* para ver nuestros productos.';
+            const msgAcuse = '¡Hola! Recibimos tu mensaje. ¿En qué te podemos ayudar? 😊\n\nCuéntame qué producto buscas o qué necesitas.';
             await guardarMensaje(conversacion.id, 'bot', msgAcuse, { tipo_wa: 'text' });
             await enviarMensajeWhatsApp(phone, msgAcuse);
             continue;
