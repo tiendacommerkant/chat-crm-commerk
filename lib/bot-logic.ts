@@ -173,9 +173,10 @@ export async function procesarMensajeBot(
   }
 
   // ── PAGO CON CARRITO ACTIVO: interceptar ANTES de Sofi ────────────
-  // Si el cliente quiere pagar y ya tiene items en el carrito → ir directo
-  // al flujo de checkout (estado máquina), no dejar que Sofi responda.
-  if (pendingCart.length > 0 && esIntencionPago(textoLower)) {
+  // IMPORTANTE: solo cuando awaiting === '' (sin estado activo).
+  // Si hay un estado activo (compra/confirmacion/cantidad), la máquina de estados
+  // lo maneja abajo. Sin esta condición, "SI" en confirmación se intercepta aqui.
+  if (awaiting === '' && pendingCart.length > 0 && esIntencionPago(textoLower)) {
     return {
       texto:
         `📍 *¿A qué dirección te enviamos?*\n\n` +
@@ -520,7 +521,9 @@ function esIntencionCompra(t: string) {
   return /(comprar|quiero comprar|quiero pedir|quiero uno|dame uno|me interesa|añadir|agregar)/i.test(t);
 }
 function esIntencionPago(t: string) {
-  return /(^pagar$|^pago$|^finalizar$|^proceder$|^checkout$|^ok$|^listo$|^si$|^sí$|^dale$|^confirmar$|^adelante$|proceder con el pago|quiero pagar|finalizar pedido|confirmar pedido|realizar pago|completar compra|completar pedido|ir a pagar|procesar pago)/i.test(t.trim());
+  // SOLO frases explícitas de pago — NO incluir "si/ok/listo/dale/confirmar"
+  // porque esas palabras son respuestas de confirmación en la máquina de estados.
+  return /(^pagar$|^pago$|^finalizar$|^proceder$|^checkout$|proceder con el pago|quiero pagar|finalizar pedido|realizar pago|completar compra|completar pedido|ir a pagar|procesar pago|quiero proceder|listo para pagar)/i.test(t.trim());
 }
 function esConsultaEnvio(t: string) {
   return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
