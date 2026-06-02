@@ -157,7 +157,7 @@ Estructura:
     );
 
     const rawText = response.choices[0]?.message?.content || '';
-    console.log('[Sofi] raw response:', rawText.slice(0, 200));
+    console.log('[Sofi] raw response:', rawText.slice(0, 300));
 
     const parsed = extraerJSON(rawText);
     if (!parsed) throw new Error('No se pudo extraer respuesta de Sofi');
@@ -173,7 +173,27 @@ Estructura:
     }
 
     if (parsed.accion === 'iniciar_compra' && parsed.producto_id) {
-      const producto = productos.find((p) => p.shopify_id === parsed.producto_id);
+      // Limpiar el ID: el modelo puede devolver "[ID:xxx]", "ID:xxx" o "xxx"
+      const rawId = String(parsed.producto_id).trim();
+      const cleanId = rawId
+        .replace(/^\[ID:/i, '')
+        .replace(/^ID:/i, '')
+        .replace(/\]$/, '')
+        .trim();
+
+      console.log(`[Sofi] iniciar_compra | rawId="${rawId}" | cleanId="${cleanId}"`);
+
+      // Buscar producto: primero exact match, luego match parcial
+      let producto = productos.find((p) => String(p.shopify_id) === cleanId);
+      if (!producto) {
+        // Fallback: buscar si el ID está contenido o viceversa
+        producto = productos.find(
+          (p) => String(p.shopify_id).includes(cleanId) || cleanId.includes(String(p.shopify_id))
+        );
+      }
+
+      console.log(`[Sofi] producto encontrado:`, producto ? producto.titulo : 'NO ENCONTRADO');
+
       if (producto && producto.inventario > 0) {
         return {
           texto: textoFinal,
@@ -185,6 +205,20 @@ Estructura:
           },
         };
       }
+
+      // Si no se encontró el producto, Sofi sigue con conversación libre
+      console.warn(`[Sofi] WARN: producto_id "${cleanId}" no encontrado en catálogo. Disponibles:`,
+        productos.map(p => p.shopify_id).join(', ')
+      );
+    }
+
+    // Si Sofi retorna iniciar_checkout → se maneja en bot-logic
+    if (parsed.accion === 'iniciar_checkout') {
+      return {
+        texto: textoFinal,
+        accion: 'iniciar_checkout',
+        metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
+      };
     }
 
     return {

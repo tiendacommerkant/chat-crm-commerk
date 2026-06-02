@@ -190,17 +190,30 @@ export async function procesarMensajeBot(
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
   if (USE_AI && awaiting === '') {
     const respuestaSofi = await procesarMensajeSofi(texto, context, pendingCart);
-    // Si Sofi devuelve 'iniciar_checkout' (cliente quiere pagar con carrito) → máquina de estados
-    if ((respuestaSofi as any).accion === 'iniciar_checkout' && pendingCart.length > 0) {
-      return {
-        texto:
-          `📍 *¿A qué dirección te enviamos?*\n\n` +
-          `Escribe tu dirección completa con barrio/municipio.\n` +
-          `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
-          `Cobertura: ${COBERTURA_ENVIOS.join(', ')}`,
-        metadata: { awaiting: 'direccion', pending_cart: pendingCart },
-      };
+
+    // Si Sofi retorna 'iniciar_checkout' → iniciar flujo de pago real
+    if ((respuestaSofi as any).accion === 'iniciar_checkout') {
+      // Usar el carrito existente, o intentar construirlo desde pendingProductId
+      let cartParaPago = pendingCart;
+      if (cartParaPago.length === 0 && pendingProductId) {
+        const productos = await obtenerProductosCache();
+        const prod = productos.find((p) => p.shopify_id === pendingProductId);
+        if (prod) {
+          cartParaPago = [{ shopify_id: prod.shopify_id, titulo: prod.titulo, precio: prod.precio, cantidad: pendingCantidad || 1 }];
+        }
+      }
+      if (cartParaPago.length > 0) {
+        return {
+          texto:
+            `📍 *¿A qué dirección te enviamos?*\n\n` +
+            `Escribe tu dirección completa con barrio/municipio.\n` +
+            `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
+            `Cobertura: ${COBERTURA_ENVIOS.join(', ')}`,
+          metadata: { awaiting: 'direccion', pending_cart: cartParaPago },
+        };
+      }
     }
+
     return respuestaSofi;
   }
 
@@ -538,8 +551,33 @@ function esNegacion(t: string) {
   return /^(no|nope|cancel|cancelar|no gracias|dejalo|d[eé]jalo)$/i.test(t.trim());
 }
 function extraerCantidad(t: string): number | null {
-  const num = parseInt(t.replace(/[^0-9]/g, ''));
-  return isNaN(num) ? null : num;
+  // 1. Primero buscar dígitos en el texto
+  const digitMatch = t.match(/\b(\d+)\b/);
+  if (digitMatch) {
+    const num = parseInt(digitMatch[1]);
+    if (!isNaN(num)) return num;
+  }
+  // 2. Números en palabras (español)
+  const palabrasNum: Record<string, number> = {
+    'un': 1, 'una': 1, 'uno': 1,
+    'dos': 2,
+    'tres': 3,
+    'cuatro': 4,
+    'cinco': 5,
+    'seis': 6,
+    'siete': 7,
+    'ocho': 8,
+    'nueve': 9,
+    'diez': 10,
+    'once': 11,
+    'doce': 12,
+  };
+  const lower = t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  for (const [palabra, num] of Object.entries(palabrasNum)) {
+    const re = new RegExp(`\\b${palabra}\\b`);
+    if (re.test(lower)) return num;
+  }
+  return null;
 }
 
 function quitarAcentos(t: string): string {
