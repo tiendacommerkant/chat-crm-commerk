@@ -1,21 +1,20 @@
 // ============================================================
-// SOFI — Agente IA de ventas de Tienda Commerk
+// SOFI — Agente IA de ventas de Tienda Commerk (OpenAI)
 // ============================================================
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import type { BotContext, BotResponse } from '@/types';
 import type { CartItem } from './bot-logic';
 import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const COSTO_ENVIO        = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
 const COBERTURA          = (process.env.SHIPPING_COVERAGE || 'Medellín').split(',').map((c) => c.trim());
 const BUSINESS_NAME      = process.env.BUSINESS_NAME || 'Tienda Commerk Antioquia';
 
-// Extrae JSON de la respuesta de Claude — tolerante a texto extra, backticks, etc.
 function extraerJSON(raw: string): { texto: string; accion?: string; producto_id?: string } | null {
   const limpio = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
 
@@ -109,16 +108,15 @@ ${carritoInfo}
 1. Responder CUALQUIER pregunta sobre la tienda, envíos, pagos, sedes, horarios, políticas.
 2. Recomendar productos de forma conversacional (como una asesora real, nunca con menús numerados):
    - Regalo → preguntar para quién, ocasión y presupuesto si no lo dio. Recomendar 2-3 opciones describiéndolas.
-   - Presupuesto de regalo → NUNCA recomendar productos que superen el presupuesto en más del 10%. Si dicen $80.000, el límite es $88.000.
+   - Presupuesto de regalo → NUNCA recomendar productos que superen el presupuesto en más del 10%.
    - Ocasiones (cumpleaños, Día de la Madre, San Valentín, grado, amor y amistad) → adaptar la recomendación.
    - "No sé qué llevar" → hacer 1-2 preguntas clave y recomendar como experta.
 3. Cuando el cliente quiera comprar un producto específico → accion "iniciar_compra" + producto_id.
 4. Si el cliente pide hablar con persona/asesor/humano, o tiene un reclamo/devolución → accion "transferir".
 
 ━━━ MANEJO DE RESPUESTAS CORTAS Y AMBIGÜAS ━━━
-Cuando el cliente responda "si", "no", "ok", "dale", "claro", "listo", "¿y?", etc.:
+Cuando el cliente responda "si", "no", "ok", "dale", "claro", "listo", etc.:
 - Interpreta SIEMPRE en el contexto del mensaje anterior.
-- Si dijiste "¿Te puedo ayudar con algo más?" y responde "si" → pregunta en qué.
 - Si la respuesta es una sola palabra sin contexto claro → pide amablemente más detalles.
 - NUNCA falles en silencio. Siempre responde algo útil.
 
@@ -128,7 +126,7 @@ Cuando el cliente responda "si", "no", "ok", "dale", "claro", "listo", "¿y?", e
 - Emojis solo cuando aporten, no en cada frase.
 - NUNCA inventes precios, productos ni información que no esté arriba.
 - Si un producto está AGOTADO → ofrece siempre una alternativa disponible.
-- No digas que eres IA/Claude a menos que insistan.
+- No digas que eres IA a menos que insistan.
 - Si hay ítems en el carrito → menciónalos cuando sea relevante.
 - Si no sabes algo → admítelo y ofrece transferir al asesor.
 
@@ -145,17 +143,17 @@ Estructura:
 }`;
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
       max_tokens: 500,
-      system: systemPrompt,
       messages: [
+        { role: 'system', content: systemPrompt },
         ...historial,
         { role: 'user', content: mensaje },
       ],
     });
 
-    const rawText = response.content[0].type === 'text' ? response.content[0].text : '';
+    const rawText = response.choices[0]?.message?.content || '';
     console.log('[Sofi] raw response:', rawText.slice(0, 200));
 
     const parsed = extraerJSON(rawText);
