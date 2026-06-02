@@ -172,9 +172,35 @@ export async function procesarMensajeBot(
     return respuestaMayoristaOpciones(context, texto);
   }
 
+  // ── PAGO CON CARRITO ACTIVO: interceptar ANTES de Sofi ────────────
+  // Si el cliente quiere pagar y ya tiene items en el carrito → ir directo
+  // al flujo de checkout (estado máquina), no dejar que Sofi responda.
+  if (pendingCart.length > 0 && esIntencionPago(textoLower)) {
+    return {
+      texto:
+        `📍 *¿A qué dirección te enviamos?*\n\n` +
+        `Escribe tu dirección completa con barrio/municipio.\n` +
+        `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
+        `Cobertura: ${COBERTURA_ENVIOS.join(', ')}`,
+      metadata: { awaiting: 'direccion', pending_cart: pendingCart },
+    };
+  }
+
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
   if (USE_AI && awaiting === '') {
-    return await procesarMensajeSofi(texto, context, pendingCart);
+    const respuestaSofi = await procesarMensajeSofi(texto, context, pendingCart);
+    // Si Sofi devuelve 'iniciar_checkout' (cliente quiere pagar con carrito) → máquina de estados
+    if ((respuestaSofi as any).accion === 'iniciar_checkout' && pendingCart.length > 0) {
+      return {
+        texto:
+          `📍 *¿A qué dirección te enviamos?*\n\n` +
+          `Escribe tu dirección completa con barrio/municipio.\n` +
+          `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
+          `Cobertura: ${COBERTURA_ENVIOS.join(', ')}`,
+        metadata: { awaiting: 'direccion', pending_cart: pendingCart },
+      };
+    }
+    return respuestaSofi;
   }
 
   // ── MÁQUINA DE ESTADOS ─────────────────────────────────────────
@@ -492,6 +518,9 @@ function esSaludo(t: string) {
 }
 function esIntencionCompra(t: string) {
   return /(comprar|quiero comprar|quiero pedir|quiero uno|dame uno|me interesa|añadir|agregar)/i.test(t);
+}
+function esIntencionPago(t: string) {
+  return /(^pagar$|^pago$|^finalizar$|^proceder$|^checkout$|^ok$|^listo$|^si$|^sí$|^dale$|^confirmar$|^adelante$|proceder con el pago|quiero pagar|finalizar pedido|confirmar pedido|realizar pago|completar compra|completar pedido|ir a pagar|procesar pago)/i.test(t.trim());
 }
 function esConsultaEnvio(t: string) {
   return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
