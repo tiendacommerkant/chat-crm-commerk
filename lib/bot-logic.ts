@@ -7,8 +7,10 @@
 //   awaiting: 'carrito'          → ítem agregado, esperando agregar más o pagar
 //   awaiting: 'direccion'        → esperando dirección de envío
 //   awaiting: 'confirmacion'     → resumen mostrado, esperando confirmar/cancelar
-//   awaiting: 'link_enviado'     → link de pago ya enviado
+//   awaiting: 'link_enviado'     → link de pago Wompi ya enviado en el chat
 //   awaiting: 'mayorista_sede'   → detección mayorista, esperando sede del cliente
+// NOTA: El método de pago lo elige el cliente directamente en el link de Wompi
+//       (Tarjeta, PSE, Nequi, Daviplata) — no se pregunta en el chat.
 // ============================================
 
 import type { BotContext, BotResponse, Producto } from '@/types';
@@ -357,8 +359,9 @@ export async function procesarMensajeBot(
       const costoEnvio = pendingCostoEnvio !== undefined ? pendingCostoEnvio : (subtotal >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO);
       const total = pendingTotal || subtotal + costoEnvio;
 
+      // ✅ Generar link directo en el chat — el cliente elige método de pago en Wompi
       return {
-        texto: '⏳ Generando tu link de pago seguro...',
+        texto: '⏳ *Generando tu link de pago...*\n\nEn unos segundos te envío el enlace para que pagues de forma segura con Nequi, Daviplata, PSE o Tarjeta. 🔐',
         accion: 'generar_link_pago',
         metadata: {
           awaiting: 'link_enviado',
@@ -378,11 +381,18 @@ export async function procesarMensajeBot(
     }
   }
 
-  // Estado: link ya enviado
+  // Estado: link ya enviado — el cliente debe usar el link que recibió en el chat
   if (awaiting === 'link_enviado') {
-    if (/(pagu[eé]|ya pagu[eé]|hice el pago|realic[eé] el pago)/i.test(textoLower)) {
+    if (/(pagu[eé]|ya pagu[eé]|hice el pago|realic[eé] el pago|pag[ué])/i.test(textoLower)) {
       return {
         texto: '✅ ¡Perfecto! En cuanto Wompi confirme el pago, te avisamos aquí mismo y procesamos tu pedido. ¡Gracias por comprar con nosotros! 🎉',
+        metadata: { awaiting: 'link_enviado' },
+      };
+    }
+    // Si el cliente pregunta por el link, recordarle que ya fue enviado
+    if (/(link|enlace|pago|pagar|donde|c[oó]mo pago)/i.test(textoLower)) {
+      return {
+        texto: '🔗 El link de pago ya fue enviado arriba en esta misma conversación. ¡Solo haz clic en él para pagar con Nequi, Daviplata, PSE o Tarjeta! 💳\n\n_Si no lo ves, desplázate hacia arriba._',
         metadata: { awaiting: 'link_enviado' },
       };
     }

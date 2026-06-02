@@ -174,10 +174,15 @@ export async function POST(req: Request) {
               ? `${cart[0].titulo} x${cart[0].cantidad}`
               : `Pedido Commerk (${cart.length} productos)`;
 
+            // Descripción detallada para el link de Wompi
+            const descripcionItems = cart
+              .map((item) => `${item.titulo} x${item.cantidad}`)
+              .join(', ');
+
             // Crear link de pago en Wompi
             const linkResult = await generarLinkPagoWompi({
               nombre: nombreLink,
-              descripcion: `Pedido WhatsApp — ${direccion}`,
+              descripcion: `${descripcionItems} — Envío: ${direccion}`,
               monto: total,
               referencia,
               urlRedireccion: `${process.env.NEXT_PUBLIC_BASE_URL}/pago/confirmacion?ref=${referencia}`,
@@ -211,12 +216,13 @@ export async function POST(req: Request) {
               });
 
               const msgLink =
-                `🛒 *¡Tu pedido está listo para pagar!*\n\n` +
+                `✅ *¡Tu link de pago está listo!*\n\n` +
                 resumenItems +
                 `\n💵 Total: *${formatearPrecioCOP(total)}*\n` +
                 (pending_costo_envio === 0 ? `🎁 Envío: *GRATIS*\n` : `🚚 Envío incluido\n`) +
-                `\n💳 *Paga de forma segura aquí:*\n${linkResult.link}\n\n` +
-                `_El link es de un solo uso. Una vez confirmado el pago, procesamos tu pedido y te avisamos aquí._ ✅`;
+                `\n🔗 *Paga aquí directamente:*\n${linkResult.link}\n\n` +
+                `💳 Puedes pagar con *Nequi, Daviplata, PSE o Tarjeta* — elige tu método dentro del link.\n\n` +
+                `_Link de un solo uso y 100% seguro con Wompi. Una vez confirmado el pago te avisamos aquí y procesamos tu pedido._ ✅`;
 
               await guardarMensaje(conversacion.id, 'bot', msgLink, {
                 tipo_wa: 'text',
