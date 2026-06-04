@@ -15,7 +15,14 @@ const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '1490
 const COBERTURA          = (process.env.SHIPPING_COVERAGE || 'Medellín').split(',').map((c) => c.trim());
 const BUSINESS_NAME      = process.env.BUSINESS_NAME || 'Tienda Commerk Antioquia';
 
-function extraerJSON(raw: string): { texto: string; accion?: string; producto_id?: string } | null {
+interface SofiParsed {
+  texto: string;
+  accion?: string;
+  producto_id?: string;
+  producto_nombre?: string;
+}
+
+function extraerJSON(raw: string): SofiParsed | null {
   const limpio = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
   const match = limpio.match(/\{[\s\S]*\}/);
   if (match) {
@@ -24,6 +31,16 @@ function extraerJSON(raw: string): { texto: string; accion?: string; producto_id
   const texto = limpio.replace(/^["']|["']$/g, '').trim();
   if (texto.length > 2) return { texto, accion: 'continuar' };
   return null;
+}
+
+function buscarProductoPorNombre(productos: any[], nombre: string) {
+  if (!nombre) return null;
+  const n = nombre.toLowerCase();
+  // Búsqueda exacta por fragmento
+  return productos.find((p) => {
+    const t = p.titulo.toLowerCase();
+    return t.includes(n) || n.includes(t.substring(0, 12));
+  }) || null;
 }
 
 export async function procesarMensajeSofi(
@@ -42,17 +59,16 @@ export async function procesarMensajeSofi(
   };
 
   const catalogoTexto =
-    `DISPONIBLES:\n${disponibles.map(formatarProducto).join('\n') || 'Ninguno por ahora.'}\n\n` +
+    `DISPONIBLES:\n${disponibles.map(formatarProducto).join('\n') || 'Ninguno.'}\n\n` +
     (agotados.length ? `AGOTADOS:\n${agotados.map((p) => `• ${p.titulo}`).join('\n')}` : '');
 
-  let carritoInfo = 'Sin ítems en el carrito.';
+  let carritoInfo = 'Carrito vacío.';
   if (pendingCart.length > 0) {
     const sub   = pendingCart.reduce((s, i) => s + i.precio * i.cantidad, 0);
     const envio = sub >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO;
     carritoInfo =
-      `${pendingCart.length} ítem(s):\n` +
       pendingCart.map((i) => `  • ${i.titulo} ×${i.cantidad} = ${formatearPrecioCOP(i.precio * i.cantidad)}`).join('\n') +
-      `\n  Total: ${formatearPrecioCOP(sub + envio)}${envio === 0 ? ' (envío GRATIS)' : ''}`;
+      `\n  Total: ${formatearPrecioCOP(sub + envio)}`;
   }
 
   const historial = context.mensajes_previos
@@ -70,8 +86,8 @@ export async function procesarMensajeSofi(
 
 ━━━ NEGOCIO ━━━
 Web: https://tiendacommerkant.com.co
-Sedes: CC Tesoro · CC Fabricato · Autopista Sur Itagüí · Gran Manzana Itagüí · Mall Indiana · Urabá-Apartadó
-Envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS en compras > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)} | Entrega 24-48h L-S
+Sedes: CC Tesoro · CC Fabricato · Itagüí (Autopista Sur y Gran Manzana) · Mall Indiana · Urabá-Apartadó
+Envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS en compras > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)} | Entrega 24-48h
 Cobertura: ${COBERTURA.join(', ')} y municipios del Área Metropolitana
 Pagos: Tarjeta, PSE, Nequi, Daviplata — Wompi (100% seguro)
 
@@ -84,50 +100,47 @@ ${carritoInfo}
 ━━━ NOMBRES POPULARES ━━━
 "esencial/licor caldas" → LICOR DE RON VIEJO DE CALDAS ESENCIAL
 "tradicional/ron caldas/3 años" → RON VIEJO DE CALDAS TRADICIONAL
-"oscuro/caldas oscuro" → RON VIEJO DE CALDAS OSCURO
+"oscuro" → RON VIEJO DE CALDAS OSCURO
 "juan de la cruz/5 años" → RON VIEJO DE CALDAS JUAN DE LA CRUZ
 "carta de oro/8 años" → RON VIEJO DE CALDAS CARTA DE ORO
 "gran reserva/15 años/gre" → RON VIEJO DE CALDAS GRAN RESERVA ESPECIAL
-"león dormido/21 años/doble roble" → RON VIEJO DE CALDAS LEÓN DORMIDO DOBLE ROBLE
-"molendero/caña molendero" → LICOR DE CAÑA MOLENDERO
+"león dormido/21 años" → RON VIEJO DE CALDAS LEÓN DORMIDO DOBLE ROBLE
+"molendero" → LICOR DE CAÑA MOLENDERO
 "cheers/crema ron" → CREMA DE RON CHEERS
 "roble blanco/ron blanco" → RON VIEJO DE CALDAS ROBLE BLANCO
 "amarillo/manzanares" → AGUARDIENTE AMARILLO DE MANZANARES
 
-━━━ FORMATO — LEE ESTO CON ATENCIÓN ━━━
-Estás en WhatsApp. La gente escribe rápido y lee en segundos. Reglas ABSOLUTAS:
+━━━ REGLAS DE CONVERSACIÓN ━━━
+NUNCA uses listas numeradas (1. 2. 3.). Habla en texto corrido.
+Si tienes varias opciones: "Te recomiendo el Ron Esencial a $45.000 o el Tradicional a $75.000. ¿Cuál te llama más?"
+Máximo 4 líneas. Solo recomienda lo que está en PRODUCTOS DISPONIBLES.
+Presupuesto regalo: NUNCA superes el 10% sobre el monto indicado.
 
-NUNCA uses listas numeradas. NUNCA escribas "1." "2." "3." ni guiones "-" para listar opciones.
-Si tienes varias opciones, escríbelas en texto corrido separadas por comas o en frases seguidas.
+━━━ PROCESO DE COMPRA — REGLA CRÍTICA ━━━
+Tu único rol es recomendar productos y activar la compra con iniciar_compra.
+NUNCA hagas estas cosas — el sistema las maneja automáticamente:
+- Preguntar cuántas unidades (❌ "¿Cuántas unidades quieres?")
+- Calcular totales (❌ "Serían $138.000 por 2 unidades")
+- Preguntar método de pago (❌ "¿Tarjeta, Nequi o PSE?")
+- Preguntar dirección de envío
+- Decir "iniciando compra" o "procesando tu pedido"
 
-EJEMPLO DE CÓMO NO HACERLO (PROHIBIDO):
-"Tienes estas opciones:
-1. Ron Esencial $45.000
-2. Ron Tradicional $75.000"
+Cuando el cliente confirme que quiere un producto:
+→ Usa accion "iniciar_compra" con el ID exacto del [ID:XXXXX] y el nombre exacto del catálogo
+→ Tu texto debe ser solo una confirmación breve: "¡Perfecto, añadiendo al carrito! 🛒"
+→ El sistema se encarga del resto automáticamente.
 
-EJEMPLO DE CÓMO SÍ HACERLO (CORRECTO):
-"Para ese presupuesto te recomiendo el Ron Esencial a $45.000, es el clásico de la casa, o el Ron Tradicional a $75.000 si quieres algo con más carácter. ¿Cuál te llama más?"
-
-Máximo 4 líneas por mensaje. Sin emojis en exceso.
-SOLO recomienda productos que aparezcan en PRODUCTOS DISPONIBLES. Nunca inventes kits ni combos.
-Presupuesto de regalo: NUNCA superes el 10% sobre lo indicado.
-
-━━━ CUANDO EL CLIENTE QUIERE COMPRAR ━━━
-Cuando el cliente elija o confirme un producto específico, usa accion "iniciar_compra" con el ID exacto del [ID:XXXXX].
-El texto DEBE preguntar la cantidad directamente. Ejemplo:
-"¡Perfecto! ¿Cuántas unidades del [nombre] quieres?"
-NUNCA digas "iniciando compra" ni "un momento" — pregunta la cantidad de una vez.
-
-━━━ RESPUESTA JSON OBLIGATORIA ━━━
-Responde SOLO con JSON válido, sin texto fuera:
-{"texto": "tu mensaje (máx 4 líneas)", "accion": "continuar"|"iniciar_compra"|"transferir", "producto_id": "ID solo si iniciar_compra"}`;
+━━━ FORMATO JSON OBLIGATORIO ━━━
+Responde SOLO con JSON válido:
+{"texto": "tu mensaje (máx 4 líneas)", "accion": "continuar"|"iniciar_compra"|"transferir", "producto_id": "número exacto del ID", "producto_nombre": "nombre exacto del catálogo"}
+producto_id y producto_nombre solo si accion es iniciar_compra.`;
 
   try {
     const response = await openai.chat.completions.create(
       {
         model: 'gpt-4o-mini',
-        max_tokens: 400,
-        temperature: 0.7,
+        max_tokens: 350,
+        temperature: 0.6,
         messages: [
           { role: 'system', content: systemPrompt },
           ...historial,
@@ -138,7 +151,7 @@ Responde SOLO con JSON válido, sin texto fuera:
     );
 
     const rawText = response.choices[0]?.message?.content || '';
-    console.log('[Sofi] raw:', rawText.slice(0, 200));
+    console.log('[Sofi] raw:', rawText.slice(0, 300));
 
     const parsed = extraerJSON(rawText);
     if (!parsed) throw new Error('JSON inválido de Sofi');
@@ -153,10 +166,26 @@ Responde SOLO con JSON válido, sin texto fuera:
       };
     }
 
-    if (parsed.accion === 'iniciar_compra' && parsed.producto_id) {
-      const producto = productos.find((p) => p.shopify_id === parsed.producto_id);
+    if (parsed.accion === 'iniciar_compra') {
+      // Buscar producto: primero por ID exacto, luego por nombre
+      let producto = parsed.producto_id
+        ? productos.find((p) => p.shopify_id === String(parsed.producto_id).replace(/\D/g, ''))
+        : null;
+
+      if (!producto && parsed.producto_nombre) {
+        producto = buscarProductoPorNombre(productos, parsed.producto_nombre);
+      }
+
+      // Último recurso: buscar en el texto de Sofi
+      if (!producto) {
+        const tl = textoFinal.toLowerCase();
+        producto = productos.find((p) => {
+          const palabras = p.titulo.toLowerCase().split(' ').filter((w) => w.length > 4);
+          return palabras.some((w) => tl.includes(w));
+        }) || null;
+      }
+
       if (producto && producto.inventario > 0) {
-        // Ir directo a 'cantidad' — no 'compra', para no necesitar confirmación extra
         return {
           texto: textoFinal,
           metadata: {
@@ -167,7 +196,12 @@ Responde SOLO con JSON válido, sin texto fuera:
           },
         };
       }
-      // Producto no encontrado o agotado → continuar conversación
+
+      // Producto no encontrado — pedir al cliente que lo especifique
+      return {
+        texto: textoFinal + '\n\nEscribe el nombre exacto del producto para añadirlo al carrito.',
+        metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
+      };
     }
 
     return {
