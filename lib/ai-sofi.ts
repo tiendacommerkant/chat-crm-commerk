@@ -1,5 +1,6 @@
 // ============================================================
-// SOFI — Agente IA de ventas de Tienda Commerk (OpenAI)
+// SOFI — Agente conversacional de ventas (OpenAI)
+// ROL: solo recomienda y conversa. El checkout lo maneja bot-logic.
 // ============================================================
 
 import OpenAI from 'openai';
@@ -15,32 +16,67 @@ const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '1490
 const COBERTURA          = (process.env.SHIPPING_COVERAGE || 'Medellín').split(',').map((c) => c.trim());
 const BUSINESS_NAME      = process.env.BUSINESS_NAME || 'Tienda Commerk Antioquia';
 
-interface SofiParsed {
-  texto: string;
-  accion?: string;
-  producto_id?: string;
-  producto_nombre?: string;
-}
+// Aliases para matching robusto sin depender del ID de GPT
+const ALIASES_LOCAL = [
+  { palabras: ['esencial', 'licor de ron', 'caldas esencial', 'licor caldas'], contiene: 'esencial' },
+  { palabras: ['tradicional', '3 años', 'tres años', 'ron caldas', 'caldas tradicional'], contiene: 'tradicional' },
+  { palabras: ['oscuro', 'caldas oscuro', 'ron oscuro'], contiene: 'oscuro' },
+  { palabras: ['juan de la cruz', '5 años', 'cinco años', 'juan cruz'], contiene: 'juan' },
+  { palabras: ['carta de oro', '8 años', 'ocho años', 'caldas carta'], contiene: 'carta de oro' },
+  { palabras: ['gran reserva', '15 años', 'quince años', 'gre'], contiene: 'gran reserva' },
+  { palabras: ['leon dormido', 'dormido', '21 años', 'doble roble'], contiene: 'dormido' },
+  { palabras: ['molendero', 'licor de caña', 'caña'], contiene: 'molendero' },
+  { palabras: ['cheers', 'crema ron', 'crema caldas', 'crema de ron'], contiene: 'cheers' },
+  { palabras: ['roble blanco', 'ron blanco', 'caldas blanco', 'cocteleria'], contiene: 'roble blanco' },
+  { palabras: ['amarillo', 'manzanares', 'aguardiente amarillo', 'aguardiente caldas'], contiene: 'amarillo' },
+];
 
-function extraerJSON(raw: string): SofiParsed | null {
-  const limpio = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-  const match = limpio.match(/\{[\s\S]*\}/);
-  if (match) {
-    try { return JSON.parse(match[0]); } catch {}
+function encontrarProducto(productos: any[], idRaw?: string, nombreRaw?: string, textoExtra = '') {
+  const busquedaTexto = ((nombreRaw || '') + ' ' + textoExtra).toLowerCase();
+
+  // 1. Por ID limpio (solo dígitos)
+  if (idRaw) {
+    const idLimpio = String(idRaw).replace(/\D/g, '');
+    const p = productos.find((p) => String(p.shopify_id) === idLimpio);
+    if (p) { console.log('[Sofi] producto por ID:', p.titulo); return p; }
   }
-  const texto = limpio.replace(/^["']|["']$/g, '').trim();
-  if (texto.length > 2) return { texto, accion: 'continuar' };
+
+  // 2. Por nombre exacto / substring
+  if (nombreRaw) {
+    const n = nombreRaw.toLowerCase();
+    const p = productos.find((p) => {
+      const t = p.titulo.toLowerCase();
+      return t.includes(n) || n.includes(t.substring(0, 14));
+    });
+    if (p) { console.log('[Sofi] producto por nombre:', p.titulo); return p; }
+  }
+
+  // 3. Por aliases del banco de términos
+  for (const alias of ALIASES_LOCAL) {
+    if (alias.palabras.some((k) => busquedaTexto.includes(k))) {
+      const p = productos.find((p) => p.titulo.toLowerCase().includes(alias.contiene));
+      if (p) { console.log('[Sofi] producto por alias:', p.titulo); return p; }
+    }
+  }
+
+  // 4. Por palabras largas del título en el texto
+  const p = productos.find((prod) => {
+    const palabras = prod.titulo.toLowerCase().split(' ').filter((w: string) => w.length > 4);
+    return palabras.some((w: string) => busquedaTexto.includes(w));
+  });
+  if (p) { console.log('[Sofi] producto por palabras:', p.titulo); return p; }
+
+  console.log('[Sofi] producto NO encontrado. id:', idRaw, 'nombre:', nombreRaw);
   return null;
 }
 
-function buscarProductoPorNombre(productos: any[], nombre: string) {
-  if (!nombre) return null;
-  const n = nombre.toLowerCase();
-  // Búsqueda exacta por fragmento
-  return productos.find((p) => {
-    const t = p.titulo.toLowerCase();
-    return t.includes(n) || n.includes(t.substring(0, 12));
-  }) || null;
+function extraerJSON(raw: string): any | null {
+  const limpio = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  const match = limpio.match(/\{[\s\S]*\}/);
+  if (match) { try { return JSON.parse(match[0]); } catch {} }
+  const texto = limpio.replace(/^["']|["']$/g, '').trim();
+  if (texto.length > 2) return { texto, accion: 'continuar' };
+  return null;
 }
 
 export async function procesarMensajeSofi(
@@ -49,30 +85,21 @@ export async function procesarMensajeSofi(
   pendingCart: CartItem[] = []
 ): Promise<BotResponse> {
   const productos = await obtenerProductosCache();
-
   const disponibles = productos.filter((p) => p.precio > 0 && p.inventario > 0);
   const agotados    = productos.filter((p) => p.precio > 0 && p.inventario <= 0);
 
-  const formatarProducto = (p: typeof productos[0]) => {
-    const emoji = asignarEmojiProducto(p.titulo);
-    return `• [ID:${p.shopify_id}] ${emoji} ${p.titulo} | ${formatearPrecioCOP(p.precio)}`;
-  };
-
   const catalogoTexto =
-    `DISPONIBLES:\n${disponibles.map(formatarProducto).join('\n') || 'Ninguno.'}\n\n` +
-    (agotados.length ? `AGOTADOS:\n${agotados.map((p) => `• ${p.titulo}`).join('\n')}` : '');
+    `DISPONIBLES:\n` +
+    disponibles.map((p) => `• [ID:${p.shopify_id}] ${asignarEmojiProducto(p.titulo)} ${p.titulo} | ${formatearPrecioCOP(p.precio)}`).join('\n') +
+    (agotados.length ? `\n\nAGOTADOS:\n` + agotados.map((p) => `• ${p.titulo}`).join('\n') : '');
 
-  let carritoInfo = 'Carrito vacío.';
-  if (pendingCart.length > 0) {
-    const sub   = pendingCart.reduce((s, i) => s + i.precio * i.cantidad, 0);
-    const envio = sub >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO;
-    carritoInfo =
-      pendingCart.map((i) => `  • ${i.titulo} ×${i.cantidad} = ${formatearPrecioCOP(i.precio * i.cantidad)}`).join('\n') +
-      `\n  Total: ${formatearPrecioCOP(sub + envio)}`;
-  }
+  const carritoResumen = pendingCart.length > 0
+    ? pendingCart.map((i) => `${i.titulo} ×${i.cantidad}`).join(', ') +
+      ` | Total: ${formatearPrecioCOP(pendingCart.reduce((s, i) => s + i.precio * i.cantidad, 0))}`
+    : 'vacío';
 
   const historial = context.mensajes_previos
-    .slice(-14)
+    .slice(-12)
     .filter((m) => m.contenido?.trim())
     .map((m) => ({
       role: m.tipo === 'user' ? ('user' as const) : ('assistant' as const),
@@ -82,82 +109,71 @@ export async function procesarMensajeSofi(
   const nombre = context.cliente.nombre?.split(' ')[0] ?? null;
   const sede   = context.cliente.sede_preferida ?? null;
 
-  const systemPrompt = `Eres Sofi, asesora de ventas de ${BUSINESS_NAME}. Hablas en español colombiano natural, como una persona real por WhatsApp — cálida, cercana, directa.${nombre ? ` Cliente: ${nombre}.` : ''}${sede ? ` Sede: ${sede}.` : ''}
+  const system = `Eres Sofi, asesora de ventas de ${BUSINESS_NAME}. Español colombiano natural, cálida y directa. Máximo 3 líneas por respuesta.${nombre ? ` Cliente: ${nombre}.` : ''}${sede ? ` Sede: ${sede}.` : ''}
 
-━━━ NEGOCIO ━━━
-Web: https://tiendacommerkant.com.co
-Sedes: CC Tesoro · CC Fabricato · Itagüí (Autopista Sur y Gran Manzana) · Mall Indiana · Urabá-Apartadó
-Envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS en compras > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)} | Entrega 24-48h
-Cobertura: ${COBERTURA.join(', ')} y municipios del Área Metropolitana
-Pagos: Tarjeta, PSE, Nequi, Daviplata — Wompi (100% seguro)
+NEGOCIO
+Sedes: CC Tesoro · CC Fabricato · Itagüí · Mall Indiana · Urabá
+Envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)} | 24-48h | Zona: ${COBERTURA.join(', ')}
+Pagos: Tarjeta, PSE, Nequi, Daviplata (Wompi)
 
-━━━ PRODUCTOS ━━━
+CATÁLOGO
 ${catalogoTexto}
 
-━━━ CARRITO ACTUAL ━━━
-${carritoInfo}
+CARRITO ACTUAL: ${carritoResumen}
 
-━━━ NOMBRES POPULARES ━━━
-"esencial/licor caldas" → LICOR DE RON VIEJO DE CALDAS ESENCIAL
-"tradicional/ron caldas/3 años" → RON VIEJO DE CALDAS TRADICIONAL
-"oscuro" → RON VIEJO DE CALDAS OSCURO
-"juan de la cruz/5 años" → RON VIEJO DE CALDAS JUAN DE LA CRUZ
-"carta de oro/8 años" → RON VIEJO DE CALDAS CARTA DE ORO
-"gran reserva/15 años/gre" → RON VIEJO DE CALDAS GRAN RESERVA ESPECIAL
-"león dormido/21 años" → RON VIEJO DE CALDAS LEÓN DORMIDO DOBLE ROBLE
-"molendero" → LICOR DE CAÑA MOLENDERO
-"cheers/crema ron" → CREMA DE RON CHEERS
-"roble blanco/ron blanco" → RON VIEJO DE CALDAS ROBLE BLANCO
-"amarillo/manzanares" → AGUARDIENTE AMARILLO DE MANZANARES
+TÉRMINOS COMUNES
+carta de oro/8 años → RON VIEJO DE CALDAS CARTA DE ORO
+tradicional/3 años → RON VIEJO DE CALDAS TRADICIONAL
+esencial → LICOR DE RON VIEJO DE CALDAS ESENCIAL
+gran reserva/15 años/gre → RON VIEJO DE CALDAS GRAN RESERVA ESPECIAL
+juan de la cruz/5 años → RON VIEJO DE CALDAS JUAN DE LA CRUZ
+oscuro → RON VIEJO DE CALDAS OSCURO
+leon/dormido/21 años → RON VIEJO DE CALDAS LEÓN DORMIDO DOBLE ROBLE
+molendero → LICOR DE CAÑA MOLENDERO
+cheers/crema → CREMA DE RON CHEERS
+roble blanco/ron blanco → RON VIEJO DE CALDAS ROBLE BLANCO
+amarillo/manzanares → AGUARDIENTE AMARILLO DE MANZANARES
 
-━━━ REGLAS DE CONVERSACIÓN ━━━
-NUNCA uses listas numeradas (1. 2. 3.). Habla en texto corrido.
-Si tienes varias opciones: "Te recomiendo el Ron Esencial a $45.000 o el Tradicional a $75.000. ¿Cuál te llama más?"
-Máximo 4 líneas. Solo recomienda lo que está en PRODUCTOS DISPONIBLES.
-Presupuesto regalo: NUNCA superes el 10% sobre el monto indicado.
+REGLAS
+- Habla en texto corrido. NUNCA listas con 1. 2. 3. — usa comas o frases seguidas.
+- Solo recomienda productos del catálogo. Sin inventar combos ni precios.
+- Presupuesto regalo: máximo 10% sobre el monto dado.
+- Si el producto está agotado, ofrece uno disponible.
 
-━━━ PROCESO DE COMPRA — REGLA CRÍTICA ━━━
-Tu único rol es recomendar productos y activar la compra con iniciar_compra.
-NUNCA hagas estas cosas — el sistema las maneja automáticamente:
-- Preguntar cuántas unidades (❌ "¿Cuántas unidades quieres?")
-- Calcular totales (❌ "Serían $138.000 por 2 unidades")
-- Preguntar método de pago (❌ "¿Tarjeta, Nequi o PSE?")
-- Preguntar dirección de envío
-- Decir "iniciando compra" o "procesando tu pedido"
+TU ÚNICA DECISIÓN: ¿el cliente quiere comprar algo específico ahora?
+SÍ → accion "iniciar_compra" + producto_id (número de [ID:XXXXX]) + producto_nombre
+     Texto: "¡Perfecto! ¿Cuántas unidades de [nombre exacto] quieres?"
+NO → accion "continuar" y sigue conversando
 
-Cuando el cliente confirme que quiere un producto:
-→ Usa accion "iniciar_compra" con el ID exacto del [ID:XXXXX] y el nombre exacto del catálogo
-→ Tu texto DEBE preguntar la cantidad: "¡Perfecto! ¿Cuántas unidades del [nombre del producto] quieres?"
-→ El sistema añade al carrito y muestra las opciones automáticamente después.
-→ NUNCA digas "añadiendo al carrito" ni "procesando" — pregunta la cantidad de una vez.
+NUNCA preguntes cantidad, método de pago, dirección ni totales. El sistema lo maneja.
+Si el cliente pide asesor humano → accion "transferir"
 
-━━━ FORMATO JSON OBLIGATORIO ━━━
-Responde SOLO con JSON válido:
-{"texto": "tu mensaje (máx 4 líneas)", "accion": "continuar"|"iniciar_compra"|"transferir", "producto_id": "número exacto del ID", "producto_nombre": "nombre exacto del catálogo"}
-producto_id y producto_nombre solo si accion es iniciar_compra.`;
+RESPONDE SOLO JSON:
+{"texto":"...","accion":"continuar|iniciar_compra|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo"}`;
 
   try {
     const response = await openai.chat.completions.create(
       {
         model: 'gpt-4o-mini',
-        max_tokens: 350,
-        temperature: 0.6,
+        max_tokens: 300,
+        temperature: 0.5,
+        response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: system },
           ...historial,
           { role: 'user', content: mensaje },
         ],
       },
-      { timeout: 7000 }
+      { timeout: 8000 }
     );
 
     const rawText = response.choices[0]?.message?.content || '';
-    console.log('[Sofi] raw:', rawText.slice(0, 300));
+    console.log('[Sofi] raw:', rawText.slice(0, 400));
 
     const parsed = extraerJSON(rawText);
-    if (!parsed) throw new Error('JSON inválido de Sofi');
+    if (!parsed?.texto) throw new Error('JSON sin texto');
 
-    const textoFinal = parsed.texto?.trim() || '¿Me puedes repetir? 😊';
+    const textoFinal = parsed.texto.trim();
 
     if (parsed.accion === 'transferir') {
       return {
@@ -168,25 +184,14 @@ producto_id y producto_nombre solo si accion es iniciar_compra.`;
     }
 
     if (parsed.accion === 'iniciar_compra') {
-      // Buscar producto: primero por ID exacto, luego por nombre
-      let producto = parsed.producto_id
-        ? productos.find((p) => p.shopify_id === String(parsed.producto_id).replace(/\D/g, ''))
-        : null;
+      const producto = encontrarProducto(
+        productos.filter((p) => p.inventario > 0),
+        parsed.producto_id,
+        parsed.producto_nombre,
+        textoFinal
+      );
 
-      if (!producto && parsed.producto_nombre) {
-        producto = buscarProductoPorNombre(productos, parsed.producto_nombre);
-      }
-
-      // Último recurso: buscar en el texto de Sofi
-      if (!producto) {
-        const tl = textoFinal.toLowerCase();
-        producto = productos.find((p) => {
-          const palabras = p.titulo.toLowerCase().split(' ').filter((w) => w.length > 4);
-          return palabras.some((w) => tl.includes(w));
-        }) || null;
-      }
-
-      if (producto && producto.inventario > 0) {
+      if (producto) {
         return {
           texto: textoFinal,
           metadata: {
@@ -198,9 +203,9 @@ producto_id y producto_nombre solo si accion es iniciar_compra.`;
         };
       }
 
-      // Producto no encontrado — pedir al cliente que lo especifique
+      // Producto no encontrado — pedir al cliente que aclare
       return {
-        texto: textoFinal + '\n\nEscribe el nombre exacto del producto para añadirlo al carrito.',
+        texto: textoFinal + '\n\nEscríbeme el nombre exacto del producto para añadirlo.',
         metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
       };
     }
@@ -213,7 +218,7 @@ producto_id y producto_nombre solo si accion es iniciar_compra.`;
   } catch (error: any) {
     console.error('[Sofi] Error:', error?.message);
     return {
-      texto: 'Disculpa, tuve un problema técnico. ¿Me repites qué necesitas? 😊',
+      texto: 'Disculpa, tuve un problema. ¿Me repites qué necesitas? 😊',
       metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
     };
   }

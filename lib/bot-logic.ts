@@ -198,6 +198,21 @@ export async function procesarMensajeBot(
     };
   }
 
+  // ── COMPRA DIRECTA: intención de compra + producto detectado → sin pasar por Sofi
+  if (USE_AI && awaiting === '' && esIntencionCompra(textoLower)) {
+    const productoDirecto = await detectarProducto(textoLower);
+    if (productoDirecto && productoDirecto.inventario > 0) {
+      return {
+        texto: `¡Perfecto! ¿Cuántas unidades de *${productoDirecto.titulo}* quieres?\n\nEscribe el número (ej: *1*, *2*, *3*).`,
+        metadata: {
+          awaiting: 'cantidad',
+          pending_product_id: productoDirecto.shopify_id,
+          pending_cart: pendingCart,
+        },
+      };
+    }
+  }
+
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
   if (USE_AI && awaiting === '') {
     const respuestaSofi = await procesarMensajeSofi(texto, context, pendingCart);
