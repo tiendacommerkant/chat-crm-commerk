@@ -198,19 +198,26 @@ export async function procesarMensajeBot(
     };
   }
 
-  // ── COMPRA DIRECTA: intención de compra + producto detectado → sin pasar por Sofi
+  // ── COMPRA DIRECTA: solo cuando hay alias ESPECÍFICO del banco de términos
+  // No activar con búsquedas genéricas como "ron viejo" que pueden cogerse mal
   if (USE_AI && awaiting === '' && esIntencionCompra(textoLower)) {
-    const productoDirecto = await detectarProducto(textoLower);
-    if (productoDirecto && productoDirecto.inventario > 0) {
-      return {
-        texto: `¡Perfecto! ¿Cuántas unidades de *${productoDirecto.titulo}* quieres?\n\nEscribe el número (ej: *1*, *2*, *3*).`,
-        metadata: {
-          awaiting: 'cantidad',
-          pending_product_id: productoDirecto.shopify_id,
-          pending_cart: pendingCart,
-        },
-      };
+    const tieneAliasEspecifico = ALIASES_PRODUCTO.some((a) =>
+      a.palabrasClave.some((k) => textoLower.includes(k))
+    );
+    if (tieneAliasEspecifico) {
+      const productoDirecto = await detectarProducto(textoLower);
+      if (productoDirecto && productoDirecto.inventario > 0) {
+        return {
+          texto: `¡Perfecto! ¿Cuántas unidades de *${productoDirecto.titulo}* quieres?\n\nEscribe el número (ej: *1*, *2*, *3*).`,
+          metadata: {
+            awaiting: 'cantidad',
+            pending_product_id: productoDirecto.shopify_id,
+            pending_cart: pendingCart,
+          },
+        };
+      }
     }
+    // Sin alias específico → Sofi pregunta cuál exactamente
   }
 
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
@@ -312,7 +319,7 @@ export async function procesarMensajeBot(
 
       if (producto.inventario < cantidad) {
         return {
-          texto: `⚠️ Solo tenemos *${producto.inventario}* unidades disponibles de este producto.\n\n¿Cuántas quieres? (máximo ${producto.inventario})`,
+          texto: `⚠️ Solo tenemos *${producto.inventario}* unidades disponibles.\n\n¿Cuántas quieres? (máximo ${producto.inventario})`,
           metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_cart: pendingCart },
         };
       }
@@ -333,8 +340,25 @@ export async function procesarMensajeBot(
 
       return respuestaCarrito(updatedCart);
     }
+
+    // No es un número — si parece un nuevo intento de compra o cancelación, resetear
+    if (esNegacion(textoLower) || /cancelar|otro producto|no quiero ese|cambiar/i.test(textoLower)) {
+      return {
+        texto: '¡Sin problema! Cuéntame qué producto te interesa. 😊',
+        metadata: { awaiting: '', pending_cart: pendingCart },
+      };
+    }
+
+    // Si tiene intención de compra de otro producto, dejar que Sofi o el bot lo manejen
+    if (USE_AI && (esIntencionCompra(textoLower) || esSaludo(textoLower))) {
+      return await procesarMensajeSofi(texto, context, pendingCart);
+    }
+
+    const productos2 = await obtenerProductosCache();
+    const prod2 = productos2.find((p) => p.shopify_id === pendingProductId);
+    const nombreProd = prod2?.titulo || 'ese producto';
     return {
-      texto: '¿Cuántas unidades quieres? Escribe solo el número (ej: *1*, *2*, *3*)',
+      texto: `¿Cuántas unidades de *${nombreProd}* quieres?\n\nEscribe solo el número (ej: *1*, *2*, *3*). Si quieres otro producto escribe *cancelar*.`,
       metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_cart: pendingCart },
     };
   }
