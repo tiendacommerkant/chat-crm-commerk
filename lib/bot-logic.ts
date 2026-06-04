@@ -158,6 +158,17 @@ export async function procesarMensajeBot(
 
   // ── VER CARRITO: comando disponible en cualquier momento ──────────
   if (/^(carrito|mi carrito|ver carrito|ver pedido)$/i.test(textoLower)) {
+    // Si estamos esperando cantidad, pedir primero el número
+    if ((awaiting === 'cantidad' || awaiting === 'compra') && pendingProductId) {
+      const productos = await obtenerProductosCache();
+      const prod = productos.find((p) => p.shopify_id === pendingProductId);
+      if (prod) {
+        return {
+          texto: `¿Cuántas unidades de *${prod.titulo}* quieres agregar? Escribe el número y luego puedes ver el carrito. 😊`,
+          metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_cart: pendingCart },
+        };
+      }
+    }
     if (pendingCart.length === 0) {
       return {
         texto: '🛒 Tu carrito está vacío. Cuéntame qué producto te interesa y te ayudo. 😊',
