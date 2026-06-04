@@ -246,20 +246,8 @@ export async function procesarMensajeBot(
   }
 
   // Estado: esperando confirmación de compra (sí/no)
+  // Sofi ahora va directo a 'cantidad', pero 'compra' sigue como fallback
   if (awaiting === 'compra') {
-    if (esConfirmacion(textoLower)) {
-      const productos = await obtenerProductosCache();
-      const producto = productos.find((p) => p.shopify_id === pendingProductId);
-      if (!producto) return respuestaDefault(pendingCart);
-      return {
-        texto: `¿Cuántas unidades de *${producto.titulo}* quieres?\n\nResponde con el número (ej: *1*, *2*, *3*).`,
-        metadata: {
-          awaiting: 'cantidad',
-          pending_product_id: producto.shopify_id,
-          pending_cart: pendingCart,
-        },
-      };
-    }
     if (esNegacion(textoLower)) {
       return {
         texto: pendingCart.length > 0
@@ -268,6 +256,18 @@ export async function procesarMensajeBot(
         metadata: { awaiting: pendingCart.length > 0 ? 'carrito' : '', pending_cart: pendingCart },
       };
     }
+    // Cualquier respuesta afirmativa o número → ir directo a cantidad
+    const productos = await obtenerProductosCache();
+    const producto = productos.find((p) => p.shopify_id === pendingProductId);
+    if (!producto) return respuestaDefault(pendingCart);
+    return {
+      texto: `¿Cuántas unidades de *${producto.titulo}* quieres?\n\nEscribe el número (ej: *1*, *2*, *3*).`,
+      metadata: {
+        awaiting: 'cantidad',
+        pending_product_id: producto.shopify_id,
+        pending_cart: pendingCart,
+      },
+    };
   }
 
   // Estado: esperando cantidad
@@ -315,13 +315,13 @@ export async function procesarMensajeBot(
 
   // Estado: carrito mostrado — esperando "agregar más" o "pagar"
   if (awaiting === 'carrito') {
-    if (/^(agregar|seguir|m[aá]s|otro|añadir|agregar m[aá]s|m[aá]s productos|seguir comprando)$/i.test(textoLower)) {
+    if (/(agregar|seguir|m[aá]s|otro|añadir|otro producto|algo m[aá]s)/i.test(textoLower)) {
       return {
         texto: '¡Claro! Cuéntame qué más te gustaría agregar. 😊',
         metadata: { awaiting: '', pending_cart: pendingCart },
       };
     }
-    if (/^(pagar|pago|finalizar|proceder|checkout|ok|listo|si|s[íi]|dale|confirmar|adelante)$/i.test(textoLower)) {
+    if (/(pagar|pago|finalizar|proceder|checkout|listo|confirmar|adelante|dale|^si$|^s[íi]$)/i.test(textoLower)) {
       return {
         texto:
           `📍 *¿A qué dirección te enviamos?*\n\n` +
