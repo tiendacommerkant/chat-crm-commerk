@@ -1,5 +1,5 @@
 // ============================================================
-// SOFI — Agente conversacional de ventas (OpenAI)
+// SOFI — Agente conversacional de ventas (OpenAI gpt-4o)
 // ROL: solo recomienda y conversa. El checkout lo maneja bot-logic.
 // ============================================================
 
@@ -154,7 +154,7 @@ RESPONDE SOLO JSON:
   try {
     const response = await openai.chat.completions.create(
       {
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o',
         max_tokens: 300,
         temperature: 0.5,
         response_format: { type: 'json_object' },
