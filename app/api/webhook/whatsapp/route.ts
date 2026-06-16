@@ -11,6 +11,7 @@ import { procesarMensajeBot } from '@/lib/bot-logic';
 import { enviarMensajeWhatsApp, formatearNumeroWhatsApp, marcarComoLeido } from '@/lib/whatsapp';
 import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
+import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
 import type { BotContext } from '@/types';
 
 export async function POST(req: Request) {
@@ -219,7 +220,9 @@ export async function POST(req: Request) {
                 `✅ *¡Tu link de pago está listo!*\n\n` +
                 resumenItems +
                 `\n💵 Total: *${formatearPrecioCOP(total)}*\n` +
-                (pending_costo_envio === 0 ? `🎁 Envío: *GRATIS*\n` : `🚚 Envío incluido\n`) +
+                (esRecogidaEnTienda(direccion)
+                  ? `🏪 Recoges en: *${nombreSedeDesdeDireccion(direccion)}*\n`
+                  : (pending_costo_envio === 0 ? `🎁 Envío: *GRATIS*\n` : `🚚 Envío incluido\n`)) +
                 `\n🔗 *Paga aquí directamente:*\n${linkResult.link}\n\n` +
                 `💳 Puedes pagar con *Nequi, Daviplata, PSE o Tarjeta* — elige tu método dentro del link.\n\n` +
                 `_Link de un solo uso y 100% seguro con Wompi. Una vez confirmado el pago te avisamos aquí y procesamos tu pedido._ ✅`;

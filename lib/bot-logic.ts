@@ -18,22 +18,13 @@ import { obtenerProductosCache, actualizarCliente, supabaseAdmin } from './supab
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
+import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES } from './sedes';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
 const COSTO_ENVIO = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
 const COBERTURA_ENVIOS = (process.env.SHIPPING_COVERAGE || '').split(',').map((c) => c.trim());
-
-// Sedes físicas con teléfonos para lead mayorista
-const SEDES_FISICAS: Record<string, { nombre: string; telefono: string }> = {
-  '1': { nombre: 'CC Tesoro', telefono: '573156125533' },
-  '2': { nombre: 'CC Fabricato', telefono: '573175402082' },
-  '3': { nombre: 'Autopista Sur - Itagüí', telefono: '573183349171' },
-  '4': { nombre: 'Gran Manzana - Itagüí', telefono: '573156125765' },
-  '5': { nombre: 'Mall Indiana', telefono: '573185608348' },
-  '6': { nombre: 'Urabá - Apartadó', telefono: '573160173928' },
-};
 
 // Banco de términos por producto (brief)
 const ALIASES_PRODUCTO: Array<{ palabrasClave: string[]; tituloContiene: string }> = [
@@ -188,14 +179,7 @@ export async function procesarMensajeBot(
   // Si hay un estado activo (compra/confirmacion/cantidad), la máquina de estados
   // lo maneja abajo. Sin esta condición, "SI" en confirmación se intercepta aqui.
   if (awaiting === '' && pendingCart.length > 0 && esIntencionPago(textoLower)) {
-    return {
-      texto:
-        `📍 *¿A qué dirección te enviamos?*\n\n` +
-        `Escribe tu dirección completa con barrio/municipio.\n` +
-        `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
-        `Cobertura: ${COBERTURA_ENVIOS.join(', ')}`,
-      metadata: { awaiting: 'direccion', pending_cart: pendingCart },
-    };
+    return preguntarTipoEntrega(pendingCart);
   }
 
   // ── COMPRA DIRECTA: solo cuando hay alias ESPECÍFICO del banco de términos
@@ -368,6 +352,15 @@ export async function procesarMensajeBot(
       };
     }
     if (esConfirmacion(textoLower) || /(pagar|pago|finalizar|proceder|checkout)/i.test(textoLower)) {
+      return preguntarTipoEntrega(pendingCart);
+    }
+    return respuestaCarrito(pendingCart);
+  }
+
+  // Estado: elegir tipo de entrega (domicilio o recoger en tienda)
+  if (awaiting === 'tipo_entrega') {
+    // Domicilio
+    if (/^1$/.test(textoLower) || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|mandar|a mi casa|a casa)/i.test(textoLower)) {
       return {
         texto:
           `📍 *¿A qué dirección te enviamos?*\n\n` +
@@ -377,7 +370,57 @@ export async function procesarMensajeBot(
         metadata: { awaiting: 'direccion', pending_cart: pendingCart },
       };
     }
-    return respuestaCarrito(pendingCart);
+    // Recoger en tienda
+    if (/^2$/.test(textoLower) || /(recoger|recojo|recoge|pasar|paso por|retiro|retirar|en tienda|tienda f[ií]sica|f[ií]sica|recogida)/i.test(textoLower)) {
+      return preguntarSedeRecogida(pendingCart);
+    }
+    return preguntarTipoEntrega(pendingCart);
+  }
+
+  // Estado: elegir sede para recoger en tienda
+  if (awaiting === 'recoger_sede') {
+    const sede = SEDES_FISICAS[texto.trim()];
+    if (!sede) {
+      return preguntarSedeRecogida(pendingCart);
+    }
+
+    let cart = pendingCart;
+    if (cart.length === 0 && pendingProductId) {
+      const productos = await obtenerProductosCache();
+      const producto = productos.find((p) => p.shopify_id === pendingProductId);
+      if (producto) {
+        cart = [{ shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad: pendingCantidad }];
+      }
+    }
+    if (cart.length === 0) return respuestaDefault();
+
+    // Recoger en tienda = SIN costo de envío
+    const subtotal = cart.reduce((s, item) => s + item.precio * item.cantidad, 0);
+    const costoEnvio = 0;
+    const total = subtotal;
+
+    let resumen = `🛒 *RESUMEN DE TU PEDIDO*\n\n`;
+    cart.forEach((item) => {
+      resumen += `${asignarEmojiProducto(item.titulo)} *${item.titulo}*\n`;
+      resumen += `  ${item.cantidad} ud × ${formatearPrecioCOP(item.precio)} = *${formatearPrecioCOP(item.precio * item.cantidad)}*\n\n`;
+    });
+    resumen += `─────────────────────\n`;
+    resumen += `Subtotal: ${formatearPrecioCOP(subtotal)}\n`;
+    resumen += `Entrega: 🏪 *Recoges en ${sede.nombre}*\n`;
+    resumen += `*TOTAL: ${formatearPrecioCOP(total)}*\n\n`;
+    resumen += `¿Confirmamos el pedido?\n*SI* para pagar | *NO* para cancelar`;
+
+    return {
+      texto: resumen,
+      metadata: {
+        awaiting: 'confirmacion',
+        pending_cart: cart,
+        pending_direccion: `${PREFIJO_RECOGIDA}${sede.nombre}`,
+        pending_subtotal: subtotal,
+        pending_costo_envio: costoEnvio,
+        pending_total: total,
+      },
+    };
   }
 
   // Estado: esperando dirección
@@ -689,6 +732,27 @@ function respuestaCarrito(cart: CartItem[]): BotResponse {
   return {
     texto: msg,
     metadata: { awaiting: 'carrito', pending_cart: cart },
+  };
+}
+
+function preguntarTipoEntrega(cart: CartItem[]): BotResponse {
+  return {
+    texto:
+      `🚀 *¿Cómo quieres recibir tu pedido?*\n\n` +
+      `*1.* 🛵 Envío a domicilio\n` +
+      `*2.* 🏪 Recoger en tienda (gratis)\n\n` +
+      `Responde *1* o *2*.`,
+    metadata: { awaiting: 'tipo_entrega', pending_cart: cart },
+  };
+}
+
+function preguntarSedeRecogida(cart: CartItem[]): BotResponse {
+  return {
+    texto:
+      `🏪 *¿En cuál tienda quieres recoger?*\n\n` +
+      `${MENU_SEDES}\n\n` +
+      `Escribe el número de la sede.`,
+    metadata: { awaiting: 'recoger_sede', pending_cart: cart },
   };
 }
 

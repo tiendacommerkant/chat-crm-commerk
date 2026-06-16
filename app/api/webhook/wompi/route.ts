@@ -5,6 +5,7 @@ import { supabaseAdmin, actualizarEstadoVenta } from '@/lib/supabase';
 import { crearPedidoShopifyMultiItem, formatearPrecioCOP } from '@/lib/shopify';
 import { enviarMensajeWhatsApp } from '@/lib/whatsapp';
 import { enviarConfirmacionPago } from '@/lib/whatsapp-templates';
+import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from '@/lib/sedes';
 import type { WompiWebhookEvent } from '@/types';
 
 const CONEXA_FORWARD_URL = 'https://wompi-event-shopify.conexa.ai/api/v1/shopify/webhooks/event';
@@ -30,6 +31,10 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
   const conversacionId: string | null = ventas[0].conversacion_id || null;
   const direccionEnvio: string = (ventas[0] as any).direccion_envio || 'Sin especificar';
   const totalPedido = ventas.reduce((s, v) => s + Number(v.total), 0);
+
+  // ¿El cliente eligió recoger en tienda?
+  const recogida = esRecogidaEnTienda(direccionEnvio);
+  const nombreSede = nombreSedeDesdeDireccion(direccionEnvio);
 
   if (transaction.status === 'APPROVED') {
     // 1. Marcar TODAS las ventas como pagadas (lo más crítico)
@@ -62,13 +67,16 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
       const lineasProductos = ventas
         .map((v) => `📦 *${v.producto_nombre}* × ${v.cantidad}`)
         .join('\n');
+      const cierre = recogida
+        ? `\n🏪 Tu pedido quedará *listo para recoger en ${nombreSede}*. Te avisamos apenas puedas pasar. ¡Gracias! 🎉`
+        : `\n🚚 Te enviaremos tu pedido en las próximas 24-48 horas. ¡Gracias! 🎉`;
       const msgConfirmacion =
         `✅ *¡Pago confirmado!*\n\n` +
         `Hola ${nombreCliente.split(' ')[0] || 'amigo'}, recibimos tu pago correctamente.\n\n` +
         `${lineasProductos}\n` +
         `💵 Total pagado: *${formatearPrecioCOP(totalPedido)}*\n` +
         (shopifyOrderNum ? `🔢 Pedido Shopify: *${shopifyOrderNum}*\n` : '') +
-        `\n🚚 Te enviaremos tu pedido en las próximas 24-48 horas. ¡Gracias! 🎉`;
+        cierre;
 
       await Promise.allSettled([
         supabaseAdmin.from('mensajes').insert({
@@ -96,6 +104,27 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
           estado: 'enviado',
         }).then(),
       ]);
+    }
+
+    // 4. Si es recogida en tienda, avisar a la sede para que tengan el pedido listo
+    if (recogida && nombreSede) {
+      const telSede = buscarTelefonoSede(nombreSede);
+      if (telSede) {
+        const detalleSede = ventas
+          .map((v) => `• ${v.producto_nombre} × ${v.cantidad}`)
+          .join('\n');
+        const msgSede =
+          `🏪 *Nuevo pedido para RECOGER en ${nombreSede}*\n\n` +
+          `👤 Cliente: ${nombreCliente || 'Sin nombre'}\n` +
+          `📱 Tel: +${telefono}\n\n` +
+          `${detalleSede}\n` +
+          `💵 Total pagado: *${formatearPrecioCOP(totalPedido)}*\n` +
+          (shopifyOrderNum ? `🔢 Pedido: *${shopifyOrderNum}*\n` : '') +
+          `\n✅ *Pago confirmado por Wompi.* Por favor deja el pedido listo para entrega.`;
+        await enviarMensajeWhatsApp(telSede, msgSede).catch((e) =>
+          console.error('[Wompi] Error notificando a sede:', e?.message)
+        );
+      }
     }
 
   } else if (transaction.status === 'DECLINED' || transaction.status === 'VOIDED') {
