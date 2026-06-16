@@ -341,7 +341,7 @@ export async function procesarMensajeBot(
       return respuestaCarrito(updatedCart);
     }
 
-    // No es un número — si parece un nuevo intento de compra o cancelación, resetear
+    // No es un número — si quiere cancelar o cambiar, resetear
     if (esNegacion(textoLower) || /cancelar|otro producto|no quiero ese|cambiar/i.test(textoLower)) {
       return {
         texto: '¡Sin problema! Cuéntame qué producto te interesa. 😊',
@@ -349,11 +349,7 @@ export async function procesarMensajeBot(
       };
     }
 
-    // Si tiene intención de compra de otro producto, dejar que Sofi o el bot lo manejen
-    if (USE_AI && (esIntencionCompra(textoLower) || esSaludo(textoLower))) {
-      return await procesarMensajeSofi(texto, context, pendingCart);
-    }
-
+    // Nunca llamar a Sofi cuando hay un flujo de cantidad activo — solo pedir el número
     const productos2 = await obtenerProductosCache();
     const prod2 = productos2.find((p) => p.shopify_id === pendingProductId);
     const nombreProd = prod2?.titulo || 'ese producto';
@@ -371,7 +367,7 @@ export async function procesarMensajeBot(
         metadata: { awaiting: '', pending_cart: pendingCart },
       };
     }
-    if (/(pagar|pago|finalizar|proceder|checkout|listo|confirmar|adelante|dale|^si$|^s[íi]$)/i.test(textoLower)) {
+    if (esConfirmacion(textoLower) || /(pagar|pago|finalizar|proceder|checkout)/i.test(textoLower)) {
       return {
         texto:
           `📍 *¿A qué dirección te enviamos?*\n\n` +
