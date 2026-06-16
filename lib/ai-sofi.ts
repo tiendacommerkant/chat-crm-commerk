@@ -1,15 +1,15 @@
 // ============================================================
-// SOFI — Agente conversacional de ventas (OpenAI gpt-4o)
+// SOFI — Agente conversacional de ventas (Anthropic claude-opus-4-7)
 // ROL: solo recomienda y conversa. El checkout lo maneja bot-logic.
 // ============================================================
 
-import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import type { BotContext, BotResponse } from '@/types';
 import type { CartItem } from './bot-logic';
 import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const COSTO_ENVIO        = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
@@ -152,22 +152,28 @@ RESPONDE SOLO JSON:
 {"texto":"...","accion":"continuar|iniciar_compra|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo"}`;
 
   try {
-    const response = await openai.chat.completions.create(
+    const response = await anthropic.messages.create(
       {
-        model: 'gpt-4o',
-        max_tokens: 300,
-        temperature: 0.5,
-        response_format: { type: 'json_object' },
+        model: 'claude-opus-4-7',
+        max_tokens: 4096,
+        thinking: { type: 'adaptive' },
+        system: [
+          {
+            type: 'text' as const,
+            text: system,
+            cache_control: { type: 'ephemeral' as const },
+          },
+        ],
         messages: [
-          { role: 'system', content: system },
           ...historial,
           { role: 'user', content: mensaje },
         ],
       },
-      { timeout: 8000 }
+      { timeout: 30000 }
     );
 
-    const rawText = response.choices[0]?.message?.content || '';
+    const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
+    const rawText = textBlock?.text ?? '';
     console.log('[Sofi] raw:', rawText.slice(0, 400));
 
     const parsed = extraerJSON(rawText);
