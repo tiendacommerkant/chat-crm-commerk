@@ -380,6 +380,91 @@ export async function crearPedidoShopify(params: {
 }
 
 /**
+ * Crear UN pedido en Shopify con MÚLTIPLES productos (carrito multi-ítem)
+ */
+export async function crearPedidoShopifyMultiItem(params: {
+  items: Array<{ productoShopifyId: string; cantidad: number }>;
+  clienteNombre?: string | null;
+  clienteTelefono: string;
+  clienteEmail?: string | null;
+  direccionEnvio: string;
+  referenciaPago: string;
+  metodoPago?: string;
+}): Promise<{ success: boolean; orderId?: number; orderNumber?: number; error?: string }> {
+  try {
+    // Resolver variant_id de cada producto
+    const lineItems: Array<{ variant_id: number; quantity: number }> = [];
+    for (const item of params.items) {
+      const producto = await obtenerProductoShopify(item.productoShopifyId);
+      if (!producto || !producto.variants?.length) {
+        console.error('Producto no encontrado en Shopify:', item.productoShopifyId);
+        continue;
+      }
+      lineItems.push({ variant_id: producto.variants[0].id, quantity: item.cantidad });
+    }
+
+    if (lineItems.length === 0) {
+      return { success: false, error: 'Ningún producto válido para el pedido' };
+    }
+
+    const nombreParts = (params.clienteNombre || 'Cliente WhatsApp').split(' ');
+    const firstName = nombreParts[0] || 'Cliente';
+    const lastName = nombreParts.slice(1).join(' ') || 'WhatsApp';
+
+    const orderPayload = {
+      order: {
+        line_items: lineItems,
+        customer: {
+          first_name: firstName,
+          last_name: lastName,
+          phone: params.clienteTelefono,
+          email: params.clienteEmail || undefined,
+        },
+        shipping_address: {
+          first_name: firstName,
+          last_name: lastName,
+          address1: params.direccionEnvio,
+          phone: params.clienteTelefono,
+          country: 'CO',
+          country_code: 'CO',
+        },
+        financial_status: 'paid',
+        tags: `whatsapp,bot,ref:${params.referenciaPago}`,
+        note: `Venta por WhatsApp Bot | Pago: ${params.metodoPago || 'Wompi'} | Ref: ${params.referenciaPago}`,
+        send_receipt: false,
+        send_fulfillment_receipt: false,
+      },
+    };
+
+    const response = await fetch(`${SHOPIFY_API_URL}/orders.json`, {
+      method: 'POST',
+      headers: {
+        'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(orderPayload),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const errMsg = data.errors ? JSON.stringify(data.errors) : `HTTP ${response.status}`;
+      console.error('Error creando pedido multi-ítem en Shopify:', errMsg);
+      return { success: false, error: errMsg };
+    }
+
+    return {
+      success: true,
+      orderId: data.order?.id,
+      orderNumber: data.order?.order_number,
+    };
+  } catch (error) {
+    console.error('Error en crearPedidoShopifyMultiItem:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Error desconocido' };
+  }
+}
+
+/**
  * Formatear precio en pesos colombianos
  */
 export function formatearPrecioCOP(precio: number): string {
