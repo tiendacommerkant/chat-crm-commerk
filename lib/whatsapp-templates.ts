@@ -107,6 +107,35 @@ export async function enviarPedidoEnCamino(
 }
 
 /**
+ * pedido_recoger_sede — UTILITY
+ * Aviso a la tienda física cuando un cliente paga para recoger en sede.
+ * {{1}}=sede, {{2}}=cliente, {{3}}=tel cliente, {{4}}=productos, {{5}}=total, {{6}}=pedido
+ */
+export async function enviarPedidoRecogerSede(
+  telefonoSede: string,
+  sede: string,
+  cliente: string,
+  telCliente: string,
+  productos: string,
+  total: string,
+  pedido: string
+): Promise<boolean> {
+  return enviarPlantilla(telefonoSede, 'pedido_recoger_sede', [
+    {
+      type: 'body',
+      parameters: [
+        { type: 'text', text: sede || 'Tienda' },
+        { type: 'text', text: cliente || 'Cliente' },
+        { type: 'text', text: telCliente || 'N/D' },
+        { type: 'text', text: productos || 'Pedido' },
+        { type: 'text', text: total || '—' },
+        { type: 'text', text: pedido || 'Pendiente' },
+      ],
+    },
+  ]);
+}
+
+/**
  * carrito_abandonado — MARKETING
  * {{1}}=nombre, {{2}}=producto, {{3}}=precio
  * Botones: "Completar compra", "No me interesa"

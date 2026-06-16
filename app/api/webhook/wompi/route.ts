@@ -4,7 +4,7 @@ import { waitUntil } from '@vercel/functions';
 import { supabaseAdmin, actualizarEstadoVenta } from '@/lib/supabase';
 import { crearPedidoShopifyMultiItem, formatearPrecioCOP } from '@/lib/shopify';
 import { enviarMensajeWhatsApp } from '@/lib/whatsapp';
-import { enviarConfirmacionPago } from '@/lib/whatsapp-templates';
+import { enviarConfirmacionPago, enviarPedidoRecogerSede } from '@/lib/whatsapp-templates';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from '@/lib/sedes';
 import type { WompiWebhookEvent } from '@/types';
 
@@ -110,20 +110,37 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
     if (recogida && nombreSede) {
       const telSede = buscarTelefonoSede(nombreSede);
       if (telSede) {
-        const detalleSede = ventas
-          .map((v) => `• ${v.producto_nombre} × ${v.cantidad}`)
-          .join('\n');
-        const msgSede =
-          `🏪 *Nuevo pedido para RECOGER en ${nombreSede}*\n\n` +
-          `👤 Cliente: ${nombreCliente || 'Sin nombre'}\n` +
-          `📱 Tel: +${telefono}\n\n` +
-          `${detalleSede}\n` +
-          `💵 Total pagado: *${formatearPrecioCOP(totalPedido)}*\n` +
-          (shopifyOrderNum ? `🔢 Pedido: *${shopifyOrderNum}*\n` : '') +
-          `\n✅ *Pago confirmado por Wompi.* Por favor deja el pedido listo para entrega.`;
-        await enviarMensajeWhatsApp(telSede, msgSede).catch((e) =>
-          console.error('[Wompi] Error notificando a sede:', e?.message)
-        );
+        const detalleProductos = ventas
+          .map((v) => `${v.producto_nombre} × ${v.cantidad}`)
+          .join(', ');
+        const totalFmt = formatearPrecioCOP(totalPedido);
+        const pedidoRef = shopifyOrderNum || reference;
+
+        // Plantilla (llega siempre, incluso fuera de la ventana de 24h)
+        const okPlantilla = await enviarPedidoRecogerSede(
+          telSede,
+          nombreSede,
+          nombreCliente || 'Cliente',
+          `+${telefono}`,
+          detalleProductos,
+          totalFmt,
+          pedidoRef
+        ).catch(() => false);
+
+        // Fallback a texto libre si la plantilla aún no está aprobada/disponible
+        if (!okPlantilla) {
+          const msgSede =
+            `🏪 *Nuevo pedido para RECOGER en ${nombreSede}*\n\n` +
+            `👤 Cliente: ${nombreCliente || 'Sin nombre'}\n` +
+            `📱 Tel: +${telefono}\n\n` +
+            `${ventas.map((v) => `• ${v.producto_nombre} × ${v.cantidad}`).join('\n')}\n` +
+            `💵 Total pagado: *${totalFmt}*\n` +
+            (shopifyOrderNum ? `🔢 Pedido: *${shopifyOrderNum}*\n` : '') +
+            `\n✅ *Pago confirmado por Wompi.* Por favor deja el pedido listo para entrega.`;
+          await enviarMensajeWhatsApp(telSede, msgSede).catch((e) =>
+            console.error('[Wompi] Error notificando a sede:', e?.message)
+          );
+        }
       }
     }
 
