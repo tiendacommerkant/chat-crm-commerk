@@ -627,7 +627,7 @@ function esIntencionCompra(t: string) {
 function esIntencionPago(t: string) {
   // SOLO frases explícitas de pago — NO incluir "si/ok/listo/dale/confirmar"
   // porque esas palabras son respuestas de confirmación en la máquina de estados.
-  return /(^pagar$|^pago$|^finalizar$|^proceder$|^checkout$|proceder con el pago|quiero pagar|finalizar pedido|realizar pago|completar compra|completar pedido|ir a pagar|procesar pago|quiero proceder|listo para pagar)/i.test(t.trim());
+  return /(^pagar$|^pago$|^finalizar$|^proceder$|^checkout$|proceder con el pago|quiero pagar|finalizar (la |mi )?compra|finalizar (el |mi )?pedido|realizar (el |mi )?pago|completar (la |mi )?compra|completar (el |mi )?pedido|ir a pagar|procesar (el |mi )?pago|quiero proceder|listo para pagar|dame el total|quiero el total)/i.test(t.trim());
 }
 function esConsultaEnvio(t: string) {
   return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
