@@ -18,7 +18,7 @@ import { obtenerProductosCache, actualizarCliente, supabaseAdmin } from './supab
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
-import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES } from './sedes';
+import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA } from './sedes';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -188,7 +188,7 @@ export async function procesarMensajeBot(
   // No activar con búsquedas genéricas como "ron viejo" que pueden cogerse mal
   if (USE_AI && awaiting === '' && esIntencionCompra(textoLower)) {
     const tieneAliasEspecifico = ALIASES_PRODUCTO.some((a) =>
-      a.palabrasClave.some((k) => textoLower.includes(k))
+      a.palabrasClave.some((k) => incluyeTermino(textoLower, k))
     );
     if (tieneAliasEspecifico) {
       const productoDirecto = await detectarProducto(textoLower);
@@ -240,7 +240,7 @@ export async function procesarMensajeBot(
 
   // Estado: esperando elección de sede mayorista
   if (awaiting === 'mayorista_sede') {
-    const sede = SEDES_FISICAS[texto.trim()];
+    const sede = SEDES_MAYORISTA[texto.trim()];
     if (sede) {
       const mensajeOriginal: string = ultimoBot?.metadata?.pending_mayorista_mensaje || '';
       await enviarLeadASede(sede, context, mensajeOriginal);
@@ -255,8 +255,7 @@ export async function procesarMensajeBot(
     return {
       texto:
         `Por favor escribe el *número* de la sede:\n\n` +
-        `*1.* 🏬 CC Tesoro\n*2.* 🏬 CC Fabricato\n*3.* 🏬 Autopista Sur - Itagüí\n` +
-        `*4.* 🏬 Gran Manzana - Itagüí\n*5.* 🏬 Mall Indiana\n*6.* 🏬 Urabá - Apartadó`,
+        MENU_SEDES_MAYORISTA,
       metadata: {
         awaiting: 'mayorista_sede',
         pending_mayorista_mensaje: ultimoBot?.metadata?.pending_mayorista_mensaje || '',
@@ -571,12 +570,7 @@ function respuestaMayoristaOpciones(context: BotContext, mensajeOriginal: string
     texto:
       `¡Hola${nombre ? ` ${nombre}` : ''}! Para compras al por mayor te conectamos directamente con la sede más cercana. 🏪\n\n` +
       `¿Cuál tienda te queda más cerca?\n\n` +
-      `*1.* 🏬 CC Tesoro\n` +
-      `*2.* 🏬 CC Fabricato\n` +
-      `*3.* 🏬 Autopista Sur - Itagüí\n` +
-      `*4.* 🏬 Gran Manzana - Itagüí\n` +
-      `*5.* 🏬 Mall Indiana\n` +
-      `*6.* 🏬 Urabá - Apartadó`,
+      MENU_SEDES_MAYORISTA,
     metadata: { awaiting: 'mayorista_sede', pending_mayorista_mensaje: mensajeOriginal },
   };
 }
@@ -675,13 +669,20 @@ function quitarAcentos(t: string): string {
   return t.normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
+// Match por palabra completa (evita que "5 años" coincida dentro de "15 años")
+function incluyeTermino(texto: string, termino: string): boolean {
+  const t = quitarAcentos(texto.toLowerCase());
+  const k = quitarAcentos(termino.toLowerCase()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|\\W)${k}(\\W|$)`).test(t);
+}
+
 async function detectarProducto(texto: string): Promise<Producto | null> {
   const productos = await obtenerProductosCache();
   const t = quitarAcentos(texto);
 
   // Primero: banco de alias del brief
   for (const alias of ALIASES_PRODUCTO) {
-    const coincide = alias.palabrasClave.some((k) => t.includes(quitarAcentos(k)));
+    const coincide = alias.palabrasClave.some((k) => incluyeTermino(texto, k));
     if (coincide) {
       const prod = productos.find((p) =>
         quitarAcentos(p.titulo.toLowerCase()).includes(quitarAcentos(alias.tituloContiene))

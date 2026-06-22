@@ -17,6 +17,21 @@ export const SEDES_FISICAS: Record<string, Sede> = {
   '6': { nombre: 'Urabá - Apartadó', telefono: '573160173928' },
 };
 
+// Sedes para compras al por mayor (incluye Parque comercial Florida)
+export const SEDES_MAYORISTA: Record<string, Sede> = {
+  ...SEDES_FISICAS,
+  '7': { nombre: 'Parque Comercial Florida', telefono: '573153658482' },
+};
+
+export const MENU_SEDES_MAYORISTA =
+  `*1.* 🏬 CC Tesoro\n` +
+  `*2.* 🏬 CC Fabricato\n` +
+  `*3.* 🏬 Autopista Sur - Itagüí\n` +
+  `*4.* 🏬 Gran Manzana - Itagüí\n` +
+  `*5.* 🏬 Mall Indiana\n` +
+  `*6.* 🏬 Urabá - Apartadó\n` +
+  `*7.* 🏬 Parque Comercial Florida`;
+
 // Prefijo que marca un pedido para recoger en tienda (se guarda en direccion_envio)
 export const PREFIJO_RECOGIDA = 'Recoge en tienda: ';
 
