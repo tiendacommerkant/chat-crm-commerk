@@ -105,7 +105,9 @@ export async function procesarMensajeBot(
   }
 
   // ── SEDE: cliente aceptó políticas pero no ha elegido sede ─────────
-  if (awaiting === 'sede' || !context.cliente.sede_preferida) {
+  // Solo pedir sede cuando NO hay un flujo activo (sin esto, un "3" para
+  // cantidad se interpretaba como selección de sede #3).
+  if (awaiting === 'sede' || (awaiting === '' && !context.cliente.sede_preferida)) {
     const SEDES_REGISTRO: Record<string, string> = {
       '1': 'Virtual',
       '2': 'CC Tesoro',
