@@ -142,10 +142,13 @@ export async function procesarMensajeBot(
   }
 
   // ── CANCELAR siempre disponible ───────────────────────────────────
-  if (/^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i.test(textoLower)) {
+  // Frases claras de cancelación total. La cancelación conversacional más
+  // suelta ("no quiero ese", "quítalo") la maneja cada estado de menú.
+  if (/^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i.test(textoLower) ||
+      /cancela(r)?\s+(el\s+|mi\s+|la\s+)?(pedido|carrito|compra|todo|orden)/i.test(textoLower)) {
     return {
       texto: '✅ Pedido cancelado. Cuando quieras, cuéntame qué necesitas y te ayudo. 😊',
-      metadata: { awaiting: '' },
+      metadata: { awaiting: '', pending_cart: [] },
     };
   }
 
@@ -355,11 +358,23 @@ export async function procesarMensajeBot(
     if (esConfirmacion(textoLower) || /(pagar|pago|finalizar|proceder|checkout)/i.test(textoLower)) {
       return preguntarTipoEntrega(pendingCart);
     }
+    if (esCancelacion(textoLower)) {
+      return {
+        texto: '✅ Listo, cancelé tu pedido y vacié el carrito. Cuando quieras te ayudo con algo nuevo. 😊',
+        metadata: { awaiting: '', pending_cart: [] },
+      };
+    }
     return respuestaCarrito(pendingCart);
   }
 
   // Estado: elegir tipo de entrega (domicilio o recoger en tienda)
   if (awaiting === 'tipo_entrega') {
+    if (esCancelacion(textoLower)) {
+      return {
+        texto: '✅ Listo, cancelé tu pedido. Cuando quieras seguimos. 😊',
+        metadata: { awaiting: '', pending_cart: [] },
+      };
+    }
     // Domicilio
     if (/^1$/.test(textoLower) || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|mandar|a mi casa|a casa)/i.test(textoLower)) {
       return {
@@ -380,6 +395,12 @@ export async function procesarMensajeBot(
 
   // Estado: elegir sede para recoger en tienda
   if (awaiting === 'recoger_sede') {
+    if (esCancelacion(textoLower)) {
+      return {
+        texto: '✅ Listo, cancelé tu pedido. Cuando quieras seguimos. 😊',
+        metadata: { awaiting: '', pending_cart: [] },
+      };
+    }
     const sede = SEDES_FISICAS[texto.trim()];
     if (!sede) {
       return preguntarSedeRecogida(pendingCart);
@@ -503,10 +524,10 @@ export async function procesarMensajeBot(
         },
       };
     }
-    if (esNegacion(textoLower)) {
+    if (esNegacion(textoLower) || esCancelacion(textoLower)) {
       return {
         texto: '❌ Pedido cancelado. Cuando quieras, cuéntame qué necesitas y te ayudo. 😊',
-        metadata: { awaiting: '' },
+        metadata: { awaiting: '', pending_cart: [] },
       };
     }
   }
@@ -634,6 +655,11 @@ function esConfirmacion(t: string) {
 }
 function esNegacion(t: string) {
   return /^(no|nope|cancel|cancelar|no gracias|dejalo|d[eé]jalo)$/i.test(t.trim());
+}
+// Cancelar/quitar en lenguaje natural ("no quiero ese producto", "quítalo", "bórralo", "mejor no")
+function esCancelacion(t: string): boolean {
+  const s = t.trim().toLowerCase();
+  return /(cancel(a|ar|o|emos)?|an[uú]l(a|ar|o)|no\s+(lo\s+|los\s+|me\s+)?quiero|ya\s+no\s+(lo\s+)?quiero|qu[ií]ta(me|lo|los|r)?|saca(me|lo|los|r)?|borra(lo|los|r|me)?|elimina(lo|los|r)?|olv[ií]da(lo|r)?|mejor\s+no|d[eé]jalo\s+as[ií]|empezar\s+de\s+(nuevo|cero)|reinicia(r)?|vaciar?\s+(el\s+)?carrito)/i.test(s);
 }
 function extraerCantidad(t: string): number | null {
   // 1. Primero buscar dígitos en el texto
