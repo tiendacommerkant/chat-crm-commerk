@@ -195,6 +195,31 @@ export async function obtenerPedidosShopify(limite: number = 50, status: string 
 }
 
 /**
+ * Obtener un pedido de Shopify por su ID — estado en TIEMPO REAL
+ * (incluye financial_status, fulfillment_status y fulfillments con tracking)
+ */
+export async function obtenerPedidoShopifyPorId(orderId: number | string): Promise<any | null> {
+  try {
+    const response = await fetch(
+      `${SHOPIFY_API_URL}/orders/${orderId}.json`,
+      {
+        headers: {
+          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+      }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.order || null;
+  } catch (error) {
+    console.error('Error obteniendo pedido Shopify por ID:', error);
+    return null;
+  }
+}
+
+/**
  * Registrar webhooks en Shopify (elimina los existentes primero)
  */
 export async function registrarWebhooksShopify(baseUrl: string): Promise<{ topic: string; success: boolean; error?: string }[]> {

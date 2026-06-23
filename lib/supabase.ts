@@ -215,6 +215,31 @@ export async function actualizarEstadoVenta(
 }
 
 /**
+ * Obtener los pedidos Shopify de un cliente (por teléfono o cliente_id), más recientes primero
+ */
+export async function obtenerPedidosClienteShopify(
+  telefono: string,
+  clienteId?: string
+): Promise<any[]> {
+  let query = supabaseAdmin
+    .from('pedidos_shopify')
+    .select('shopify_order_id, shopify_order_number, estado_financiero, estado_fulfillment, items, total, direccion_envio, shopify_created_at')
+    .order('shopify_created_at', { ascending: false })
+    .limit(5);
+
+  query = clienteId
+    ? query.or(`telefono.eq.${telefono},cliente_id.eq.${clienteId}`)
+    : query.eq('telefono', telefono);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error('Error obteniendo pedidos del cliente:', error.message);
+    return [];
+  }
+  return data || [];
+}
+
+/**
  * Obtener productos desde caché (Supabase)
  */
 export async function obtenerProductosCache(): Promise<Producto[]> {

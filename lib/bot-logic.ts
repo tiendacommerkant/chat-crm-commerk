@@ -14,11 +14,11 @@
 // ============================================
 
 import type { BotContext, BotResponse, Producto } from '@/types';
-import { obtenerProductosCache, actualizarCliente, supabaseAdmin } from './supabase';
-import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
+import { obtenerProductosCache, actualizarCliente, supabaseAdmin, obtenerPedidosClienteShopify } from './supabase';
+import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
-import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA } from './sedes';
+import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion } from './sedes';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -172,6 +172,12 @@ export async function procesarMensajeBot(
       };
     }
     return respuestaCarrito(pendingCart);
+  }
+
+  // ── ESTADO DE PEDIDO: consulta Shopify en tiempo real ─────────────
+  // Solo sin carrito activo (con carrito, "finalizar mi pedido" es pago, no consulta).
+  if (awaiting === '' && pendingCart.length === 0 && esConsultaPedido(textoLower)) {
+    return await respuestaEstadoPedido(context);
   }
 
   // ── MAYORISTA: detección antes de Sofi (solo sin flujo activo de compra) ─
@@ -646,6 +652,94 @@ function esIntencionPago(t: string) {
 }
 function esConsultaEnvio(t: string) {
   return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
+}
+function esConsultaPedido(t: string): boolean {
+  return /(estado (de )?(mi|el)? ?(pedido|orden|compra|env[íi]o)|c[oó]mo va mi (pedido|orden|compra|env[íi]o)|d[oó]nde (está|va) mi (pedido|orden|compra|env[íi]o)|mi (pedido|orden|compra)|ya (lo )?(enviaron|despacharon|mandaron)|cu[aá]ndo (me )?(llega|lo entregan|lo reciben)|rastrear|rastreo|seguimiento|tracking|gu[íi]a de env[íi]o|n[uú]mero de gu[íi]a)/i.test(t.trim());
+}
+
+// Traducción de estados de Shopify a español
+function estadoPagoEspanol(fin?: string | null): string {
+  const m: Record<string, string> = {
+    paid: 'Confirmado ✅',
+    pending: 'Pendiente ⏳',
+    authorized: 'Autorizado',
+    partially_paid: 'Pago parcial',
+    refunded: 'Reembolsado',
+    partially_refunded: 'Reembolso parcial',
+    voided: 'Anulado',
+    cancelled: 'Cancelado ❌',
+  };
+  return m[fin || ''] || (fin || 'Por confirmar');
+}
+function estadoEnvioEspanol(ful?: string | null): string {
+  if (!ful || ful === 'null') return 'En preparación 📦';
+  const m: Record<string, string> = {
+    fulfilled: 'Despachado 🚚',
+    partial: 'Despacho parcial 🚚',
+    restocked: 'Reintegrado',
+    unfulfilled: 'En preparación 📦',
+  };
+  return m[ful] || ful;
+}
+
+async function respuestaEstadoPedido(context: BotContext): Promise<BotResponse> {
+  const telefono = context.cliente.telefono;
+  const pedidos = await obtenerPedidosClienteShopify(telefono, context.cliente.id);
+
+  if (pedidos.length === 0) {
+    return {
+      texto:
+        `🔎 No encuentro pedidos asociados a tu número. 🤔\n\n` +
+        `Si compraste hace pocos minutos, dame un momentico y vuelve a preguntar. ` +
+        `Si tienes el *número de pedido*, escríbemelo y lo reviso. 😊`,
+      metadata: { awaiting: '', pending_cart: [] },
+    };
+  }
+
+  // Tomar el pedido más reciente y consultar Shopify en TIEMPO REAL
+  const ultimo = pedidos[0];
+  const orderRT = await obtenerPedidoShopifyPorId(ultimo.shopify_order_id);
+
+  const numero = orderRT?.order_number ?? ultimo.shopify_order_number;
+  const finStatus = orderRT?.financial_status ?? ultimo.estado_financiero;
+  const fulStatus = orderRT?.fulfillment_status ?? ultimo.estado_fulfillment;
+  const total = orderRT ? parseFloat(orderRT.total_price) : Number(ultimo.total);
+  const items = orderRT?.line_items ?? ultimo.items ?? [];
+  const direccion = ultimo.direccion_envio;
+
+  const lineas = (items as any[])
+    .map((i) => `• ${i.title} × ${i.quantity}`)
+    .join('\n');
+
+  // Tracking si ya fue despachado
+  const fulfillment = orderRT?.fulfillments?.[0];
+  const trackingNum = fulfillment?.tracking_number;
+  const trackingCompany = fulfillment?.tracking_company;
+  const trackingUrl = fulfillment?.tracking_url || fulfillment?.tracking_urls?.[0];
+
+  const esRecoge = typeof direccion === 'string' && esRecogidaEnTienda(direccion);
+  const entregaLinea = esRecoge
+    ? `🏪 Recoges en: *${nombreSedeDesdeDireccion(direccion as string)}*`
+    : `🚚 Envío: *${estadoEnvioEspanol(fulStatus)}*`;
+
+  let texto =
+    `📦 *Pedido #${numero}*\n` +
+    `${lineas}\n\n` +
+    `💳 Pago: *${estadoPagoEspanol(finStatus)}*\n` +
+    `${entregaLinea}\n` +
+    `💵 Total: *${formatearPrecioCOP(total)}*\n`;
+
+  if (trackingNum) {
+    texto += `\n📍 Guía: *${trackingCompany || 'Transportadora'} ${trackingNum}*\n`;
+    if (trackingUrl) texto += `${trackingUrl}\n`;
+  }
+
+  texto += `\n¿Te ayudo con algo más? 😊`;
+
+  return {
+    texto,
+    metadata: { awaiting: '', pending_cart: [] },
+  };
 }
 function esAgradecimiento(t: string) {
   return /^(gracias|muchas gracias|chevere|ch[eé]vere|excelente|perfecto|genial|ok gracias|listo gracias)/i.test(t);
