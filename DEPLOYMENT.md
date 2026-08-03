@@ -23,22 +23,22 @@ git push -u origin main
 
 ### Paso 3: Configurar Webhooks
 
-Una vez desplegado, obtendrás una URL como:
-`https://chatbot-crm-commerk.vercel.app`
+Dominio de producción:
+`https://crmbot.tiendacommerkant.com.co`
 
 Configura estos webhooks:
 
 **WhatsApp:**
-- URL: `https://TU-DOMINIO.vercel.app/api/webhook/whatsapp`
+- URL: `https://crmbot.tiendacommerkant.com.co/api/webhook/whatsapp`
 - Método: POST
 - Verify Token: (el que pusiste en .env)
 
 **Wompi:**
-- URL: `https://TU-DOMINIO.vercel.app/api/webhook/wompi`
+- URL: `https://crmbot.tiendacommerkant.com.co/api/webhook/wompi`
 - Eventos: transaction.updated
 
 **Shopify:**
-- URL: `https://TU-DOMINIO.vercel.app/api/webhook/shopify`
+- URL: `https://crmbot.tiendacommerkant.com.co/api/webhook/shopify`
 - Evento: Product update
 
 ## Opción 2: Railway
@@ -113,7 +113,7 @@ vercel logs --follow
 
 ### Health Check
 ```bash
-curl https://TU-DOMINIO.vercel.app/api/health
+curl https://crmbot.tiendacommerkant.com.co/api/health
 ```
 
 ## Troubleshooting
