@@ -270,9 +270,9 @@ export async function procesarMensajeBot(
       await enviarLeadASede(sede, context, mensajeOriginal);
       return {
         texto:
-          `✅ ¡Perfecto! Tu consulta fue enviada a nuestra sede *${sede.nombre}*.\n\n` +
-          `Un asesor especializado en compras al por mayor te contactará pronto. 😊\n\n` +
-          `_Tienda Commerk Antioquia_`,
+          `✅ ¡Listo! Ya le pasé tus datos a nuestra sede *${sede.nombre}*.\n\n` +
+          `Un asesor de compras al por mayor te va a escribir a este mismo número (+${context.cliente.telefono}) para darte precios y condiciones especiales. 😊\n\n` +
+          `Mientras tanto, si quieres, cuéntame qué productos te interesan y te voy adelantando información.`,
         metadata: { awaiting: '' },
       };
     }
@@ -707,9 +707,20 @@ async function enviarLeadASede(
     `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
     `_Responde directamente a este número para atender al cliente._`;
 
-  await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
+  // NOTA: va como texto libre. WhatsApp solo lo entrega si la sede escribió a
+  // este número en las últimas 24h. Si falla queda registrado para seguimiento.
+  let entregado = false;
+  try {
+    const res: any = await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
+    entregado = res !== false;
+  } catch (e: any) {
+    console.error(`[Lead sede] FALLÓ el envío a ${sede.nombre} (${sede.telefono}):`, e?.message);
+  }
+  if (!entregado) {
+    console.error(`[Lead sede] El lead de ${nombre} (+${telefono}) NO llegó a ${sede.nombre}. Revisar ventana de 24h / plantilla.`);
+  }
 
-  await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from('leads_sedes')
     .insert({
       cliente_id: context.cliente.id,
@@ -719,10 +730,8 @@ async function enviarLeadASede(
       telefono_sede: sede.telefono,
       mensaje_original: mensajeOriginal || 'compra al por mayor',
       conversacion_id: context.conversacion?.id || null,
-    })
-    .then(({ error }) => {
-      if (error) console.error('[Lead sede] Error guardando:', error.message);
     });
+  if (error) console.error('[Lead sede] Error guardando:', error.message);
 }
 
 // ──────────────────────────────────────────

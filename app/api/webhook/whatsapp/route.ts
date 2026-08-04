@@ -249,17 +249,27 @@ export async function POST(req: Request) {
 
           // ── Acción: transferir al asesor humano (Sofi no puede ayudar) ──
           if (respuesta.accion === 'transferir_a_asesor') {
+            // Si hay un flujo activo (checkout, mayorista...), NO apagamos el bot:
+            // apagarlo dejaba al cliente sin respuesta a mitad del proceso.
+            const ultimoBotPrevio = [...historial].reverse().find((m) => m.tipo === 'bot');
+            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting;
+
             await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
               ...respuesta.metadata,
               tipo_wa: 'text',
               transferido_a_asesor: true,
             });
             await enviarMensajeWhatsApp(phone, respuesta.texto);
-            // Desactivar bot para que el agente tome el control
-            await supabaseAdmin
-              .from('conversaciones')
-              .update({ bot_activo: false, updated_at: new Date().toISOString() })
-              .eq('id', conversacion.id);
+
+            if (!flujoActivo) {
+              // Desactivar bot para que el agente tome el control
+              await supabaseAdmin
+                .from('conversaciones')
+                .update({ bot_activo: false, updated_at: new Date().toISOString() })
+                .eq('id', conversacion.id);
+            } else {
+              console.warn('[WA] Transferencia solicitada con flujo activo — el bot sigue activo para no dejar al cliente sin respuesta');
+            }
             continue;
           }
 
