@@ -65,7 +65,17 @@ export async function procesarMensajeBot(
 
   // Leer estado actual del último mensaje bot
   const ultimoBot = [...context.mensajes_previos].reverse().find((m) => m.tipo === 'bot');
-  const awaiting: string = ultimoBot?.metadata?.awaiting || '';
+  let awaiting: string = ultimoBot?.metadata?.awaiting || '';
+
+  // Expirar flujos de checkout abandonados: si el último mensaje del bot es
+  // viejo, no dejamos al cliente "atascado" en un menú. Entra fresco y lo
+  // atiende Sofi de forma conversacional (el carrito se conserva para retomarlo).
+  const ESTADOS_CHECKOUT = ['compra', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'confirmacion', 'link_enviado', 'mayorista_sede'];
+  if (awaiting && ESTADOS_CHECKOUT.includes(awaiting) && ultimoBot?.created_at) {
+    const horasInactivo = (Date.now() - new Date(ultimoBot.created_at).getTime()) / 3_600_000;
+    if (horasInactivo > 6) awaiting = '';
+  }
+
   const pendingProductId: string = ultimoBot?.metadata?.pending_product_id || '';
   const pendingCantidad: number = ultimoBot?.metadata?.pending_cantidad || 1;
   const pendingDireccion: string = ultimoBot?.metadata?.pending_direccion || '';
