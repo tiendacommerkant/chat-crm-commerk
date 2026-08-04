@@ -45,8 +45,43 @@ export function nombreSedeDesdeDireccion(direccion?: string | null): string | nu
 }
 
 export function buscarTelefonoSede(nombreSede: string): string | null {
-  const sede = Object.values(SEDES_FISICAS).find((s) => s.nombre === nombreSede);
+  const sede = Object.values(SEDES_MAYORISTA).find((s) => s.nombre === nombreSede);
   return sede?.telefono ?? null;
+}
+
+// Palabras que identifican cada sede (para elegirla hablando, no solo por número)
+const ALIAS_SEDES: Record<string, string[]> = {
+  'CC Tesoro': ['tesoro'],
+  'CC Fabricato': ['fabricato'],
+  'Autopista Sur - Itagüí': ['autopista', 'autopista sur'],
+  'Gran Manzana - Itagüí': ['gran manzana', 'manzana'],
+  'Mall Indiana': ['indiana', 'mall indiana'],
+  'Urabá - Apartadó': ['uraba', 'apartado', 'apartadó', 'urabá'],
+  'Parque Comercial Florida': ['florida', 'parque comercial', 'parque'],
+};
+
+/**
+ * Encuentra una sede por número ("3") o por nombre hablado ("el del Tesoro").
+ * Devuelve null si el texto no identifica una sede sin ambigüedad.
+ */
+export function encontrarSede(texto: string, mapa: Record<string, Sede> = SEDES_FISICAS): Sede | null {
+  const limpio = texto.trim();
+
+  // Por número
+  const soloNumero = limpio.match(/^(\d+)$/);
+  if (soloNumero && mapa[soloNumero[1]]) return mapa[soloNumero[1]];
+
+  // Por nombre
+  const t = limpio.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const disponibles = Object.values(mapa);
+  for (const sede of disponibles) {
+    const alias = ALIAS_SEDES[sede.nombre] || [];
+    for (const a of alias) {
+      const clave = a.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      if (new RegExp(`(^|\\W)${clave}(\\W|$)`).test(t)) return sede;
+    }
+  }
+  return null;
 }
 
 // Texto del menú de sedes (1..6) para reutilizar en mensajes

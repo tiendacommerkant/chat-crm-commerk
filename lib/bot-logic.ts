@@ -18,7 +18,7 @@ import { obtenerProductosCache, actualizarCliente, supabaseAdmin, obtenerPedidos
 import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
-import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion } from './sedes';
+import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede } from './sedes';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -156,7 +156,10 @@ export async function procesarMensajeBot(
   // ── CANCELAR siempre disponible ───────────────────────────────────
   // Frases claras de cancelación total. La cancelación conversacional más
   // suelta ("no quiero ese", "quítalo") la maneja cada estado de menú.
-  if (/^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i.test(textoLower) ||
+  // OJO: en 'carrito' preguntamos "¿algo más?", así que "no gracias"/"no quiero"
+  // ahí significan "nada más" (finalizar), no cancelar el pedido.
+  const cancelarAmbiguo = awaiting === 'carrito' ? /^(cancelar|cancel|salir|stop)$/i : /^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i;
+  if (cancelarAmbiguo.test(textoLower) ||
       /cancela(r)?\s+(el\s+|mi\s+|la\s+)?(pedido|carrito|compra|todo|orden)/i.test(textoLower)) {
     return {
       texto: '✅ Pedido cancelado. Cuando quieras, cuéntame qué necesitas y te ayudo. 😊',
@@ -261,7 +264,7 @@ export async function procesarMensajeBot(
 
   // Estado: esperando elección de sede mayorista
   if (awaiting === 'mayorista_sede') {
-    const sede = SEDES_MAYORISTA[texto.trim()];
+    const sede = encontrarSede(texto, SEDES_MAYORISTA);
     if (sede) {
       const mensajeOriginal: string = ultimoBot?.metadata?.pending_mayorista_mensaje || '';
       await enviarLeadASede(sede, context, mensajeOriginal);
@@ -386,23 +389,34 @@ export async function procesarMensajeBot(
     };
   }
 
-  // Estado: carrito mostrado — esperando "agregar más" o "pagar"
+  // Estado: carrito mostrado — atención conversacional (sin menús de opciones)
   if (awaiting === 'carrito') {
-    if (/(agregar|seguir|m[aá]s|otro|añadir|otro producto|algo m[aá]s)/i.test(textoLower)) {
-      return {
-        texto: '¡Claro! Cuéntame qué más te gustaría agregar. 😊',
-        metadata: { awaiting: '', pending_cart: pendingCart },
-      };
-    }
-    if (esConfirmacion(textoLower) || /(pagar|pago|finalizar|proceder|checkout)/i.test(textoLower)) {
+    // 1) "Nada más" → finalizar. Va PRIMERO porque aquí preguntamos "¿algo más?",
+    //    así que "no", "no gracias" o "no quiero nada" significan cerrar el pedido.
+    const nadaMas = /^(no|nop|no gracias|no quiero( nada)?( m[aá]s)?|nada m[aá]s|ya no|eso es todo|es todo|as[ií] est[aá] bien|ya est[aá]|listo as[ií])$/i.test(texto.trim());
+    if (
+      nadaMas ||
+      esConfirmacion(textoLower) ||
+      /(pagar|pago|finalizar|finalicemos|finaliza|proceder|checkout|cerrar|terminar|termina|nada m[aá]s|eso es todo)/i.test(textoLower)
+    ) {
       return preguntarTipoEntrega(pendingCart);
     }
+    // 2) Cancelar de verdad ("cancelar", "quítalo", "no quiero ese producto")
     if (esCancelacion(textoLower)) {
       return {
         texto: '✅ Listo, cancelé tu pedido y vacié el carrito. Cuando quieras te ayudo con algo nuevo. 😊',
         metadata: { awaiting: '', pending_cart: [] },
       };
     }
+    // 3) Quiere añadir algo más
+    if (/(agregar|agrego|añadir|a[ñn]ado|sumar|seguir|otro|otra|algo m[aá]s|una cosa m[aá]s|tambi[eé]n quiero|ver m[aá]s)/i.test(textoLower)) {
+      return {
+        texto: '¡Claro! Cuéntame qué más te gustaría llevar. 😊',
+        metadata: { awaiting: '', pending_cart: pendingCart },
+      };
+    }
+    // 4) Cualquier otra cosa (una pregunta, otro producto...) → que la atienda Sofi
+    if (USE_AI) return await procesarMensajeSofi(texto, context, pendingCart);
     return respuestaCarrito(pendingCart);
   }
 
@@ -414,20 +428,32 @@ export async function procesarMensajeBot(
         metadata: { awaiting: '', pending_cart: [] },
       };
     }
+    // Recoger en tienda (se evalúa primero: "paso por él" es más específico)
+    if (/^2$/.test(textoLower) || /(recoger|recojo|recoge|recogerlo|paso por|pasar por|paso a|retiro|retirar|en tienda|en la tienda|tienda f[ií]sica|f[ií]sica|recogida|voy por)/i.test(textoLower)) {
+      return preguntarSedeRecogida(pendingCart);
+    }
     // Domicilio
-    if (/^1$/.test(textoLower) || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|mandar|a mi casa|a casa)/i.test(textoLower)) {
+    if (/^1$/.test(textoLower) || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|env[ií]amelo|mandar|m[aá]ndamelo|a mi casa|a casa|entrega|que llegue)/i.test(textoLower)) {
       return {
         texto:
-          `📍 *¿A qué dirección te enviamos?*\n\n` +
-          `Escribe tu dirección completa con barrio/municipio.\n` +
+          `📍 Perfecto, ¿a qué dirección te lo enviamos?\n\n` +
+          `Escríbeme la dirección completa con barrio o municipio.\n` +
           `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
-          `Cobertura: ${COBERTURA_ENVIOS.join(', ')}`,
+          `Cubrimos: ${COBERTURA_ENVIOS.join(', ')}`,
         metadata: { awaiting: 'direccion', pending_cart: pendingCart },
       };
     }
-    // Recoger en tienda
-    if (/^2$/.test(textoLower) || /(recoger|recojo|recoge|pasar|paso por|retiro|retirar|en tienda|tienda f[ií]sica|f[ií]sica|recogida)/i.test(textoLower)) {
-      return preguntarSedeRecogida(pendingCart);
+    // No quedó claro (ej. "¿cuánto vale el envío?") → Sofi resuelve la duda,
+    // pero seguimos esperando la elección de entrega.
+    if (USE_AI) {
+      const r = await procesarMensajeSofi(texto, context, pendingCart);
+      if (!r.accion && !r.metadata?.awaiting) {
+        return {
+          texto: `${r.texto}\n\n¿Entonces te lo enviamos a domicilio o lo recoges en tienda?`,
+          metadata: { awaiting: 'tipo_entrega', pending_cart: pendingCart },
+        };
+      }
+      return r;
     }
     return preguntarTipoEntrega(pendingCart);
   }
@@ -440,7 +466,7 @@ export async function procesarMensajeBot(
         metadata: { awaiting: '', pending_cart: [] },
       };
     }
-    const sede = SEDES_FISICAS[texto.trim()];
+    const sede = encontrarSede(texto, SEDES_FISICAS);
     if (!sede) {
       return preguntarSedeRecogida(pendingCart);
     }
@@ -891,12 +917,8 @@ function textoCarritoResumen(cart: CartItem[]): string {
 }
 
 function respuestaCarrito(cart: CartItem[]): BotResponse {
-  const msg =
-    textoCarritoResumen(cart) +
-    `\n\n¿Qué deseas hacer?\n` +
-    `🛍️ *agregar* — Añadir otro producto\n` +
-    `✅ *pagar* — Finalizar y pagar\n` +
-    `❌ *cancelar* — Cancelar pedido`;
+  // Atención humana: preguntamos con naturalidad, sin menú de opciones.
+  const msg = textoCarritoResumen(cart) + `\n\n¿Finalizamos tu pedido o quieres añadir algo más? 😊`;
 
   return {
     texto: msg,
@@ -906,11 +928,7 @@ function respuestaCarrito(cart: CartItem[]): BotResponse {
 
 function preguntarTipoEntrega(cart: CartItem[]): BotResponse {
   return {
-    texto:
-      `🚀 *¿Cómo quieres recibir tu pedido?*\n\n` +
-      `*1.* 🛵 Envío a domicilio\n` +
-      `*2.* 🏪 Recoger en tienda (gratis)\n\n` +
-      `Responde *1* o *2*.`,
+    texto: `¡Perfecto! ¿Te lo enviamos a domicilio o prefieres recogerlo en una de nuestras tiendas? 🛵🏪`,
     metadata: { awaiting: 'tipo_entrega', pending_cart: cart },
   };
 }
@@ -918,9 +936,9 @@ function preguntarTipoEntrega(cart: CartItem[]): BotResponse {
 function preguntarSedeRecogida(cart: CartItem[]): BotResponse {
   return {
     texto:
-      `🏪 *¿En cuál tienda quieres recoger?*\n\n` +
+      `¡Buenísimo! ¿En cuál de nuestras tiendas te queda mejor recogerlo? 🏪\n\n` +
       `${MENU_SEDES}\n\n` +
-      `Escribe el número de la sede.`,
+      `Dime el nombre o el número de la que prefieras.`,
     metadata: { awaiting: 'recoger_sede', pending_cart: cart },
   };
 }
