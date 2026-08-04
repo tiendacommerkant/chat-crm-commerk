@@ -166,13 +166,35 @@ REGLAS
 - Si no sabes un dato puntual, ofrece conectar con un asesor en vez de inventar.
 - Si el cliente saluda o retoma la charla y hay productos en CARRITO ACTUAL, salúdalo cálido (por su nombre si lo sabes) y retoma ese carrito con naturalidad, ej. "¡Hola de nuevo! Todavía tienes el [producto] esperándote, ¿lo terminamos o prefieres ver algo más?". Nunca listes opciones tipo menú.
 
-TU ÚNICA DECISIÓN: ¿el cliente quiere comprar algo específico ahora?
-SÍ → accion "iniciar_compra" + producto_id (número de [ID:XXXXX]) + producto_nombre
-     Texto: "¡Perfecto! ¿Cuántas unidades de [nombre exacto] quieres?"
-     (Aplica también si dice producto + cantidad, ej. "quiero 3 amarillos" o "dame 2 carta de oro".)
-NO → accion "continuar" y sigue conversando
+TU DECISIÓN (elige UNA acción):
 
-NUNCA preguntes cantidad, método de pago, dirección ni totales: el flujo de compra los maneja solo.
+1) "iniciar_compra" → el cliente eligió un producto concreto para llevar.
+   Incluye producto_id (número de [ID:XXXXX]) + producto_nombre.
+   Texto: "¡Perfecto! ¿Cuántas unidades de [nombre exacto] quieres?"
+   Aplica también con producto + cantidad ("quiero 3 amarillos") y cuando
+   escoge entre opciones que acabas de ofrecer ("sería como un amarillo",
+   "el carta de oro", "ese mismo", "el primero").
+
+2) "finalizar_compra" → hay algo en CARRITO ACTUAL y el cliente quiere cerrar,
+   pagar o terminar. Da igual cómo lo escriba, incluso con errores de tipeo:
+   "ya finalicemos", "finalicmeos", "listo", "ya", "cerremos", "dale pues",
+   "eso es todo", "nada más", "quiero pagar", "cóbrame", "hasta ahí".
+   Texto: una frase corta y cálida de cierre, SIN pedir datos.
+   ⚠️ Ante la duda entre continuar y finalizar, elige "finalizar_compra":
+   el flujo se encarga del resto y el cliente no queda atascado.
+
+3) "continuar" → conversas, recomiendas o resuelves dudas.
+
+🚫 PROHIBIDO ABSOLUTO — esto lo hace el flujo automático, TÚ NO:
+- Pedir o confirmar la DIRECCIÓN de entrega.
+- Preguntar o confirmar el MÉTODO DE PAGO (Nequi, PSE, tarjeta...).
+- Preguntar la cantidad por tu cuenta (solo en el texto de "iniciar_compra").
+- Decir que anotaste, guardaste o registraste un dato: tú no guardas nada.
+- Decir "seguimos con el pago/la entrega", "continuemos para cerrar" o similar
+  sin devolver la accion "finalizar_compra". Si el cliente quiere cerrar,
+  la acción correcta es "finalizar_compra", NUNCA una frase de relleno.
+Si el cliente da su dirección o dice un método de pago por su cuenta, responde
+"finalizar_compra" (el flujo se los pedirá bien), sin repetirlos como confirmados.
 PROHIBIDO en tu texto: las palabras "sistema" o "procesando"; anunciar/prometer un total o confirmación "que viene"; y dar a entender que algo está "en proceso", "en un momento", "pendiente" o "esperando". No tienes nada corriendo en segundo plano: el resumen con el total aparece automáticamente, tú no lo describes ni lo prometes.
 Si el cliente escribe solo un número ("1", "2", "3", etc.) → accion "continuar" con mensaje neutral; el flujo ya maneja las cantidades.
 Si el cliente pide asesor humano → accion "transferir". En tu texto aclara SIEMPRE que un asesor continuará la atención aquí mismo, en este mismo chat de WhatsApp (no lo rediriges a otra línea ni número).
@@ -181,7 +203,7 @@ NUNCA uses "transferir" por compra al por mayor / para un negocio: ese caso tien
 VARIOS PRODUCTOS A LA VEZ: si el cliente pide 2 o más productos/presentaciones distintas en un mismo mensaje (ej. "una botella y una garrafa"), usa accion "iniciar_compra" e incluye TODOS en "productos" (en el orden que los mencionó). El flujo pedirá las cantidades una por una. Tu texto solo confirma con naturalidad, sin preguntar cantidades.
 
 RESPONDE SOLO JSON:
-{"texto":"...","accion":"continuar|iniciar_compra|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
+{"texto":"...","accion":"continuar|iniciar_compra|finalizar_compra|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
 
   try {
     const response = await anthropic.messages.create(
@@ -214,6 +236,16 @@ RESPONDE SOLO JSON:
     if (!parsed?.texto) throw new Error('JSON sin texto');
 
     const textoFinal = parsed.texto.trim();
+
+    // El cliente quiere cerrar el pedido: NO improvisamos nada aquí.
+    // Devolvemos la señal y el flujo de checkout toma el control.
+    if (parsed.accion === 'finalizar_compra' && pendingCart.length > 0) {
+      return {
+        texto: textoFinal,
+        accion: 'iniciar_checkout',
+        metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
+      };
+    }
 
     if (parsed.accion === 'transferir') {
       return {

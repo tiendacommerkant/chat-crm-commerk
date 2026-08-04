@@ -235,28 +235,10 @@ export async function procesarMensajeBot(
   if (USE_AI && awaiting === '') {
     const respuestaSofi = await procesarMensajeSofi(texto, context, pendingCart);
 
-    // Si Sofi retorna 'iniciar_checkout' → iniciar flujo de pago real
-    if ((respuestaSofi as any).accion === 'iniciar_checkout') {
-      // Usar el carrito existente, o intentar construirlo desde pendingProductId
-      let cartParaPago = pendingCart;
-      if (cartParaPago.length === 0 && pendingProductId) {
-        const productos = await obtenerProductosCache();
-        const prod = productos.find((p) => p.shopify_id === pendingProductId);
-        if (prod) {
-          cartParaPago = [{ shopify_id: prod.shopify_id, titulo: prod.titulo, precio: prod.precio, cantidad: pendingCantidad || 1 }];
-        }
-      }
-      if (cartParaPago.length > 0) {
-        return {
-          texto:
-            `📍 *¿A qué dirección te enviamos?*\n\n` +
-            `Escribe tu dirección completa con barrio/municipio.\n` +
-            `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
-            `Cobertura: ${COBERTURA_ENVIOS.join(', ')}`,
-          metadata: { awaiting: 'direccion', pending_cart: cartParaPago },
-        };
-      }
-    }
+    // Sofi detectó que el cliente quiere cerrar → el CÓDIGO toma el control
+    // del checkout (entrega → dirección → confirmación → link de Wompi).
+    const cierre = await checkoutDesdeSofi(respuestaSofi, pendingCart, pendingProductId, pendingCantidad);
+    if (cierre) return cierre;
 
     return respuestaSofi;
   }
@@ -447,8 +429,13 @@ export async function procesarMensajeBot(
         metadata: { awaiting: '', pending_cart: pendingCart },
       };
     }
-    // 4) Cualquier otra cosa (una pregunta, otro producto...) → que la atienda Sofi
-    if (USE_AI) return await procesarMensajeSofi(texto, context, pendingCart);
+    // 4) Cualquier otra cosa (una pregunta, otro producto...) → que la atienda Sofi.
+    //    Si Sofi entiende que quiere cerrar, arranca el checkout de verdad.
+    if (USE_AI) {
+      const r = await procesarMensajeSofi(texto, context, pendingCart);
+      const cierre = await checkoutDesdeSofi(r, pendingCart, pendingProductId, pendingCantidad);
+      return cierre ?? r;
+    }
     return respuestaCarrito(pendingCart);
   }
 
@@ -1003,6 +990,35 @@ function respuestaCarrito(cart: CartItem[]): BotResponse {
     texto: msg,
     metadata: { awaiting: 'carrito', pending_cart: cart },
   };
+}
+
+/**
+ * Sofi solo DETECTA que el cliente quiere cerrar; el checkout lo ejecuta el
+ * código. Si la señal llegó, devuelve la respuesta del flujo; si no, null.
+ */
+async function checkoutDesdeSofi(
+  respuestaSofi: BotResponse,
+  pendingCart: CartItem[],
+  pendingProductId: string,
+  pendingCantidad: number
+): Promise<BotResponse | null> {
+  if ((respuestaSofi as any).accion !== 'iniciar_checkout') return null;
+
+  // Usar el carrito, o reconstruirlo desde el producto pendiente
+  let cart = pendingCart;
+  if (cart.length === 0 && pendingProductId) {
+    const productos = await obtenerProductosCache();
+    const prod = productos.find((p) => p.shopify_id === pendingProductId);
+    if (prod) {
+      cart = [{ shopify_id: prod.shopify_id, titulo: prod.titulo, precio: prod.precio, cantidad: pendingCantidad || 1 }];
+    }
+  }
+  if (cart.length === 0) return null;
+
+  // Arrancamos por la entrega (no saltamos pasos del flujo real)
+  const entrega = preguntarTipoEntrega(cart);
+  const intro = respuestaSofi.texto?.trim();
+  return intro ? { ...entrega, texto: `${intro}\n\n${entrega.texto}` } : entrega;
 }
 
 function preguntarTipoEntrega(cart: CartItem[]): BotResponse {
