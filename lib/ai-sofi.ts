@@ -9,7 +9,13 @@ import type { CartItem } from './bot-logic';
 import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  // Sofi responde en ~4s: 12s es margen de sobra y evita que un fallo de red
+  // deje al cliente esperando. Reintenta solo/o ante errores transitorios.
+  timeout: 12_000,
+  maxRetries: 2,
+});
 
 const COSTO_ENVIO        = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
@@ -198,7 +204,6 @@ RESPONDE SOLO JSON:
           { role: 'user', content: mensaje },
         ],
       },
-      { timeout: 30000 }
     );
 
     const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');

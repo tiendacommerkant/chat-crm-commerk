@@ -3,6 +3,10 @@ import { supabaseAdmin } from '@/lib/supabase';
 import { enviarRecordatorioPago } from '@/lib/whatsapp-templates';
 import { formatearPrecioCOP } from '@/lib/shopify';
 
+// Puede recorrer muchos pedidos y enviar varias plantillas por corrida.
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
 async function procesarRecordatorios() {
   // Ventana: pedidos pendientes creados hace MÁS de 10 min pero MENOS de 24h
   const hace10min = new Date(Date.now() - 10 * 60 * 1000).toISOString();

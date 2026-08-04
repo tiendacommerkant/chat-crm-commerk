@@ -8,6 +8,11 @@ import { enviarConfirmacionPago, enviarPedidoRecogerSede } from '@/lib/whatsapp-
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from '@/lib/sedes';
 import type { WompiWebhookEvent } from '@/types';
 
+// Crea el pedido en Shopify y notifica por WhatsApp en background (waitUntil):
+// sin margen de tiempo, Vercel corta el proceso y el pago queda sin confirmar.
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
 const CONEXA_FORWARD_URL = 'https://wompi-event-shopify.conexa.ai/api/v1/shopify/webhooks/event';
 
 // Procesamiento en background — no bloquea la respuesta al webhook

@@ -14,6 +14,11 @@ import { formatearPrecioCOP } from '@/lib/shopify';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
 import type { BotContext } from '@/types';
 
+// El flujo hace IA + varias consultas + envío por WhatsApp. Sin esto, Vercel
+// corta la función a los 10s y el cliente se queda sin respuesta.
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -65,7 +70,42 @@ export async function POST(req: Request) {
             .select('bot_activo')
             .eq('id', conversacion.id)
             .single();
-          const botActivo = convData?.bot_activo !== false; // default true si columna no existe aún
+          let botActivo = convData?.bot_activo !== false; // default true si columna no existe aún
+
+          // RED DE SEGURIDAD: si el bot está apagado esperando a un asesor y nadie
+          // ha respondido en 30 min, lo reactivamos para no dejar al cliente hablando solo.
+          if (!botActivo) {
+            const { data: ultimoAgente } = await supabaseAdmin
+              .from('mensajes')
+              .select('created_at')
+              .eq('conversacion_id', conversacion.id)
+              .eq('metadata->>enviado_por', 'agente')
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            const { data: transferencia } = await supabaseAdmin
+              .from('mensajes')
+              .select('created_at')
+              .eq('conversacion_id', conversacion.id)
+              .eq('metadata->>transferido_a_asesor', 'true')
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            const refIso = ultimoAgente?.created_at || transferencia?.created_at;
+            if (refIso) {
+              const minutosSinAtencion = (Date.now() - new Date(refIso).getTime()) / 60000;
+              if (minutosSinAtencion > 30) {
+                await supabaseAdmin
+                  .from('conversaciones')
+                  .update({ bot_activo: true, updated_at: new Date().toISOString() })
+                  .eq('id', conversacion.id);
+                botActivo = true;
+                console.warn(`[WA] Bot reactivado tras ${Math.round(minutosSinAtencion)} min sin respuesta de un asesor (conv ${conversacion.id})`);
+              }
+            }
+          }
 
           // ─── Determinar contenido y metadata según tipo ───────────────
           let texto = '';

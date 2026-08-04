@@ -627,6 +627,27 @@ export async function procesarMensajeBot(
         metadata: { awaiting: '', pending_cart: [] },
       };
     }
+    // Dijo otra cosa (una duda): Sofi responde y CONSERVAMOS el pedido armado,
+    // si no se perderían dirección y totales y habría que empezar de cero.
+    const metaConfirmacion = {
+      awaiting: 'confirmacion',
+      pending_cart: pendingCart,
+      pending_direccion: pendingDireccion,
+      pending_subtotal: pendingSubtotal,
+      pending_costo_envio: pendingCostoEnvio,
+      pending_total: pendingTotal,
+    };
+    if (USE_AI) {
+      const r = await procesarMensajeSofi(texto, context, pendingCart);
+      return {
+        texto: `${r.texto}\n\n¿Confirmamos entonces tu pedido? Responde *SI* para pagar.`,
+        metadata: metaConfirmacion,
+      };
+    }
+    return {
+      texto: '¿Confirmamos tu pedido? Responde *SI* para pagar o *NO* para cancelar.',
+      metadata: metaConfirmacion,
+    };
   }
 
   // Estado: link ya enviado — el cliente debe usar el link que recibió en el chat
@@ -634,15 +655,23 @@ export async function procesarMensajeBot(
     if (/(pagu[eé]|ya pagu[eé]|hice el pago|realic[eé] el pago|pag[ué])/i.test(textoLower)) {
       return {
         texto: '✅ ¡Perfecto! En cuanto Wompi confirme el pago, te avisamos aquí mismo y procesamos tu pedido. ¡Gracias por comprar con nosotros! 🎉',
-        metadata: { awaiting: 'link_enviado' },
+        metadata: { awaiting: 'link_enviado', pending_cart: pendingCart },
       };
     }
     // Si el cliente pregunta por el link, recordarle que ya fue enviado
     if (/(link|enlace|pago|pagar|donde|c[oó]mo pago)/i.test(textoLower)) {
       return {
         texto: '🔗 El link de pago ya fue enviado arriba en esta misma conversación. ¡Solo haz clic en él para pagar con Nequi, Daviplata, PSE o Tarjeta! 💳\n\n_Si no lo ves, desplázate hacia arriba._',
-        metadata: { awaiting: 'link_enviado' },
+        metadata: { awaiting: 'link_enviado', pending_cart: pendingCart },
       };
+    }
+    // Cualquier otra duda: la responde Sofi sin sacar al cliente del proceso de pago
+    if (USE_AI) {
+      const r = await procesarMensajeSofi(texto, context, pendingCart);
+      if (!r.accion && !r.metadata?.awaiting) {
+        return { texto: r.texto, metadata: { awaiting: 'link_enviado', pending_cart: pendingCart } };
+      }
+      return r;
     }
   }
 
