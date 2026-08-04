@@ -171,8 +171,10 @@ PROHIBIDO en tu texto: las palabras "sistema" o "procesando"; anunciar/prometer 
 Si el cliente escribe solo un número ("1", "2", "3", etc.) → accion "continuar" con mensaje neutral; el flujo ya maneja las cantidades.
 Si el cliente pide asesor humano → accion "transferir". En tu texto aclara SIEMPRE que un asesor continuará la atención aquí mismo, en este mismo chat de WhatsApp (no lo rediriges a otra línea ni número).
 
+VARIOS PRODUCTOS A LA VEZ: si el cliente pide 2 o más productos/presentaciones distintas en un mismo mensaje (ej. "una botella y una garrafa"), usa accion "iniciar_compra" e incluye TODOS en "productos" (en el orden que los mencionó). El flujo pedirá las cantidades una por una. Tu texto solo confirma con naturalidad, sin preguntar cantidades.
+
 RESPONDE SOLO JSON:
-{"texto":"...","accion":"continuar|iniciar_compra|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo"}`;
+{"texto":"...","accion":"continuar|iniciar_compra|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
 
   try {
     const response = await anthropic.messages.create(
@@ -216,19 +218,37 @@ RESPONDE SOLO JSON:
     }
 
     if (parsed.accion === 'iniciar_compra') {
-      const producto = encontrarProducto(
-        productos.filter((p) => p.inventario > 0),
-        parsed.producto_id,
-        parsed.producto_nombre,
-        textoFinal
-      );
+      const enStock = productos.filter((p) => p.inventario > 0);
+
+      // El cliente puede pedir varios productos a la vez ("una botella y una garrafa").
+      // Resolvemos todos: el primero se pregunta ya, el resto queda en cola.
+      const solicitados: Array<{ producto_id?: string; producto_nombre?: string }> =
+        Array.isArray(parsed.productos) && parsed.productos.length > 0
+          ? parsed.productos
+          : [{ producto_id: parsed.producto_id, producto_nombre: parsed.producto_nombre }];
+
+      const encontrados: string[] = [];
+      for (const s of solicitados) {
+        const p = encontrarProducto(enStock, s.producto_id, s.producto_nombre, textoFinal);
+        if (p && !encontrados.includes(p.shopify_id)) encontrados.push(p.shopify_id);
+      }
+
+      const producto = encontrados.length > 0
+        ? enStock.find((p) => p.shopify_id === encontrados[0])
+        : null;
 
       if (producto) {
+        const cola = encontrados.slice(1);
+        // Si hay varios, preguntamos la cantidad del primero de forma explícita
+        const texto = cola.length > 0
+          ? `${textoFinal}\n\n¿Cuántas unidades de *${producto.titulo}* quieres?`
+          : textoFinal;
         return {
-          texto: textoFinal,
+          texto,
           metadata: {
             awaiting: 'cantidad',
             pending_product_id: producto.shopify_id,
+            pending_queue: cola,
             pending_cart: pendingCart,
             sofi_ia: true,
           },

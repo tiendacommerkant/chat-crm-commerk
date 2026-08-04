@@ -77,6 +77,8 @@ export async function procesarMensajeBot(
   }
 
   const pendingProductId: string = ultimoBot?.metadata?.pending_product_id || '';
+  // Cola de productos cuando el cliente pide varios a la vez ("una botella y una garrafa")
+  const pendingQueue: string[] = ultimoBot?.metadata?.pending_queue || [];
   const pendingCantidad: number = ultimoBot?.metadata?.pending_cantidad || 1;
   const pendingDireccion: string = ultimoBot?.metadata?.pending_direccion || '';
   const pendingCart: CartItem[] = ultimoBot?.metadata?.pending_cart || [];
@@ -309,7 +311,9 @@ export async function procesarMensajeBot(
 
   // Estado: esperando cantidad
   if (awaiting === 'cantidad') {
-    const cantidad = extraerCantidad(texto);
+    // "una y una" → [1,1]: si pidió varios productos, aplica cantidades en orden
+    const cantidades = extraerCantidades(texto);
+    const cantidad = cantidades[0] ?? null;
 
     // Mayorista: más de 12 unidades
     if (cantidad && cantidad > 12) {
@@ -324,22 +328,41 @@ export async function procesarMensajeBot(
       if (producto.inventario < cantidad) {
         return {
           texto: `⚠️ Solo tenemos *${producto.inventario}* unidades disponibles.\n\n¿Cuántas quieres? (máximo ${producto.inventario})`,
-          metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_cart: pendingCart },
+          metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart },
         };
       }
 
-      // Agregar ítem al carrito (suma si ya existe)
-      const itemExistente = pendingCart.findIndex((i) => i.shopify_id === producto.shopify_id);
-      let updatedCart: CartItem[];
-      if (itemExistente >= 0) {
-        updatedCart = pendingCart.map((item, idx) =>
-          idx === itemExistente ? { ...item, cantidad: item.cantidad + cantidad } : item
-        );
-      } else {
-        updatedCart = [
-          ...pendingCart,
-          { shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad },
-        ];
+      let updatedCart = agregarAlCarrito(pendingCart, producto, cantidad);
+
+      // Quedan productos en cola (el cliente pidió varios a la vez)
+      if (pendingQueue.length > 0) {
+        const siguienteId = pendingQueue[0];
+        const restoCola = pendingQueue.slice(1);
+        const siguiente = productos.find((p) => p.shopify_id === siguienteId);
+
+        if (siguiente) {
+          // Si ya dio todas las cantidades de una ("una y una"), aplicarlas sin volver a preguntar
+          const cantSiguiente = cantidades[1];
+          if (cantSiguiente && cantSiguiente > 0 && cantSiguiente <= 12 && siguiente.inventario >= cantSiguiente) {
+            updatedCart = agregarAlCarrito(updatedCart, siguiente, cantSiguiente);
+            // Continuar con el resto de la cola, si queda
+            if (restoCola.length > 0) {
+              const tercero = productos.find((p) => p.shopify_id === restoCola[0]);
+              if (tercero) {
+                return {
+                  texto: `¡Listo! Ahora, ¿cuántas unidades de *${tercero.titulo}* quieres?`,
+                  metadata: { awaiting: 'cantidad', pending_product_id: tercero.shopify_id, pending_queue: restoCola.slice(1), pending_cart: updatedCart },
+                };
+              }
+            }
+            return respuestaCarrito(updatedCart);
+          }
+
+          return {
+            texto: `¡Listo! Agregué *${producto.titulo}* ×${cantidad}.\n\nAhora, ¿cuántas unidades de *${siguiente.titulo}* quieres?`,
+            metadata: { awaiting: 'cantidad', pending_product_id: siguienteId, pending_queue: restoCola, pending_cart: updatedCart },
+          };
+        }
       }
 
       return respuestaCarrito(updatedCart);
@@ -359,7 +382,7 @@ export async function procesarMensajeBot(
     const nombreProd = prod2?.titulo || 'ese producto';
     return {
       texto: `¿Cuántas unidades de *${nombreProd}* quieres?\n\nEscribe solo el número (ej: *1*, *2*, *3*). Si quieres otro producto escribe *cancelar*.`,
-      metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_cart: pendingCart },
+      metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart },
     };
   }
 
@@ -765,34 +788,47 @@ function esCancelacion(t: string): boolean {
   const s = t.trim().toLowerCase();
   return /(cancel(a|ar|o|emos)?|an[uú]l(a|ar|o)|no\s+(lo\s+|los\s+|me\s+)?quiero|ya\s+no\s+(lo\s+)?quiero|qu[ií]ta(me|lo|los|r)?|saca(me|lo|los|r)?|borra(lo|los|r|me)?|elimina(lo|los|r)?|olv[ií]da(lo|r)?|mejor\s+no|d[eé]jalo\s+as[ií]|empezar\s+de\s+(nuevo|cero)|reinicia(r)?|vaciar?\s+(el\s+)?carrito)/i.test(s);
 }
+const PALABRAS_NUM: Record<string, number> = {
+  'un': 1, 'una': 1, 'uno': 1,
+  'dos': 2,
+  'tres': 3,
+  'cuatro': 4,
+  'cinco': 5,
+  'seis': 6,
+  'siete': 7,
+  'ocho': 8,
+  'nueve': 9,
+  'diez': 10,
+  'once': 11,
+  'doce': 12,
+};
+
+// Agrega un producto al carrito (suma la cantidad si ya existe)
+function agregarAlCarrito(cart: CartItem[], producto: Producto, cantidad: number): CartItem[] {
+  const idx = cart.findIndex((i) => i.shopify_id === producto.shopify_id);
+  if (idx >= 0) {
+    return cart.map((item, i) => (i === idx ? { ...item, cantidad: item.cantidad + cantidad } : item));
+  }
+  return [...cart, { shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad }];
+}
+
+// Extrae TODAS las cantidades en orden: "una y una" → [1,1] · "2 y 3" → [2,3]
+function extraerCantidades(t: string): number[] {
+  const lower = t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const palabras = Object.keys(PALABRAS_NUM).join('|');
+  const re = new RegExp(`\\b(\\d+|${palabras})\\b`, 'g');
+  const out: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(lower)) !== null) {
+    const token = m[1];
+    const num = /^\d+$/.test(token) ? parseInt(token) : PALABRAS_NUM[token];
+    if (!isNaN(num) && num > 0) out.push(num);
+  }
+  return out;
+}
+
 function extraerCantidad(t: string): number | null {
-  // 1. Primero buscar dígitos en el texto
-  const digitMatch = t.match(/\b(\d+)\b/);
-  if (digitMatch) {
-    const num = parseInt(digitMatch[1]);
-    if (!isNaN(num)) return num;
-  }
-  // 2. Números en palabras (español)
-  const palabrasNum: Record<string, number> = {
-    'un': 1, 'una': 1, 'uno': 1,
-    'dos': 2,
-    'tres': 3,
-    'cuatro': 4,
-    'cinco': 5,
-    'seis': 6,
-    'siete': 7,
-    'ocho': 8,
-    'nueve': 9,
-    'diez': 10,
-    'once': 11,
-    'doce': 12,
-  };
-  const lower = t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  for (const [palabra, num] of Object.entries(palabrasNum)) {
-    const re = new RegExp(`\\b${palabra}\\b`);
-    if (re.test(lower)) return num;
-  }
-  return null;
+  return extraerCantidades(t)[0] ?? null;
 }
 
 function quitarAcentos(t: string): string {
