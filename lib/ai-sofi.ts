@@ -1,5 +1,5 @@
 // ============================================================
-// SOFI — Agente conversacional de ventas (Anthropic claude-opus-4-7)
+// SOFI — Agente conversacional de ventas (Anthropic claude-opus-5)
 // ROL: solo recomienda y conversa. El checkout lo maneja bot-logic.
 // ============================================================
 
@@ -177,7 +177,7 @@ RESPONDE SOLO JSON:
   try {
     const response = await anthropic.messages.create(
       {
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-5',
         max_tokens: 4096,
         thinking: { type: 'adaptive' },
         system: [
