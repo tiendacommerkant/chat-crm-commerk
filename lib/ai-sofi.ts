@@ -180,6 +180,9 @@ RESPONDE SOLO JSON:
         model: 'claude-opus-5',
         max_tokens: 4096,
         thinking: { type: 'adaptive' },
+        // effort 'low': respuestas ~2s más rápidas sin perder calidad
+        // (clave en WhatsApp, donde el cliente espera en tiempo real)
+        output_config: { effort: 'low' },
         system: [
           {
             type: 'text' as const,
