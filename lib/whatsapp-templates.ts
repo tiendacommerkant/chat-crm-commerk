@@ -136,6 +136,31 @@ export async function enviarPedidoRecogerSede(
 }
 
 /**
+ * lead_mayorista — UTILITY
+ * Aviso a la sede cuando un cliente pide compra al por mayor.
+ * {{1}}=sede, {{2}}=cliente, {{3}}=tel cliente, {{4}}=consulta
+ */
+export async function enviarLeadMayorista(
+  telefonoSede: string,
+  sede: string,
+  cliente: string,
+  telCliente: string,
+  consulta: string
+): Promise<boolean> {
+  return enviarPlantilla(telefonoSede, 'lead_mayorista', [
+    {
+      type: 'body',
+      parameters: [
+        { type: 'text', text: sede || 'Tienda' },
+        { type: 'text', text: cliente || 'Cliente' },
+        { type: 'text', text: telCliente || 'N/D' },
+        { type: 'text', text: consulta || 'Compra al por mayor' },
+      ],
+    },
+  ]);
+}
+
+/**
  * carrito_abandonado — MARKETING
  * {{1}}=nombre, {{2}}=producto, {{3}}=precio
  * Botones: "Completar compra", "No me interesa"

@@ -18,6 +18,7 @@ import { obtenerProductosCache, actualizarCliente, supabaseAdmin, obtenerPedidos
 import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
+import { enviarLeadMayorista } from './whatsapp-templates';
 import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede } from './sedes';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
@@ -707,17 +708,26 @@ async function enviarLeadASede(
     `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
     `_Responde directamente a este número para atender al cliente._`;
 
-  // NOTA: va como texto libre. WhatsApp solo lo entrega si la sede escribió a
-  // este número en las últimas 24h. Si falla queda registrado para seguimiento.
-  let entregado = false;
-  try {
-    const res: any = await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
-    entregado = res !== false;
-  } catch (e: any) {
-    console.error(`[Lead sede] FALLÓ el envío a ${sede.nombre} (${sede.telefono}):`, e?.message);
+  // 1) Plantilla aprobada: llega siempre, incluso fuera de la ventana de 24h
+  let entregado = await enviarLeadMayorista(
+    sede.telefono,
+    sede.nombre,
+    nombre,
+    `+${telefono}`,
+    mensajeOriginal || 'Compra al por mayor'
+  ).catch(() => false);
+
+  // 2) Respaldo en texto libre mientras Meta aprueba la plantilla
+  if (!entregado) {
+    try {
+      const res: any = await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
+      entregado = res !== false;
+    } catch (e: any) {
+      console.error(`[Lead sede] FALLÓ el envío a ${sede.nombre} (${sede.telefono}):`, e?.message);
+    }
   }
   if (!entregado) {
-    console.error(`[Lead sede] El lead de ${nombre} (+${telefono}) NO llegó a ${sede.nombre}. Revisar ventana de 24h / plantilla.`);
+    console.error(`[Lead sede] El lead de ${nombre} (+${telefono}) NO llegó a ${sede.nombre}. Revisar plantilla lead_mayorista / ventana 24h.`);
   }
 
   const { error } = await supabaseAdmin
