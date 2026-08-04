@@ -401,10 +401,41 @@ export async function procesarMensajeBot(
     ) {
       return preguntarTipoEntrega(pendingCart);
     }
-    // 2) Cancelar de verdad ("cancelar", "quítalo", "no quiero ese producto")
+    // 2) Se arrepintió / quiere quitar algo
     if (esCancelacion(textoLower)) {
+      // "cancela todo" / "todo" → vaciar sin preguntar
+      const quiereTodo = /(todo|el pedido completo|la compra|el carrito)/i.test(textoLower);
+      if (quiereTodo) {
+        return {
+          texto: 'Listo, cancelé el pedido completo 😊\n\nCuando quieras retomamos, cuéntame qué necesitas.',
+          metadata: { awaiting: '', pending_cart: [] },
+        };
+      }
+
+      // ¿Nombró un producto puntual del carrito? → quitar solo ese
+      const prodMencionado = await detectarProducto(textoLower);
+      if (prodMencionado && pendingCart.some((i) => i.shopify_id === prodMencionado.shopify_id)) {
+        const nuevoCart = pendingCart.filter((i) => i.shopify_id !== prodMencionado.shopify_id);
+        if (nuevoCart.length === 0) {
+          return {
+            texto: `Listo, quité *${prodMencionado.titulo}* 👌\n\nCuéntame qué estás buscando y te ayudo a encontrar algo que te guste. 😊`,
+            metadata: { awaiting: '', pending_cart: [] },
+          };
+        }
+        const r = respuestaCarrito(nuevoCart);
+        return { ...r, texto: `Listo, quité *${prodMencionado.titulo}* 👌\n\n${r.texto}` };
+      }
+
+      // Varios productos y no dijo cuál → preguntamos en vez de borrar todo
+      if (pendingCart.length > 1) {
+        return {
+          texto: `Claro 😊 ¿Quieres que quite algún producto en particular o prefieres que cancelemos todo el pedido?`,
+          metadata: { awaiting: 'carrito', pending_cart: pendingCart },
+        };
+      }
+
       return {
-        texto: '✅ Listo, cancelé tu pedido y vacié el carrito. Cuando quieras te ayudo con algo nuevo. 😊',
+        texto: 'Listo, sin problema 😊 Te quité el pedido.\n\nCuéntame qué estás buscando y con gusto te ayudo a encontrar algo que te guste.',
         metadata: { awaiting: '', pending_cart: [] },
       };
     }
@@ -809,10 +840,10 @@ function esConfirmacion(t: string) {
 function esNegacion(t: string) {
   return /^(no|nope|cancel|cancelar|no gracias|dejalo|d[eé]jalo)$/i.test(t.trim());
 }
-// Cancelar/quitar en lenguaje natural ("no quiero ese producto", "quítalo", "bórralo", "mejor no")
+// Cancelar/quitar en lenguaje natural ("no quiero ese", "quítalo", "me arrepentí", "cambié de opinión")
 function esCancelacion(t: string): boolean {
-  const s = t.trim().toLowerCase();
-  return /(cancel(a|ar|o|emos)?|an[uú]l(a|ar|o)|no\s+(lo\s+|los\s+|me\s+)?quiero|ya\s+no\s+(lo\s+)?quiero|qu[ií]ta(me|lo|los|r)?|saca(me|lo|los|r)?|borra(lo|los|r|me)?|elimina(lo|los|r)?|olv[ií]da(lo|r)?|mejor\s+no|d[eé]jalo\s+as[ií]|empezar\s+de\s+(nuevo|cero)|reinicia(r)?|vaciar?\s+(el\s+)?carrito)/i.test(s);
+  const s = t.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return /(cancel(a|ar|o|emos)?|anul(a|ar|o)|no\s+(lo\s+|los\s+|me\s+)?quiero|ya\s+no\s+(lo\s+)?quiero|quita(me|lo|los|r)?|saca(me|lo|los|r)?|borra(lo|los|r|me)?|elimina(lo|los|r)?|olvida(lo|r)?|mejor\s+no|dejalo\s+asi|empezar\s+de\s+(nuevo|cero)|reinicia(r)?|vaciar?\s+(el\s+)?carrito|me\s+arrepent(i|im)|me\s+arrepiento|cambie\s+de\s+(opinion|idea|parecer)|ya\s+no\s+lo\s+llevo|dev(u|o)elve)/i.test(s);
 }
 const PALABRAS_NUM: Record<string, number> = {
   'un': 1, 'una': 1, 'uno': 1,
