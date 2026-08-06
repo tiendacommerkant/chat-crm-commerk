@@ -22,6 +22,7 @@ interface Costos {
     input_tokens: number;
     output_tokens: number;
     cache_read_tokens: number;
+    cache_write_tokens: number;
     costo_usd: number;
     costo_cop: number;
     costo_por_conversacion_usd: number;
@@ -80,12 +81,14 @@ export default function PanelCostos() {
       <button onClick={() => setAbierto(!abierto)} className="w-full flex items-center justify-between p-5 hover:bg-slate-50 transition">
         <div className="text-left">
           <h2 className="text-lg font-bold text-commerk-navy">💰 Costos de operación</h2>
-          <p className="text-sm text-slate-500 mt-0.5">Consumo real medido, últimos {d.dias} días</p>
+          <p className="text-sm text-slate-500 mt-0.5">
+            Consumo real medido, últimos {d.dias} días · valores en <strong>pesos colombianos</strong>
+          </p>
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right">
             <p className="text-2xl font-bold text-commerk-navy">{cop(d.total.costo_cop)}</p>
-            <p className="text-xs text-slate-500">≈ {cop(totalMensual)}/mes</p>
+            <p className="text-xs text-slate-500">{usd(d.total.costo_usd)} · ≈ {cop(totalMensual)}/mes</p>
           </div>
           <svg className={`w-5 h-5 text-slate-400 transition-transform ${abierto ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -124,13 +127,23 @@ export default function PanelCostos() {
                 <div className="flex justify-between"><dt className="text-slate-500">Costo por respuesta</dt><dd className="font-medium">{cop(d.claude.costo_por_conversacion_usd * d.tarifas.usd_cop)}</dd></div>
                 <div className="flex justify-between"><dt className="text-slate-500">Tokens de entrada</dt><dd className="font-medium">{num(d.claude.input_tokens)}</dd></div>
                 <div className="flex justify-between"><dt className="text-slate-500">Tokens de salida</dt><dd className="font-medium">{num(d.claude.output_tokens)}</dd></div>
+                {d.claude.cache_write_tokens > 0 && (
+                  <div className="flex justify-between text-amber-700">
+                    <dt>Catálogo guardado en memoria</dt><dd className="font-medium">{num(d.claude.cache_write_tokens)}</dd>
+                  </div>
+                )}
                 {d.claude.cache_read_tokens > 0 && (
                   <div className="flex justify-between text-emerald-700">
-                    <dt>Reutilizados por caché (10× más baratos)</dt><dd className="font-medium">{num(d.claude.cache_read_tokens)}</dd>
+                    <dt>Reutilizados de memoria (10× más baratos)</dt><dd className="font-medium">{num(d.claude.cache_read_tokens)}</dd>
                   </div>
                 )}
               </dl>
-              <p className="mt-3 text-[11px] text-slate-400">Tarifa: US$5 por millón de tokens de entrada · US$25 de salida</p>
+              <p className="mt-3 text-[11px] text-slate-400">
+                Tarifa: US$5 por millón de tokens de entrada · US$25 de salida · US$6,25 al guardar el catálogo en memoria
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Costo en dólares: <strong>{usd(d.claude.costo_usd)}</strong>
+              </p>
             </div>
 
             {/* WhatsApp */}
