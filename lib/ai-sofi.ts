@@ -8,6 +8,7 @@ import type { BotContext, BotResponse } from '@/types';
 import type { CartItem } from './bot-logic';
 import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
+import { registrarUsoClaude } from './costos';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -227,6 +228,9 @@ RESPONDE SOLO JSON:
         ],
       },
     );
+
+    // Registrar consumo real de tokens para el panel de costos (no bloquea)
+    registrarUsoClaude('claude-opus-5', response.usage as any).catch(() => {});
 
     const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
     const rawText = textBlock?.text ?? '';

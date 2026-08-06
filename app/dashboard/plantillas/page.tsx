@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
+import PanelCostos from '@/components/PanelCostos';
 
 interface Componente {
   type: string;
@@ -114,6 +115,9 @@ export default function PlantillasPage() {
           Actualizar
         </button>
       </div>
+
+      {/* Costos reales de operación */}
+      <PanelCostos />
 
       {/* Chips de estado */}
       <div className="flex flex-wrap gap-2">

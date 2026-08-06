@@ -2,6 +2,8 @@
 // WHATSAPP TEMPLATES — Plantillas aprobadas por Meta
 // ============================================
 
+import { registrarEnvioPlantilla } from './costos';
+
 const WA_API = `https://graph.facebook.com/v20.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 const TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
 
@@ -28,6 +30,8 @@ async function enviarPlantilla(telefono: string, templateName: string, component
   if (!res.ok) {
     console.error(`[WA Template] Error ${templateName}:`, JSON.stringify(data));
   }
+  // Registrar el envío para el panel de costos (no bloquea el flujo)
+  registrarEnvioPlantilla(templateName, res.ok).catch(() => {});
   return res.ok;
 }
 
