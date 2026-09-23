@@ -308,10 +308,16 @@ export async function POST(req: Request) {
 
           // ── Acción: transferir al asesor humano (Sofi no puede ayudar) ──
           if (respuesta.accion === 'transferir_a_asesor') {
-            // Si hay un flujo activo (checkout, mayorista...), NO apagamos el bot:
-            // apagarlo dejaba al cliente sin respuesta a mitad del proceso.
+            // Si hay un flujo activo (checkout, mayorista...) y Sofi transfirió sin
+            // que el cliente lo pidiera, NO apagamos el bot: apagarlo dejaba al
+            // cliente sin respuesta a mitad del proceso. Pero si el cliente pidió
+            // EXPLÍCITAMENTE una persona ("quiero hablar con un asesor") hay que
+            // respetarlo siempre: en pruebas reales Sofi le prometía "un asesor
+            // continúa contigo aquí mismo" y el bot seguía contestando solo. La red
+            // de seguridad de 30 min reactiva el bot si nadie atiende.
             const ultimoBotPrevio = [...historial].reverse().find((m) => m.tipo === 'bot');
-            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting;
+            const pideHumano = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien)\b/i.test(texto);
+            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano;
 
             await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
               ...respuesta.metadata,
