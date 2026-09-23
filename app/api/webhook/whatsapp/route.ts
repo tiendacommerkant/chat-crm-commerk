@@ -59,6 +59,25 @@ export async function POST(req: Request) {
           const messageId = message.id;
           const msgType: string = message.type || 'text';
 
+          // Deduplicación: Meta puede reentregar el mismo mensaje (timeout,
+          // reintento de red, etc.). Sin esto, dos entregas del mismo mensaje
+          // se procesaban en paralelo, cada una leyendo el mismo "último estado"
+          // y podían pisarse entre sí o responder dos veces. Si ya guardamos
+          // este whatsapp_message_id como mensaje de usuario, es un reenvío.
+          if (messageId) {
+            const { data: yaExiste } = await supabaseAdmin
+              .from('mensajes')
+              .select('id')
+              .eq('metadata->>whatsapp_message_id', messageId)
+              .eq('tipo', 'user')
+              .limit(1)
+              .maybeSingle();
+            if (yaExiste) {
+              console.log(`[WA] Mensaje ${messageId} ya procesado — reentrega de Meta, se ignora.`);
+              continue;
+            }
+          }
+
           if (messageId) await marcarComoLeido(messageId);
 
           const cliente = await buscarOCrearCliente(phone, contact?.profile?.name);

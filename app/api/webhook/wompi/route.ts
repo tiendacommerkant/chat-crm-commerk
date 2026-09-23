@@ -15,6 +15,11 @@ export const dynamic = 'force-dynamic';
 
 const CONEXA_FORWARD_URL = 'https://wompi-event-shopify.conexa.ai/api/v1/shopify/webhooks/event';
 
+// Mismas constantes/regla de envío que en bot-logic.ts y ai-sofi.ts — necesarias
+// aquí para recalcular el total real cobrado (ver comentario más abajo).
+const COSTO_ENVIO        = parseInt(process.env.SHIPPING_COST || '8000');
+const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
+
 // Procesamiento en background — no bloquea la respuesta al webhook
 async function procesarTransaccionBot(payload: WompiWebhookEvent) {
   const transaction = payload.data?.transaction;
@@ -25,21 +30,39 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
   // Traer TODAS las ventas de esta referencia (carrito puede tener varios productos)
   const { data: ventas } = await supabaseAdmin
     .from('ventas')
-    .select('id, producto_shopify_id, producto_nombre, producto_precio, cantidad, total, direccion_envio, conversacion_id, cliente:clientes(id, nombre, telefono, email)')
+    .select('id, estado, producto_shopify_id, producto_nombre, producto_precio, cantidad, total, direccion_envio, conversacion_id, cliente:clientes(id, nombre, telefono, email)')
     .eq('referencia_pago', reference);
 
   if (!ventas || ventas.length === 0) return;
+
+  // Idempotencia: Wompi puede reintentar la entrega del mismo evento (timeout,
+  // respuesta lenta, etc.). Sin esto, cada reintento de "APPROVED" creaba OTRO
+  // pedido en Shopify y reenviaba los mensajes de confirmación al cliente y a
+  // la sede. Si ya se procesó (estado ya no está "pendiente"), no repetir nada.
+  const yaProcesado = ventas.every((v) => v.estado !== 'pendiente');
+  if (yaProcesado) {
+    console.log(`[Wompi] Referencia ${reference} ya procesada (estado actual: ${ventas[0].estado}) — evento repetido, se ignora.`);
+    return;
+  }
 
   const cliente = ventas[0].cliente as any;
   const telefono: string = cliente?.telefono || '';
   const nombreCliente: string = cliente?.nombre || '';
   const conversacionId: string | null = ventas[0].conversacion_id || null;
   const direccionEnvio: string = (ventas[0] as any).direccion_envio || 'Sin especificar';
-  const totalPedido = ventas.reduce((s, v) => s + Number(v.total), 0);
 
   // ¿El cliente eligió recoger en tienda?
   const recogida = esRecogidaEnTienda(direccionEnvio);
   const nombreSede = nombreSedeDesdeDireccion(direccionEnvio);
+
+  // El total real cobrado incluye el envío (si aplica), pero cada fila de
+  // "ventas" guarda solo el subtotal de SU ítem (sin envío). Sumarlas da el
+  // subtotal del carrito; hay que sumar el envío con la MISMA regla usada al
+  // generar el link de pago para que el mensaje de confirmación no le diga al
+  // cliente un total menor al que realmente se le cobró.
+  const subtotalPedido = ventas.reduce((s, v) => s + Number(v.total), 0);
+  const envioAplicado = recogida ? 0 : (subtotalPedido >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO);
+  const totalPedido = subtotalPedido + envioAplicado;
 
   if (transaction.status === 'APPROVED') {
     // 1. Marcar TODAS las ventas como pagadas (lo más crítico)
@@ -199,8 +222,21 @@ export async function POST(req: Request) {
   const { signature, data } = payload;
   const transaction = data?.transaction;
 
-  // Verificar firma de Wompi
-  if (signature?.properties?.length) {
+  // Verificar firma de Wompi — OBLIGATORIA. Antes, si el payload llegaba sin
+  // "signature.properties" la verificación se SALTABA por completo y el evento
+  // se procesaba igual: cualquiera podía forjar un POST con status "APPROVED"
+  // (sin firma) y el bot creaba el pedido en Shopify y confirmaba el pago sin
+  // que Wompi hubiera cobrado nada. Ahora se exige secreto configurado y firma
+  // válida siempre; si falta cualquiera de los dos, se rechaza.
+  if (!secret) {
+    console.error('[Wompi] WOMPI_EVENT_SECRET no configurado — rechazando webhook por seguridad');
+    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
+  }
+  if (!signature?.properties?.length || !signature?.checksum) {
+    console.error('[Wompi] Webhook sin firma — rechazado');
+    return NextResponse.json({ error: 'Missing signature' }, { status: 401 });
+  }
+  {
     let concatString = '';
     for (const prop of signature.properties) {
       const keys = prop.split('.');
@@ -213,6 +249,7 @@ export async function POST(req: Request) {
 
     const expected = crypto.createHash('sha256').update(concatString).digest('hex');
     if (expected !== signature.checksum) {
+      console.error('[Wompi] Firma inválida — posible intento de forjar el webhook');
       return NextResponse.json({ error: 'Invalid Signature' }, { status: 401 });
     }
   }

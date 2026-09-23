@@ -9,6 +9,7 @@ import type { CartItem } from './bot-logic';
 import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { registrarUsoClaude } from './costos';
+import { matchProductoDistintivo } from './matching';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -39,26 +40,28 @@ const ALIASES_LOCAL = [
 ];
 
 function encontrarProducto(productos: any[], idRaw?: string, nombreRaw?: string, textoExtra = '') {
-  const busquedaTexto = ((nombreRaw || '') + ' ' + textoExtra).toLowerCase();
-
-  // 1. Por ID limpio (solo dígitos)
+  // 1. Por ID limpio (solo dígitos) — la vía más confiable, siempre primero
   if (idRaw) {
     const idLimpio = String(idRaw).replace(/\D/g, '');
     const p = productos.find((p) => String(p.shopify_id) === idLimpio);
     if (p) { console.log('[Sofi] producto por ID:', p.titulo); return p; }
   }
 
-  // 2. Por nombre exacto / substring
+  // 2. Por nombre exacto (substring completo en ambos sentidos — sin trucos
+  //    de prefijo truncado, que hacían coincidir productos distintos que
+  //    comparten las primeras letras, ej. toda la familia "Ron Viejo de Caldas")
   if (nombreRaw) {
-    const n = nombreRaw.toLowerCase();
+    const n = nombreRaw.toLowerCase().trim();
     const p = productos.find((p) => {
       const t = p.titulo.toLowerCase();
-      return t.includes(n) || n.includes(t.substring(0, 14));
+      return t === n || t.includes(n) || n.includes(t);
     });
     if (p) { console.log('[Sofi] producto por nombre:', p.titulo); return p; }
   }
 
-  // 3. Por aliases del banco de términos
+  // 3. Por aliases del banco de términos (términos curados y específicos,
+  //    no genéricos — seguro por diseño)
+  const busquedaTexto = ((nombreRaw || '') + ' ' + textoExtra).toLowerCase();
   for (const alias of ALIASES_LOCAL) {
     if (alias.palabras.some((k) => busquedaTexto.includes(k))) {
       const p = productos.find((p) => p.titulo.toLowerCase().includes(alias.contiene));
@@ -66,12 +69,12 @@ function encontrarProducto(productos: any[], idRaw?: string, nombreRaw?: string,
     }
   }
 
-  // 4. Por palabras largas del título en el texto
-  const p = productos.find((prod) => {
-    const palabras = prod.titulo.toLowerCase().split(' ').filter((w: string) => w.length > 4);
-    return palabras.some((w: string) => busquedaTexto.includes(w));
-  });
-  if (p) { console.log('[Sofi] producto por palabras:', p.titulo); return p; }
+  // 4. Última red de seguridad: exige TODAS las palabras distintivas del
+  //    título (sin palabras genéricas de marca) y solo responde si NO hay
+  //    ambigüedad. Si 0 o 2+ productos califican, devuelve null — nunca
+  //    adivina un producto que el cliente no pidió.
+  const p = matchProductoDistintivo(productos, busquedaTexto);
+  if (p) { console.log('[Sofi] producto por match distintivo:', p.titulo); return p; }
 
   console.log('[Sofi] producto NO encontrado. id:', idRaw, 'nombre:', nombreRaw);
   return null;

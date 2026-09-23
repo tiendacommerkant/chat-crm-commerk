@@ -20,6 +20,7 @@ import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
 import { enviarLeadMayorista } from './whatsapp-templates';
 import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede } from './sedes';
+import { matchProductoDistintivo } from './matching';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -158,8 +159,14 @@ export async function procesarMensajeBot(
   // Frases claras de cancelación total. La cancelación conversacional más
   // suelta ("no quiero ese", "quítalo") la maneja cada estado de menú.
   // OJO: en 'carrito' preguntamos "¿algo más?", así que "no gracias"/"no quiero"
-  // ahí significan "nada más" (finalizar), no cancelar el pedido.
-  const cancelarAmbiguo = awaiting === 'carrito' ? /^(cancelar|cancel|salir|stop)$/i : /^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i;
+  // ahí significan "nada más" (finalizar), no cancelar el pedido. Igual en
+  // 'cantidad' y 'compra': ahí "no gracias" es declinar ESE producto puntual
+  // (sus propios manejadores ya preservan el resto del carrito) — antes este
+  // check corría primero y borraba el carrito COMPLETO por error.
+  const ESTADOS_NEGACION_LOCAL = ['carrito', 'cantidad', 'compra'];
+  const cancelarAmbiguo = ESTADOS_NEGACION_LOCAL.includes(awaiting)
+    ? /^(cancelar|cancel|salir|stop)$/i
+    : /^(cancelar|cancel|no quiero|no gracias|salir|stop)$/i;
   if (cancelarAmbiguo.test(textoLower) ||
       /cancela(r)?\s+(el\s+|mi\s+|la\s+)?(pedido|carrito|compra|todo|orden)/i.test(textoLower)) {
     return {
@@ -531,9 +538,13 @@ export async function procesarMensajeBot(
 
   // Estado: esperando dirección
   if (awaiting === 'direccion') {
-    if (texto.length < 10) {
+    // Antes solo exigía 10+ caracteres: "no se todavia" (14) pasaba como
+    // dirección válida y el pedido seguía hasta el link de pago con una
+    // dirección sin sentido. Las direcciones colombianas reales siempre
+    // llevan un número (Calle 50 #30-20, Cra 43 5 Sur-50, etc.).
+    if (texto.length < 10 || !/\d/.test(texto)) {
       return {
-        texto: '📍 Por favor escribe la dirección completa con ciudad.\n_Ejemplo: Calle 50 #30-20, El Poblado, Medellín_',
+        texto: '📍 Por favor escribe la dirección completa con número y ciudad.\n_Ejemplo: Calle 50 #30-20, El Poblado, Medellín_',
         metadata: { awaiting: 'direccion', pending_cart: pendingCart },
       };
     }
@@ -626,6 +637,9 @@ export async function procesarMensajeBot(
     };
     if (USE_AI) {
       const r = await procesarMensajeSofi(texto, context, pendingCart);
+      // Si pidió un asesor humano, NO lo ignoramos empujándolo de vuelta a
+      // "¿confirmamos?" — se respeta la transferencia tal cual.
+      if ((r as any).accion === 'transferir_a_asesor') return r;
       return {
         texto: `${r.texto}\n\n¿Confirmamos entonces tu pedido? Responde *SI* para pagar.`,
         metadata: metaConfirmacion,
@@ -655,6 +669,18 @@ export async function procesarMensajeBot(
     // Cualquier otra duda: la responde Sofi sin sacar al cliente del proceso de pago
     if (USE_AI) {
       const r = await procesarMensajeSofi(texto, context, pendingCart);
+      // Pidió un asesor: se respeta, no se le insiste con el link.
+      if ((r as any).accion === 'transferir_a_asesor') return r;
+      // Sofi cree que quiere cerrar/pagar: ya tiene un link activo, no se
+      // reinicia el checkout (duplicaría el link de Wompi) — se le recuerda
+      // que ya puede pagar con el que tiene. Antes esta señal se devolvía
+      // cruda sin pasar por checkoutDesdeSofi y el flujo quedaba huérfano.
+      if ((r as any).accion === 'iniciar_checkout') {
+        return {
+          texto: `${r.texto}\n\n🔗 Ya tienes tu link de pago activo arriba en este chat. ¡Solo haz clic para pagar! 💳`,
+          metadata: { awaiting: 'link_enviado', pending_cart: pendingCart },
+        };
+      }
       if (!r.accion && !r.metadata?.awaiting) {
         return { texto: r.texto, metadata: { awaiting: 'link_enviado', pending_cart: pendingCart } };
       }
@@ -734,10 +760,15 @@ async function enviarLeadASede(
   ).catch(() => false);
 
   // 2) Respaldo en texto libre mientras Meta aprueba la plantilla
+  // OJO: enviarMensajeWhatsApp NUNCA lanza (atrapa sus propios errores y
+  // devuelve {success:false, error}), así que "res !== false" comparaba un
+  // objeto contra el booleano false y SIEMPRE daba true — los fallos reales
+  // quedaban registrados como éxito y nunca se veían en los logs.
   if (!entregado) {
     try {
-      const res: any = await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
-      entregado = res !== false;
+      const res = await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
+      entregado = res?.success === true;
+      if (!entregado) console.error(`[Lead sede] Envío a ${sede.nombre} (${sede.telefono}) falló:`, res?.error);
     } catch (e: any) {
       console.error(`[Lead sede] FALLÓ el envío a ${sede.nombre} (${sede.telefono}):`, e?.message);
     }
@@ -919,9 +950,6 @@ function extraerCantidades(t: string): number[] {
   return out;
 }
 
-function extraerCantidad(t: string): number | null {
-  return extraerCantidades(t)[0] ?? null;
-}
 
 function quitarAcentos(t: string): string {
   return t.normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -936,7 +964,6 @@ function incluyeTermino(texto: string, termino: string): boolean {
 
 async function detectarProducto(texto: string): Promise<Producto | null> {
   const productos = await obtenerProductosCache();
-  const t = quitarAcentos(texto);
 
   // Primero: banco de alias del brief
   for (const alias of ALIASES_PRODUCTO) {
@@ -949,14 +976,12 @@ async function detectarProducto(texto: string): Promise<Producto | null> {
     }
   }
 
-  // Fallback: palabras largas del título
-  return (
-    productos.find((p) => {
-      const titulo = quitarAcentos(p.titulo.toLowerCase());
-      const palabras = titulo.split(' ').filter((w) => w.length > 3);
-      return palabras.some((w) => t.includes(w));
-    }) || null
-  );
+  // Última red de seguridad: puntúa por palabras distintivas del título (sin
+  // genéricas de marca) y solo responde si un producto gana sin empate. Antes
+  // hacía match por cualquier palabra >3 letras, incluidas "caldas"/"viejo"
+  // que comparten TODOS los rones de la marca, devolviendo silenciosamente
+  // un producto distinto al pedido.
+  return matchProductoDistintivo(productos, texto);
 }
 
 // ──────────────────────────────────────────

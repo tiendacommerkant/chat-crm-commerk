@@ -58,6 +58,19 @@ export async function buscarOCrearCliente(telefono: string, nombre?: string): Pr
     .single();
 
   if (errorCreacion) {
+    // Carrera: dos mensajes casi simultáneos de un cliente NUEVO pueden hacer
+    // que ambos lean "no existe" y ambos intenten insertar. Si el segundo
+    // choca contra una restricción única (o cualquier error de inserción),
+    // reintentamos la lectura antes de fallar — probablemente el otro
+    // request ya lo creó. Sin esto, uno de los dos mensajes se perdía sin
+    // respuesta y, si no hay restricción única en la BD, podían quedar dos
+    // clientes duplicados para el mismo teléfono.
+    const { data: reintento } = await supabaseAdmin
+      .from('clientes')
+      .select('*')
+      .eq('telefono', telefono)
+      .single();
+    if (reintento) return reintento;
     throw new Error(`Error creando cliente: ${errorCreacion.message}`);
   }
 
@@ -91,6 +104,18 @@ export async function obtenerConversacionActiva(clienteId: string): Promise<Conv
     .single();
 
   if (error) {
+    // Misma carrera que en buscarOCrearCliente: reintenta leer antes de
+    // fallar, para no dejar un mensaje sin respuesta ni duplicar la
+    // conversación activa si dos mensajes llegaron casi al tiempo.
+    const { data: reintento } = await supabaseAdmin
+      .from('conversaciones')
+      .select('*')
+      .eq('cliente_id', clienteId)
+      .eq('estado', 'activa')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    if (reintento) return reintento;
     throw new Error(`Error creando conversación: ${error.message}`);
   }
 
