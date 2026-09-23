@@ -10,6 +10,7 @@ import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { registrarUsoClaude } from './costos';
 import { matchProductoDistintivo } from './matching';
+import { asegurarPreguntaCantidad } from './sofi-texto';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -284,10 +285,12 @@ RESPONDE SOLO JSON:
 
       if (producto) {
         const cola = encontrados.slice(1);
-        // Si hay varios, preguntamos la cantidad del primero de forma explícita
-        const texto = cola.length > 0
-          ? `${textoFinal}\n\n¿Cuántas unidades de *${producto.titulo}* quieres?`
-          : textoFinal;
+        // El estado pasa a "esperando cantidad", así que el texto DEBE terminar
+        // preguntando la cantidad. En pruebas reales Sofi a veces cerraba con
+        // "¿Te la sumo al pedido?" y el cliente contestaba "sí" sin que el bot
+        // esperara un sí sino un número. Se garantiza aquí, sin depender de que
+        // el modelo obedezca la instrucción del prompt.
+        const texto = asegurarPreguntaCantidad(textoFinal, producto.titulo);
         return {
           texto,
           metadata: {

@@ -131,7 +131,17 @@ export async function procesarMensajeBot(
       '6': 'Mall Indiana',
       '7': 'Urabá - Apartadó',
     };
-    const sedeElegida = SEDES_REGISTRO[texto.trim()];
+    // Por número (siempre) o, cuando el menú de sedes está en pantalla, también
+    // por nombre hablado ("tesoro", "la de Itagüí", "virtual"). En pruebas
+    // reales un usuario escribió el nombre y el bot solo repetía el menú.
+    let sedeElegida: string | undefined = SEDES_REGISTRO[texto.trim()];
+    if (!sedeElegida && awaiting === 'sede') {
+      if (/\b(virtual|domicilio|a domicilio|online|en l[ií]nea|a mi casa)\b/i.test(textoLower)) {
+        sedeElegida = 'Virtual';
+      } else {
+        sedeElegida = encontrarSede(texto, SEDES_FISICAS)?.nombre;
+      }
+    }
     if (sedeElegida) {
       await actualizarCliente(context.cliente.id, { sede_preferida: sedeElegida });
       const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
@@ -146,7 +156,7 @@ export async function procesarMensajeBot(
     if (awaiting === 'sede') {
       return {
         texto:
-          `Por favor elige tu sede escribiendo el número:\n\n` +
+          `No logré identificar la sede 🤔 Escríbeme el número o el nombre de la más cercana:\n\n` +
           `*1.* 🌐 Virtual\n*2.* 🏬 CC Tesoro\n*3.* 🏬 CC Fabricato\n` +
           `*4.* 🏬 Autopista Sur - Itagüí\n*5.* 🏬 Gran Manzana - Itagüí\n` +
           `*6.* 🏬 Mall Indiana\n*7.* 🏬 Urabá - Apartadó`,
