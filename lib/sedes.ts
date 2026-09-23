@@ -61,15 +61,27 @@ const ALIAS_SEDES: Record<string, string[]> = {
 };
 
 /**
- * Encuentra una sede por número ("3") o por nombre hablado ("el del Tesoro").
- * Devuelve null si el texto no identifica una sede sin ambigüedad.
+ * Extrae el número de una respuesta tipo "elige una opción" tolerando la
+ * puntuación con la que la gente suele responder listas en WhatsApp: "3.",
+ * "3)", "(3)", "opción 3", " 3 ". Limitado a 1-2 dígitos para no confundir
+ * con un número de teléfono u otro dato largo. Devuelve null si no aplica.
+ */
+export function extraerNumeroOpcion(texto: string): string | null {
+  const m = texto.trim().match(/^[(\[]?\s*(\d{1,2})\s*[).\]]?$/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Encuentra una sede por número ("3", "3.", "(3)") o por nombre hablado
+ * ("el del Tesoro"). Devuelve null si el texto no identifica una sede sin
+ * ambigüedad.
  */
 export function encontrarSede(texto: string, mapa: Record<string, Sede> = SEDES_FISICAS): Sede | null {
   const limpio = texto.trim();
 
-  // Por número
-  const soloNumero = limpio.match(/^(\d+)$/);
-  if (soloNumero && mapa[soloNumero[1]]) return mapa[soloNumero[1]];
+  // Por número (tolera "3.", "3)", etc. — no solo el dígito pelado)
+  const numero = extraerNumeroOpcion(limpio);
+  if (numero && mapa[numero]) return mapa[numero];
 
   // Por nombre
   const t = limpio.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');

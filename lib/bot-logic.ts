@@ -19,7 +19,7 @@ import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } f
 import { procesarMensajeSofi } from './ai-sofi';
 import { enviarMensajeWhatsApp } from './whatsapp';
 import { enviarLeadMayorista } from './whatsapp-templates';
-import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede } from './sedes';
+import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
@@ -131,10 +131,13 @@ export async function procesarMensajeBot(
       '6': 'Mall Indiana',
       '7': 'Urabá - Apartadó',
     };
-    // Por número (siempre) o, cuando el menú de sedes está en pantalla, también
-    // por nombre hablado ("tesoro", "la de Itagüí", "virtual"). En pruebas
-    // reales un usuario escribió el nombre y el bot solo repetía el menú.
-    let sedeElegida: string | undefined = SEDES_REGISTRO[texto.trim()];
+    // Por número (siempre, tolerando "3.", "3)" como responde la gente en
+    // WhatsApp — antes exigía el dígito pelado) o, cuando el menú de sedes
+    // está en pantalla, también por nombre hablado ("tesoro", "la de
+    // Itagüí", "virtual"). En pruebas reales un usuario escribió "3." y el
+    // bot no lo reconoció ni como número ni como nombre.
+    const numeroSede = extraerNumeroOpcion(texto);
+    let sedeElegida: string | undefined = numeroSede ? SEDES_REGISTRO[numeroSede] : undefined;
     if (!sedeElegida && awaiting === 'sede') {
       if (/\b(virtual|domicilio|a domicilio|online|en l[ií]nea|a mi casa)\b/i.test(textoLower)) {
         sedeElegida = 'Virtual';
@@ -472,12 +475,14 @@ export async function procesarMensajeBot(
         metadata: { awaiting: '', pending_cart: [] },
       };
     }
+    // Número de opción tolerando puntuación ("1.", "2)") — igual que en sedes
+    const numeroEntrega = extraerNumeroOpcion(texto);
     // Recoger en tienda (se evalúa primero: "paso por él" es más específico)
-    if (/^2$/.test(textoLower) || /(recoger|recojo|recoge|recogerlo|paso por|pasar por|paso a|retiro|retirar|en tienda|en la tienda|tienda f[ií]sica|f[ií]sica|recogida|voy por)/i.test(textoLower)) {
+    if (numeroEntrega === '2' || /(recoger|recojo|recoge|recogerlo|paso por|pasar por|paso a|retiro|retirar|en tienda|en la tienda|tienda f[ií]sica|f[ií]sica|recogida|voy por)/i.test(textoLower)) {
       return preguntarSedeRecogida(pendingCart);
     }
     // Domicilio
-    if (/^1$/.test(textoLower) || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|env[ií]amelo|mandar|m[aá]ndamelo|a mi casa|a casa|entrega|que llegue)/i.test(textoLower)) {
+    if (numeroEntrega === '1' || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|env[ií]amelo|mandar|m[aá]ndamelo|a mi casa|a casa|entrega|que llegue)/i.test(textoLower)) {
       return {
         texto:
           `📍 Perfecto, ¿a qué dirección te lo enviamos?\n\n` +
