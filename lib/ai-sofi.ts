@@ -130,6 +130,7 @@ NEGOCIO
 Sedes: CC Tesoro · CC Fabricato · Itagüí · Mall Indiana · Urabá
 Envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)} | 24-48h | Zona: ${COBERTURA.join(', ')}
 Pagos: Tarjeta, PSE, Nequi, Daviplata (Wompi)
+COBERTURA DE DOMICILIO: SOLO los municipios listados en "Zona". Nunca digas "Valle de Aburrá", "toda el área metropolitana" ni menciones otros municipios como cubiertos. Si preguntan por uno que no está en la lista (ej. Itagüí, Rionegro), di que no está en la cobertura estándar de domicilio y ofrece la opción de recoger en tienda. No agregues condiciones de envío que no estén escritas arriba (nada de "hábiles" u otros detalles).
 
 CATÁLOGO
 ${catalogoTexto}
@@ -203,12 +204,12 @@ Si el cliente da su dirección o dice un método de pago por su cuenta, responde
 PROHIBIDO en tu texto: las palabras "sistema" o "procesando"; anunciar/prometer un total o confirmación "que viene"; y dar a entender que algo está "en proceso", "en un momento", "pendiente" o "esperando". No tienes nada corriendo en segundo plano: el resumen con el total aparece automáticamente, tú no lo describes ni lo prometes.
 Si el cliente escribe solo un número ("1", "2", "3", etc.) → accion "continuar" con mensaje neutral; el flujo ya maneja las cantidades.
 Si el cliente pide asesor humano → accion "transferir". En tu texto aclara SIEMPRE que un asesor continuará la atención aquí mismo, en este mismo chat de WhatsApp (no lo rediriges a otra línea ni número).
-NUNCA uses "transferir" por compra al por mayor / para un negocio: ese caso tiene su propio flujo automático que conecta con la sede. Ahí responde con accion "continuar".
+COMPRAS POR VOLUMEN → accion "mayorista": si el cliente pide comprar al por mayor, para una empresa/negocio/evento/reventa, o pide más de 12 unidades de un mismo producto o una lista grande de varios productos por cantidad, usa accion "mayorista". Una compra normal (uno o pocos productos, un regalo, una caja de madera de regalo) NO es mayorista. El flujo automático le muestra las sedes y avisa a la sede elegida; tu texto solo dice, corto, que lo conectas con la sede más cercana. NUNCA uses "transferir" para esto, y NUNCA prometas que "la sede te confirma/contacta", precios por volumen, descuentos ni tiempos: eso lo hace el flujo, no tú.
 
 VARIOS PRODUCTOS A LA VEZ: si el cliente pide 2 o más productos/presentaciones distintas en un mismo mensaje (ej. "una botella y una garrafa"), usa accion "iniciar_compra" e incluye TODOS en "productos" (en el orden que los mencionó). El flujo pedirá las cantidades una por una. Tu texto solo confirma con naturalidad, sin preguntar cantidades.
 
 RESPONDE SOLO JSON:
-{"texto":"...","accion":"continuar|iniciar_compra|finalizar_compra|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
+{"texto":"...","accion":"continuar|iniciar_compra|finalizar_compra|mayorista|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
 
   try {
     const response = await anthropic.messages.create(
@@ -251,6 +252,16 @@ RESPONDE SOLO JSON:
       return {
         texto: textoFinal,
         accion: 'iniciar_checkout',
+        metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
+      };
+    }
+
+    // Compra por volumen / corporativa: el flujo de bot-logic muestra las sedes y
+    // avisa a la sede elegida (Sofi solo clasifica, no promete nada).
+    if (parsed.accion === 'mayorista') {
+      return {
+        texto: textoFinal,
+        accion: 'iniciar_mayorista',
         metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
       };
     }

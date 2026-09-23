@@ -257,6 +257,12 @@ export async function procesarMensajeBot(
     const cierre = await checkoutDesdeSofi(respuestaSofi, pendingCart, pendingProductId, pendingCantidad);
     if (cierre) return cierre;
 
+    // Compra por volumen / corporativa detectada por Sofi → flujo mayorista real
+    // (muestra sedes y avisa a la elegida; el mensaje del cliente viaja en el lead).
+    if ((respuestaSofi as any).accion === 'iniciar_mayorista') {
+      return respuestaMayoristaOpciones(context, texto);
+    }
+
     return respuestaSofi;
   }
 
@@ -451,7 +457,9 @@ export async function procesarMensajeBot(
     if (USE_AI) {
       const r = await procesarMensajeSofi(texto, context, pendingCart);
       const cierre = await checkoutDesdeSofi(r, pendingCart, pendingProductId, pendingCantidad);
-      return cierre ?? r;
+      if (cierre) return cierre;
+      if ((r as any).accion === 'iniciar_mayorista') return respuestaMayoristaOpciones(context, texto);
+      return r;
     }
     return respuestaCarrito(pendingCart);
   }
