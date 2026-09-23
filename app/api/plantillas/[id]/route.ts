@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 
 const GRAPH_URL = 'https://graph.facebook.com/v20.0';
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
-const WABA_ID = process.env.WHATSAPP_WABA_ID || '1014548717684753';
+const WABA_ID = process.env.WHATSAPP_WABA_ID!;
 
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   try {

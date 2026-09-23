@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 // Suscribe el WABA al webhook de la app — ejecutar una sola vez
 export async function GET(req: Request) {
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  const wabaId = new URL(req.url).searchParams.get('waba_id') || '1014548717684753';
+  const wabaId = new URL(req.url).searchParams.get('waba_id') || process.env.WHATSAPP_WABA_ID!;
 
   if (!token) return NextResponse.json({ error: 'WHATSAPP_ACCESS_TOKEN no configurado en Vercel' }, { status: 500 });
 
