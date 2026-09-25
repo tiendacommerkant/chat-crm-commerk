@@ -317,7 +317,9 @@ export async function POST(req: Request) {
             // de seguridad de 30 min reactiva el bot si nadie atiende.
             const ultimoBotPrevio = [...historial].reverse().find((m) => m.tipo === 'bot');
             const pideHumano = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien)\b/i.test(texto);
-            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano;
+            // La derivación mayorista ya avisó a la sede: ahí sí se pasa el chat siempre
+            const derivacionMayorista = respuesta.metadata?.derivacion === 'mayorista';
+            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano && !derivacionMayorista;
 
             await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
               ...respuesta.metadata,
@@ -332,6 +334,16 @@ export async function POST(req: Request) {
                 .from('conversaciones')
                 .update({ bot_activo: false, updated_at: new Date().toISOString() })
                 .eq('id', conversacion.id);
+
+              // Etiqueta visible en el CRM para que el equipo vea que es un lead mayorista
+              // (no pisa una etiqueta que ya tenga, ej. "Compró").
+              if (derivacionMayorista) {
+                await supabaseAdmin
+                  .from('conversaciones')
+                  .update({ etiqueta: 'mayorista' })
+                  .eq('id', conversacion.id)
+                  .is('etiqueta', null);
+              }
             } else {
               console.warn('[WA] Transferencia solicitada con flujo activo — el bot sigue activo para no dejar al cliente sin respuesta');
             }

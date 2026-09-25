@@ -1,6 +1,6 @@
 // ============================================
 // SEDES FÍSICAS — fuente única de verdad
-// Usado por el bot (recoger en tienda / mayorista) y el webhook de pago
+// Usado por el bot (registro / recoger en tienda / mayorista) y el webhook de pago
 // ============================================
 
 export interface Sede {
@@ -15,22 +15,8 @@ export const SEDES_FISICAS: Record<string, Sede> = {
   '4': { nombre: 'Gran Manzana - Itagüí', telefono: '573156125765' },
   '5': { nombre: 'Mall Indiana', telefono: '573185608348' },
   '6': { nombre: 'Urabá - Apartadó', telefono: '573160173928' },
-};
-
-// Sedes para compras al por mayor (incluye Parque comercial Florida)
-export const SEDES_MAYORISTA: Record<string, Sede> = {
-  ...SEDES_FISICAS,
   '7': { nombre: 'Parque Comercial Florida', telefono: '573153658482' },
 };
-
-export const MENU_SEDES_MAYORISTA =
-  `*1.* 🏬 CC Tesoro\n` +
-  `*2.* 🏬 CC Fabricato\n` +
-  `*3.* 🏬 Autopista Sur - Itagüí\n` +
-  `*4.* 🏬 Gran Manzana - Itagüí\n` +
-  `*5.* 🏬 Mall Indiana\n` +
-  `*6.* 🏬 Urabá - Apartadó\n` +
-  `*7.* 🏬 Parque Comercial Florida`;
 
 // Prefijo que marca un pedido para recoger en tienda (se guarda en direccion_envio)
 export const PREFIJO_RECOGIDA = 'Recoge en tienda: ';
@@ -45,7 +31,7 @@ export function nombreSedeDesdeDireccion(direccion?: string | null): string | nu
 }
 
 export function buscarTelefonoSede(nombreSede: string): string | null {
-  const sede = Object.values(SEDES_MAYORISTA).find((s) => s.nombre === nombreSede);
+  const sede = Object.values(SEDES_FISICAS).find((s) => s.nombre === nombreSede);
   return sede?.telefono ?? null;
 }
 
@@ -96,11 +82,21 @@ export function encontrarSede(texto: string, mapa: Record<string, Sede> = SEDES_
   return null;
 }
 
-// Texto del menú de sedes (1..6) para reutilizar en mensajes
-export const MENU_SEDES =
-  `*1.* 🏬 CC Tesoro\n` +
-  `*2.* 🏬 CC Fabricato\n` +
-  `*3.* 🏬 Autopista Sur - Itagüí\n` +
-  `*4.* 🏬 Gran Manzana - Itagüí\n` +
-  `*5.* 🏬 Mall Indiana\n` +
-  `*6.* 🏬 Urabá - Apartadó`;
+// Menú de sedes (recoger en tienda y compras al por mayor). Se arma desde
+// SEDES_FISICAS para que agregar una sede nunca deje los textos desfasados.
+export const MENU_SEDES = Object.entries(SEDES_FISICAS)
+  .map(([n, s]) => `*${n}.* 🏬 ${s.nombre}`)
+  .join('\n');
+
+// Menú del registro inicial: la opción 1 es Virtual y las tiendas van desde la 2.
+export const MENU_SEDES_REGISTRO =
+  `*1.* 🌐 Virtual (envío a domicilio)\n` +
+  Object.entries(SEDES_FISICAS)
+    .map(([n, s]) => `*${Number(n) + 1}.* 🏬 ${s.nombre}`)
+    .join('\n');
+
+// Traduce el número elegido en el registro inicial al nombre de sede.
+export function sedeDeRegistroPorNumero(numero: string): string | undefined {
+  if (numero === '1') return 'Virtual';
+  return SEDES_FISICAS[String(Number(numero) - 1)]?.nombre;
+}

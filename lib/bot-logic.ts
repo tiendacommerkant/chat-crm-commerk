@@ -17,9 +17,10 @@ import type { BotContext, BotResponse, Producto } from '@/types';
 import { obtenerProductosCache, actualizarCliente, supabaseAdmin, obtenerPedidosClienteShopify } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
+import { asegurarPreguntaCantidad } from './sofi-texto';
 import { enviarMensajeWhatsApp } from './whatsapp';
 import { enviarLeadMayorista } from './whatsapp-templates';
-import { SEDES_FISICAS, SEDES_MAYORISTA, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_MAYORISTA, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
+import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_REGISTRO, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
@@ -96,14 +97,8 @@ export async function procesarMensajeBot(
         texto:
           `✅ *¡Gracias por aceptar nuestras políticas!*\n\n` +
           `🏪 *¿Cuál es la sede más cercana a ti?*\n\n` +
-          `*1.* 🌐 Virtual (envío a domicilio)\n` +
-          `*2.* 🏬 CC Tesoro\n` +
-          `*3.* 🏬 CC Fabricato\n` +
-          `*4.* 🏬 Autopista Sur - Itagüí\n` +
-          `*5.* 🏬 Gran Manzana - Itagüí\n` +
-          `*6.* 🏬 Mall Indiana\n` +
-          `*7.* 🏬 Urabá - Apartadó\n\n` +
-          `_Escribe el número de tu sede._`,
+          `${MENU_SEDES_REGISTRO}\n\n` +
+          `_Escribe el número o el nombre de tu sede._`,
         metadata: { awaiting: 'sede' },
       };
     }
@@ -122,22 +117,13 @@ export async function procesarMensajeBot(
   // Solo pedir sede cuando NO hay un flujo activo (sin esto, un "3" para
   // cantidad se interpretaba como selección de sede #3).
   if (awaiting === 'sede' || (awaiting === '' && !context.cliente.sede_preferida)) {
-    const SEDES_REGISTRO: Record<string, string> = {
-      '1': 'Virtual',
-      '2': 'CC Tesoro',
-      '3': 'CC Fabricato',
-      '4': 'Autopista Sur - Itagüí',
-      '5': 'Gran Manzana - Itagüí',
-      '6': 'Mall Indiana',
-      '7': 'Urabá - Apartadó',
-    };
     // Por número (siempre, tolerando "3.", "3)" como responde la gente en
     // WhatsApp — antes exigía el dígito pelado) o, cuando el menú de sedes
     // está en pantalla, también por nombre hablado ("tesoro", "la de
     // Itagüí", "virtual"). En pruebas reales un usuario escribió "3." y el
     // bot no lo reconoció ni como número ni como nombre.
     const numeroSede = extraerNumeroOpcion(texto);
-    let sedeElegida: string | undefined = numeroSede ? SEDES_REGISTRO[numeroSede] : undefined;
+    let sedeElegida: string | undefined = numeroSede ? sedeDeRegistroPorNumero(numeroSede) : undefined;
     if (!sedeElegida && awaiting === 'sede') {
       if (/\b(virtual|domicilio|a domicilio|online|en l[ií]nea|a mi casa)\b/i.test(textoLower)) {
         sedeElegida = 'Virtual';
@@ -160,9 +146,7 @@ export async function procesarMensajeBot(
       return {
         texto:
           `No logré identificar la sede 🤔 Escríbeme el número o el nombre de la más cercana:\n\n` +
-          `*1.* 🌐 Virtual\n*2.* 🏬 CC Tesoro\n*3.* 🏬 CC Fabricato\n` +
-          `*4.* 🏬 Autopista Sur - Itagüí\n*5.* 🏬 Gran Manzana - Itagüí\n` +
-          `*6.* 🏬 Mall Indiana\n*7.* 🏬 Urabá - Apartadó`,
+          MENU_SEDES_REGISTRO,
         metadata: { awaiting: 'sede' },
       };
     }
@@ -273,22 +257,40 @@ export async function procesarMensajeBot(
 
   // Estado: esperando elección de sede mayorista
   if (awaiting === 'mayorista_sede') {
-    const sede = encontrarSede(texto, SEDES_MAYORISTA);
+    const sede = encontrarSede(texto, SEDES_FISICAS);
     if (sede) {
-      const mensajeOriginal: string = ultimoBot?.metadata?.pending_mayorista_mensaje || '';
-      await enviarLeadASede(sede, context, mensajeOriginal);
+      const consulta = armarConsultaMayorista(context, ultimoBot?.metadata?.pending_mayorista_mensaje || '', pendingCart);
+      const entregado = await enviarLeadASede(sede, context, consulta);
+      const enlaceSede = enlaceWhatsAppSede(sede, context.cliente.nombre);
+
+      // Si el aviso a la sede falló NO prometemos que van a escribir: le damos
+      // el contacto directo de la sede para que la conexión sí ocurra.
+      if (!entregado) {
+        return {
+          texto:
+            `No logré avisarle a la sede *${sede.nombre}* de forma automática 😕\n\n` +
+            `Para no hacerte esperar, escríbeles directamente y te atienden tu compra al por mayor:\n👉 ${enlaceSede}`,
+          metadata: { awaiting: '' },
+        };
+      }
+
+      // Derivación activa: el lead ya llegó a la sede, así que la conversación
+      // queda transferida (bot en pausa, etiquetada en el CRM). La red de
+      // seguridad del webhook reactiva el bot si nadie atiende en 30 min.
       return {
         texto:
-          `✅ ¡Listo! Ya le pasé tus datos a nuestra sede *${sede.nombre}*.\n\n` +
-          `Un asesor de compras al por mayor te va a escribir a este mismo número (+${context.cliente.telefono}) para darte precios y condiciones especiales. 😊\n\n` +
-          `Mientras tanto, si quieres, cuéntame qué productos te interesan y te voy adelantando información.`,
-        metadata: { awaiting: '' },
+          `✅ ¡Listo! Ya le pasé tu solicitud, con el resumen de lo que buscas, a la sede *${sede.nombre}*.\n\n` +
+          `Un asesor de compras al por mayor te va a escribir a este número (+${context.cliente.telefono}) con precios y condiciones especiales. 🤝\n\n` +
+          `Si prefieres no esperar, también puedes escribirles directo:\n👉 ${enlaceSede}\n\n` +
+          `Desde aquí te atiende una persona, así que dejo mi chat en pausa para no cruzarme con ellos. Si en 30 minutos nadie te ha escrito, mándame un mensaje y retomo contigo. 😊`,
+        accion: 'transferir_a_asesor',
+        metadata: { awaiting: '', derivacion: 'mayorista', sede_mayorista: sede.nombre },
       };
     }
     return {
       texto:
-        `Por favor escribe el *número* de la sede:\n\n` +
-        MENU_SEDES_MAYORISTA,
+        `Por favor escribe el *número* o el nombre de la sede:\n\n` +
+        MENU_SEDES,
       metadata: {
         awaiting: 'mayorista_sede',
         pending_mayorista_mensaje: ultimoBot?.metadata?.pending_mayorista_mensaje || '',
@@ -388,13 +390,38 @@ export async function procesarMensajeBot(
       };
     }
 
-    // Nunca llamar a Sofi cuando hay un flujo de cantidad activo — solo pedir el número
     const productos2 = await obtenerProductosCache();
     const prod2 = productos2.find((p) => p.shopify_id === pendingProductId);
     const nombreProd = prod2?.titulo || 'ese producto';
+    const metaCantidad = { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart };
+
+    // No es un número: el cliente hizo una pregunta ("¿tengo descuento?", "¿hacen envío?").
+    // Repetir el mismo "escribe solo el número" en bucle lo dejaba sin respuesta
+    // (hallazgo QA), así que Sofi contesta la duda y la cantidad sigue pendiente.
+    if (USE_AI) {
+      try {
+        const r = await procesarMensajeSofi(texto, context, pendingCart);
+        const accion = (r as any).accion;
+        if (accion === 'iniciar_mayorista') return respuestaMayoristaOpciones(context, texto);
+        if (accion === 'transferir_a_asesor') return r;
+        // Con carrito armado, "quiero pagar" cierra la compra (sin sumar el producto pendiente)
+        const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1);
+        if (cierre) return cierre;
+        // Cambió de producto ("mejor el de 375ml"): Sofi ya dejó la cantidad de ESE producto pendiente
+        if (r.metadata?.awaiting === 'cantidad' && r.metadata?.pending_product_id) {
+          return { ...r, metadata: { ...r.metadata, pending_cart: r.metadata.pending_cart ?? pendingCart } };
+        }
+        // Solo aclaró una duda: se conserva el producto y se vuelve a pedir la cantidad
+        if (r.texto?.trim()) {
+          return { texto: asegurarPreguntaCantidad(r.texto, nombreProd), metadata: metaCantidad };
+        }
+      } catch (e: any) {
+        console.error('[Bot] Sofi falló en estado cantidad, uso respuesta fija:', e?.message);
+      }
+    }
     return {
       texto: `¿Cuántas unidades de *${nombreProd}* quieres?\n\nEscribe solo el número (ej: *1*, *2*, *3*). Si quieres otro producto escribe *cancelar*.`,
-      metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart },
+      metadata: metaCantidad,
     };
   }
 
@@ -753,16 +780,52 @@ function respuestaMayoristaOpciones(context: BotContext, mensajeOriginal: string
     texto:
       `¡Hola${nombre ? ` ${nombre}` : ''}! Para compras al por mayor te conectamos directamente con la sede más cercana. 🏪\n\n` +
       `¿Cuál tienda te queda más cerca?\n\n` +
-      MENU_SEDES_MAYORISTA,
+      MENU_SEDES,
     metadata: { awaiting: 'mayorista_sede', pending_mayorista_mensaje: mensajeOriginal },
   };
+}
+
+// Enlace directo al WhatsApp de la sede con un mensaje ya escrito.
+function enlaceWhatsAppSede(sede: { telefono: string }, nombreCliente?: string | null): string {
+  const quien = nombreCliente?.trim() ? `Soy ${nombreCliente.trim()}. ` : '';
+  const msg = `Hola, ${quien}vengo del chat de Commerk y quiero información para una compra al por mayor.`;
+  return `https://wa.me/${sede.telefono}?text=${encodeURIComponent(msg)}`;
+}
+
+/**
+ * Resumen de lo que busca el cliente para el asesor de la sede. Antes viajaba
+ * solo el último mensaje ("TODAS", "RON"), sin contexto. Junta lo que dijo en
+ * la conversación (sin números de menú ni nombres de sede) y el carrito.
+ */
+function armarConsultaMayorista(context: BotContext, mensajeDisparador: string, cart: CartItem[]): string {
+  const ruido = (t: string) =>
+    !t || !!extraerNumeroOpcion(t) || !!encontrarSede(t, SEDES_FISICAS) ||
+    /^(acepto|si|sí|ok|hola|buenas|gracias|listo)$/i.test(t);
+  const vistos = new Set<string>();
+  const dichos: string[] = [];
+  const candidatos = [
+    ...context.mensajes_previos.filter((m) => m.tipo === 'user').map((m) => m.contenido || ''),
+    mensajeDisparador,
+  ];
+  for (const bruto of candidatos) {
+    const t = bruto.replace(/\s+/g, ' ').trim();
+    const clave = t.toLowerCase();
+    if (ruido(t) || vistos.has(clave)) continue;
+    vistos.add(clave);
+    dichos.push(t.slice(0, 120));
+  }
+  const partes = dichos.slice(-4);
+  if (cart.length > 0) {
+    partes.push('Carrito: ' + cart.map((i) => `${i.cantidad}x ${i.titulo}`).join(', '));
+  }
+  return (partes.join(' | ') || 'Compra al por mayor').slice(0, 450);
 }
 
 async function enviarLeadASede(
   sede: { nombre: string; telefono: string },
   context: BotContext,
   mensajeOriginal: string
-) {
+): Promise<boolean> {
   const nombre = context.cliente.nombre || 'Sin nombre';
   const telefono = context.cliente.telefono;
 
@@ -771,7 +834,7 @@ async function enviarLeadASede(
     `👤 Cliente: ${nombre}\n` +
     `📱 Tel: +${telefono}\n` +
     `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
-    `_Responde directamente a este número para atender al cliente._`;
+    `👉 Escríbele directo desde tu WhatsApp: https://wa.me/${telefono}`;
 
   // 1) Plantilla aprobada: llega siempre, incluso fuera de la ventana de 24h
   let entregado = await enviarLeadMayorista(
@@ -779,7 +842,7 @@ async function enviarLeadASede(
     sede.nombre,
     nombre,
     `+${telefono}`,
-    mensajeOriginal || 'Compra al por mayor'
+    `${mensajeOriginal || 'Compra al por mayor'} | Escríbele directo: https://wa.me/${telefono}`
   ).catch(() => false);
 
   // 2) Respaldo en texto libre mientras Meta aprueba la plantilla
@@ -812,6 +875,7 @@ async function enviarLeadASede(
       conversacion_id: context.conversacion?.id || null,
     });
   if (error) console.error('[Lead sede] Error guardando:', error.message);
+  return entregado;
 }
 
 // ──────────────────────────────────────────
