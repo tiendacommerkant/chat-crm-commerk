@@ -52,12 +52,15 @@ function unirTamanos(s: string): string {
 }
 
 function tokensDistintivos(titulo: string): string[] {
-  return unirTamanos(normalizar(titulo))
+  const tokens = unirTamanos(normalizar(titulo))
     // separadores: espacios, guiones (incluye variantes largas), pipes,
     // puntuación y paréntesis/corchetes — cualquier símbolo que no sea
     // parte de una palabra o número
     .split(/[\s\-–—×.,|()[\]]+/)
     .filter((w) => w.length > 3 && !PALABRAS_GENERICAS.has(w) && !/^\d+$/.test(w));
+  // Sin repetidos: un título como "Kit Termo ... Amarillo + Aguardiente
+  // Amarillo" no debe puntuar doble por la misma palabra y ganarle a la botella.
+  return Array.from(new Set(tokens));
 }
 
 /**
@@ -71,7 +74,11 @@ export function matchProductoDistintivo<T extends { titulo: string }>(
   textoBusqueda: string
 ): T | null {
   if (!textoBusqueda?.trim()) return null;
-  const texto = unirTamanos(normalizar(textoBusqueda));
+  // "el tradicional de 750" (sin "ml"): tamaños de botella típicos se leen como ml
+  const texto = unirTamanos(normalizar(textoBusqueda)).replace(
+    /\b(350|375|500|700|750|1000|1500|1750|2000)\b(?!\s*(ml|g|kg|l|litros?)\b)/g,
+    '$1ml'
+  );
 
   const puntuados = productos
     .map((p) => {
@@ -79,14 +86,23 @@ export function matchProductoDistintivo<T extends { titulo: string }>(
       const coincidencias = tokens.filter((tok) =>
         new RegExp(`(^|[^a-z0-9])${escaparRegex(tok)}`).test(texto)
       ).length;
-      return { p, coincidencias };
+      return { p, coincidencias, completo: tokens.length > 0 && coincidencias === tokens.length };
     })
     .filter((x) => x.coincidencias > 0)
     .sort((a, b) => b.coincidencias - a.coincidencias);
 
   if (puntuados.length === 0) return null;
-  const empatado = puntuados.length > 1 && puntuados[1].coincidencias === puntuados[0].coincidencias;
-  if (empatado) return null;
+  const mejor = puntuados[0].coincidencias;
+  const empatados = puntuados.filter((x) => x.coincidencias === mejor);
+  if (empatados.length === 1) return empatados[0].p;
 
-  return puntuados[0].p;
+  // Empate: solo se resuelve si el cliente nombró COMPLETO un único producto
+  // (todas sus palabras distintivas están en el texto) y los demás empatados
+  // tienen más palabras que no dijo — ej. "aguardiente amarillo de manzanares
+  // 750ml" es la botella y no la "Edición Especial Homenaje...". Si nadie
+  // quedó completo ("amarillo" a secas) sigue siendo ambiguo → null.
+  const completos = empatados.filter((x) => x.completo);
+  if (completos.length === 1) return completos[0].p;
+
+  return null;
 }

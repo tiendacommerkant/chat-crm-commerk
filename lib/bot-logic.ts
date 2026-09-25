@@ -787,8 +787,10 @@ function respuestaMayoristaOpciones(context: BotContext, mensajeOriginal: string
 
 // Enlace directo al WhatsApp de la sede con un mensaje ya escrito.
 function enlaceWhatsAppSede(sede: { telefono: string }, nombreCliente?: string | null): string {
-  const quien = nombreCliente?.trim() ? `Soy ${nombreCliente.trim()}. ` : '';
-  const msg = `Hola, ${quien}vengo del chat de Commerk y quiero información para una compra al por mayor.`;
+  const nombre = nombreCliente?.trim();
+  const msg = nombre
+    ? `Hola, soy ${nombre}. Vengo del chat de Commerk y quiero información para una compra al por mayor.`
+    : `Hola, vengo del chat de Commerk y quiero información para una compra al por mayor.`;
   return `https://wa.me/${sede.telefono}?text=${encodeURIComponent(msg)}`;
 }
 
@@ -1053,13 +1055,22 @@ async function detectarProducto(texto: string): Promise<Producto | null> {
   const productos = await obtenerProductosCache();
 
   // Primero: banco de alias del brief
+  // OJO: un alias puede abarcar muchos productos (ej. "carta de oro" = 375ml,
+  // 750ml y una promo; "amarillo" = botellas, cócteles, kits...). Antes se
+  // devolvía el PRIMERO de la lista sin mirar el tamaño ni el resto del
+  // mensaje: quien pedía "carta de oro 750ml" recibía la promo de $191.400.
+  // Ahora se desempata con el texto completo y, si sigue ambiguo, se devuelve
+  // null para que Sofi pregunte cuál en vez de adivinar.
   for (const alias of ALIASES_PRODUCTO) {
     const coincide = alias.palabrasClave.some((k) => incluyeTermino(texto, k));
-    if (coincide) {
-      const prod = productos.find((p) =>
-        quitarAcentos(p.titulo.toLowerCase()).includes(quitarAcentos(alias.tituloContiene))
-      );
-      if (prod) return prod;
+    if (!coincide) continue;
+    const candidatos = productos.filter((p) =>
+      quitarAcentos(p.titulo.toLowerCase()).includes(quitarAcentos(alias.tituloContiene))
+    );
+    if (candidatos.length === 1) return candidatos[0];
+    if (candidatos.length > 1) {
+      const elegido = matchProductoDistintivo(candidatos, texto);
+      if (elegido) return elegido;
     }
   }
 
