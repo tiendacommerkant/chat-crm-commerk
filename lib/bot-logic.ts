@@ -327,7 +327,12 @@ export async function procesarMensajeBot(
   if (awaiting === 'cantidad') {
     // "una y una" → [1,1]: si pidió varios productos, aplica cantidades en orden
     const cantidades = extraerCantidades(texto);
-    const cantidad = cantidades[0] ?? null;
+    // "un/una/uno" también son artículos, no solo números ("un asesor", "una
+    // pregunta"). Sin este filtro, "quiero hablar con un asesor humano" se leía
+    // como cantidad=1 y el producto pendiente se agregaba solo al carrito, sin
+    // que el cliente lo confirmara, en vez de transferir a un asesor.
+    const noEsCantidad = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien|pregunta|duda|momento|descuento|problema)\b/i.test(texto);
+    const cantidad = noEsCantidad ? null : (cantidades[0] ?? null);
 
     // Mayorista: más de 12 unidades
     if (cantidad && cantidad > 12) {
