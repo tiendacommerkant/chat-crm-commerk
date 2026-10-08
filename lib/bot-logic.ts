@@ -200,11 +200,6 @@ export async function procesarMensajeBot(
     return await respuestaEstadoPedido(context);
   }
 
-  // ── MAYORISTA: detección antes de Sofi (solo sin flujo activo de compra) ─
-  if (awaiting === '' && esMayorista(textoLower)) {
-    return respuestaMayoristaOpciones(context, texto);
-  }
-
   // ── PAGO CON CARRITO ACTIVO: interceptar ANTES de Sofi ────────────
   // IMPORTANTE: solo cuando awaiting === '' (sin estado activo).
   // Si hay un estado activo (compra/confirmacion/cantidad), la máquina de estados
@@ -774,10 +769,6 @@ export async function procesarMensajeBot(
 // ──────────────────────────────────────────
 // MAYORISTA
 // ──────────────────────────────────────────
-
-function esMayorista(t: string): boolean {
-  return /(compra al mayor|mayorista|para mi negocio|para el negocio|volumen|precio especial|por mayor|al por mayor)/i.test(t);
-}
 
 function respuestaMayoristaOpciones(context: BotContext, mensajeOriginal: string): BotResponse {
   const nombre = context.cliente.nombre?.split(' ')[0];
