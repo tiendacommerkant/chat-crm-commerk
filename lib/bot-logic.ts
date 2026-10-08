@@ -404,6 +404,16 @@ export async function procesarMensajeBot(
         const accion = (r as any).accion;
         if (accion === 'iniciar_mayorista') return respuestaMayoristaOpciones(context, texto);
         if (accion === 'transferir_a_asesor') return r;
+        // Pidió foto del producto: se manda la imagen real y se sigue pidiendo
+        // la cantidad del MISMO producto pendiente (no el que Sofi haya resuelto,
+        // por si el cliente solo preguntó por la foto sin cambiar de producto).
+        if (accion === 'enviar_foto') {
+          return {
+            ...r,
+            texto: asegurarPreguntaCantidad(r.texto, nombreProd),
+            metadata: { ...r.metadata, ...metaCantidad },
+          };
+        }
         // Con carrito armado, "quiero pagar" cierra la compra (sin sumar el producto pendiente)
         const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1);
         if (cierre) return cierre;
@@ -692,6 +702,15 @@ export async function procesarMensajeBot(
       // Si pidió un asesor humano, NO lo ignoramos empujándolo de vuelta a
       // "¿confirmamos?" — se respeta la transferencia tal cual.
       if ((r as any).accion === 'transferir_a_asesor') return r;
+      // Pidió foto del producto: se manda la imagen real sin perder el pedido
+      // ya armado (dirección, totales) que se tiene listo para confirmar.
+      if ((r as any).accion === 'enviar_foto') {
+        return {
+          ...r,
+          texto: `${r.texto}\n\n¿Confirmamos entonces tu pedido? Responde *SI* para pagar.`,
+          metadata: { ...r.metadata, ...metaConfirmacion },
+        };
+      }
       return {
         texto: `${r.texto}\n\n¿Confirmamos entonces tu pedido? Responde *SI* para pagar.`,
         metadata: metaConfirmacion,
