@@ -620,7 +620,9 @@ export async function procesarMensajeBot(
     });
     resumen += `─────────────────────\n`;
     resumen += `Subtotal: ${formatearPrecioCOP(subtotal)}\n`;
-    resumen += `Envío: ${costoEnvio === 0 ? '🎁 *GRATIS*' : formatearPrecioCOP(costoEnvio)}\n`;
+    resumen += costoEnvio === 0
+      ? `Envío: 🎁 *GRATIS*\n`
+      : `Envío: ${formatearPrecioCOP(costoEnvio)} _(gratis desde ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)})_\n`;
     resumen += `*TOTAL: ${formatearPrecioCOP(total)}*\n\n`;
     resumen += `📍 Dirección: ${texto}\n\n`;
     resumen += `¿Confirmamos el pedido?\n*SI* para pagar | *NO* para cancelar`;
@@ -1096,7 +1098,11 @@ function textoCarritoResumen(cart: CartItem[]): string {
     msg += `${i + 1}. ${asignarEmojiProducto(item.titulo)} ${item.titulo} × ${item.cantidad} = ${formatearPrecioCOP(item.precio * item.cantidad)}\n`;
   });
   msg += `\nSubtotal: ${formatearPrecioCOP(subtotal)}`;
-  msg += `\nEnvío: ${costoEnvio === 0 ? '🎁 GRATIS' : formatearPrecioCOP(costoEnvio)}`;
+  // Cuando se cobra envío, se explica el porqué ahí mismo — sin esto algunos
+  // clientes se sorprendían con el cargo pensando que el envío siempre es gratis.
+  msg += costoEnvio === 0
+    ? `\nEnvío: 🎁 GRATIS`
+    : `\nEnvío: ${formatearPrecioCOP(costoEnvio)} _(gratis desde ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)})_`;
   msg += `\n*TOTAL: ${formatearPrecioCOP(total)}*`;
   return msg;
 }

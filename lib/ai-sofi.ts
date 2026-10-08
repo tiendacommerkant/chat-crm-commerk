@@ -192,6 +192,12 @@ TU DECISIÓN (elige UNA acción):
 
 3) "continuar" → conversas, recomiendas o resuelves dudas.
 
+4) "enviar_foto" → el cliente pide ver/una foto/imagen de un producto concreto
+   (recién mencionado, en su carrito, o que nombra claro). Incluye producto_id
+   + producto_nombre. Texto: una frase corta tipo "¡Claro! Aquí tienes 📸"
+   (el flujo adjunta la imagen real, tú no la describes). Nunca uses
+   "transferir" por pedidos de foto.
+
 🚫 PROHIBIDO ABSOLUTO — esto lo hace el flujo automático, TÚ NO:
 - Pedir o confirmar la DIRECCIÓN de entrega.
 - Preguntar o confirmar el MÉTODO DE PAGO (Nequi, PSE, tarjeta...).
@@ -210,7 +216,7 @@ COMPRAS POR VOLUMEN → accion "mayorista": SOLO si el cliente dice explícitame
 VARIOS PRODUCTOS A LA VEZ: si el cliente pide 2 o más productos/presentaciones distintas en un mismo mensaje (ej. "una botella y una garrafa"), usa accion "iniciar_compra" e incluye TODOS en "productos" (en el orden que los mencionó). El flujo pedirá las cantidades una por una. Tu texto solo confirma con naturalidad, sin preguntar cantidades.
 
 RESPONDE SOLO JSON:
-{"texto":"...","accion":"continuar|iniciar_compra|finalizar_compra|mayorista|transferir","producto_id":"solo si iniciar_compra","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
+{"texto":"...","accion":"continuar|iniciar_compra|finalizar_compra|mayorista|transferir|enviar_foto","producto_id":"solo si iniciar_compra o enviar_foto","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
 
   try {
     const response = await anthropic.messages.create(
@@ -318,6 +324,33 @@ RESPONDE SOLO JSON:
       // Producto no encontrado — pedir al cliente que aclare
       return {
         texto: textoFinal + '\n\nEscríbeme el nombre exacto del producto para añadirlo.',
+        metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
+      };
+    }
+
+    if (parsed.accion === 'enviar_foto') {
+      const producto = encontrarProducto(productos, parsed.producto_id, parsed.producto_nombre, textoFinal);
+
+      if (producto?.imagen_url) {
+        return {
+          texto: textoFinal,
+          accion: 'enviar_foto',
+          metadata: {
+            awaiting: '',
+            sofi_ia: true,
+            pending_cart: pendingCart,
+            imagen_url: producto.imagen_url,
+            imagen_producto: producto.titulo,
+          },
+        };
+      }
+
+      // Sin foto disponible o producto ambiguo: honesto, SIN transferir — se
+      // sigue atendiendo normal en vez de dejar la conversación en pausa.
+      return {
+        texto: producto
+          ? `Por ahora no tengo foto cargada de *${producto.titulo}*, pero te cuento con gusto cómo es si quieres. 😊`
+          : `No logré identificar cuál producto, ¿me confirmas el nombre exacto para buscarte la foto?`,
         metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
       };
     }

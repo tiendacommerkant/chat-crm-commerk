@@ -61,6 +61,48 @@ export async function enviarMensajeWhatsApp(
 }
 
 /**
+ * Enviar una foto de producto (viene de Shopify, cacheada como imagen_url).
+ * Antes Sofi decía "no puedo mandar fotos" y conectaba con un asesor que casi
+ * nunca respondía a tiempo, dejando al cliente sin la imagen. Ya la tenemos.
+ */
+export async function enviarImagenWhatsApp(
+  to: string,
+  imageUrl: string,
+  caption?: string
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  try {
+    const response = await fetch(
+      `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${ACCESS_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: to.replace('+', ''),
+          type: 'image',
+          image: { link: imageUrl, caption: caption || '' },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Error enviando imagen WhatsApp:', error);
+      return { success: false, error: error.error?.message || 'Error desconocido' };
+    }
+
+    const data = await response.json();
+    return { success: true, messageId: data.messages?.[0]?.id };
+  } catch (error) {
+    console.error('Error en enviarImagenWhatsApp:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Error desconocido' };
+  }
+}
+
+/**
  * Marcar mensaje como leído
  */
 export async function marcarComoLeido(messageId: string): Promise<boolean> {

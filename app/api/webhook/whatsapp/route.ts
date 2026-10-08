@@ -10,7 +10,7 @@ import {
   supabaseAdmin,
 } from '@/lib/supabase';
 import { procesarMensajeBot } from '@/lib/bot-logic';
-import { enviarMensajeWhatsApp, formatearNumeroWhatsApp, marcarComoLeido } from '@/lib/whatsapp';
+import { enviarMensajeWhatsApp, enviarImagenWhatsApp, formatearNumeroWhatsApp, marcarComoLeido } from '@/lib/whatsapp';
 import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
@@ -315,6 +315,26 @@ export async function POST(req: Request) {
               await enviarMensajeWhatsApp(phone, msgError);
             }
 
+            continue;
+          }
+
+          // ── Acción: enviar foto real del producto (Shopify) ─────────────
+          if (respuesta.accion === 'enviar_foto' && respuesta.metadata?.imagen_url) {
+            const imagenUrl: string = respuesta.metadata.imagen_url;
+            const resultadoImg = await enviarImagenWhatsApp(phone, imagenUrl, respuesta.texto);
+
+            await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
+              ...respuesta.metadata,
+              tipo_wa: 'image',
+              media_url: imagenUrl,
+            });
+
+            // Si la imagen falló (ej. formato que WhatsApp rechaza), no dejamos
+            // al cliente sin nada: mandamos el texto solo como respaldo.
+            if (!resultadoImg.success) {
+              console.error('[WA] Falló el envío de la foto de producto:', resultadoImg.error);
+              await enviarMensajeWhatsApp(phone, respuesta.texto);
+            }
             continue;
           }
 
