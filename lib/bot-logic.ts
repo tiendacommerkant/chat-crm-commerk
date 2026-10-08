@@ -326,7 +326,7 @@ export async function procesarMensajeBot(
     // pregunta"). Sin este filtro, "quiero hablar con un asesor humano" se leía
     // como cantidad=1 y el producto pendiente se agregaba solo al carrito, sin
     // que el cliente lo confirmara, en vez de transferir a un asesor.
-    const noEsCantidad = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien|pregunta|duda|momento|descuento|problema)\b/i.test(texto);
+    const noEsCantidad = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien|pregunta|duda|momento|descuento|problema|foto|fotos|imagen|imagenes|imágenes|catalogo|catálogo)\b/i.test(texto);
     const cantidad = noEsCantidad ? null : (cantidades[0] ?? null);
 
     // Mayorista: más de 12 unidades
