@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import {
   buscarOCrearCliente,
   obtenerConversacionActiva,
+  adquirirLockConversacion,
+  liberarLockConversacion,
   guardarMensaje,
   obtenerHistorialMensajes,
   registrarVentaPendiente,
@@ -82,6 +84,16 @@ export async function POST(req: Request) {
 
           const cliente = await buscarOCrearCliente(phone, contact?.profile?.name);
           const conversacion = await obtenerConversacionActiva(cliente.id);
+
+          // Reclamar la conversación: si el cliente manda dos mensajes casi
+          // seguidos, cada uno llega como una invocación del webhook aparte y
+          // podían procesarse en paralelo, pisándose el estado entre sí (pasó
+          // en producción: un carrito real quedó vacío para siempre y el
+          // cliente nunca recibió el link de pago). Con el lock, la segunda
+          // invocación espera a que la primera termine de guardar su
+          // respuesta antes de leer el historial.
+          const lockToken = await adquirirLockConversacion(conversacion.id);
+          try {
 
           // Si el agente tomó control, solo guardar el mensaje — no responder con bot
           const { data: convData } = await supabaseAdmin
@@ -362,6 +374,10 @@ export async function POST(req: Request) {
             .from('conversaciones')
             .update({ updated_at: new Date().toISOString() })
             .eq('id', conversacion.id);
+
+          } finally {
+            await liberarLockConversacion(conversacion.id, lockToken);
+          }
         }
       }
       return NextResponse.json({ success: true }, { status: 200 });

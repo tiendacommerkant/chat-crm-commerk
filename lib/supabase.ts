@@ -3,6 +3,7 @@
 // ============================================
 
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
 
 // Cliente para uso en cliente (browser)
 export const supabase = createClient(
@@ -120,6 +121,69 @@ export async function obtenerConversacionActiva(clienteId: string): Promise<Conv
   }
 
   return nuevaConversacion!;
+}
+
+/**
+ * Reclama la conversación para que solo esta invocación la procese. Sin esto,
+ * dos mensajes del mismo cliente casi seguidos (ej. "quiero uno de esos" y,
+ * 1 segundo después, "como te pago") disparan dos invocaciones del webhook en
+ * paralelo: ambas leen el mismo "último mensaje del bot" (el estado previo a
+ * las dos), cada una calcula su respuesta por separado, y la que termina de
+ * guardar al final pisa el estado de la otra — en producción esto dejó un
+ * carrito real vacío para siempre y el cliente nunca recibió el link de pago.
+ *
+ * El UPDATE condicional actúa como compare-and-swap: Postgres serializa los
+ * UPDATE concurrentes sobre la misma fila, así que la segunda invocación solo
+ * ve el lock_token ya puesto por la primera y su condición falla (0 filas).
+ * locked_at con un TTL evita que una invocación que truena deje la
+ * conversación bloqueada para siempre.
+ *
+ * Si las columnas lock_token/locked_at todavía no existen (migración no
+ * aplicada) o cualquier otra cosa falla, se sigue SIN lock — nunca se deja de
+ * responder al cliente por esto.
+ */
+export async function adquirirLockConversacion(
+  conversacionId: string,
+  intentos = 25,
+  esperaMs = 500
+): Promise<string | null> {
+  const miToken = crypto.randomUUID();
+  const loteViejoDesde = new Date(Date.now() - 20_000).toISOString();
+
+  for (let i = 0; i < intentos; i++) {
+    const { data, error } = await supabaseAdmin
+      .from('conversaciones')
+      .update({ lock_token: miToken, locked_at: new Date().toISOString() })
+      .eq('id', conversacionId)
+      .or(`lock_token.is.null,locked_at.lt.${loteViejoDesde}`)
+      .select('id')
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[Lock] Conversación sin lock disponible (¿falta la migración?), se continúa sin él:', error.message);
+      return null;
+    }
+    if (data) return miToken;
+
+    await new Promise((r) => setTimeout(r, esperaMs));
+  }
+
+  console.warn(`[Lock] No se pudo reclamar la conversación ${conversacionId} tras ${intentos} intentos, se continúa sin lock.`);
+  return null;
+}
+
+/** Libera el lock tomado por adquirirLockConversacion, solo si sigue siendo nuestro. */
+export async function liberarLockConversacion(conversacionId: string, token: string | null): Promise<void> {
+  if (!token) return;
+  try {
+    await supabaseAdmin
+      .from('conversaciones')
+      .update({ lock_token: null, locked_at: null })
+      .eq('id', conversacionId)
+      .eq('lock_token', token);
+  } catch (e: any) {
+    console.warn('[Lock] Error liberando lock (se autolibera por TTL de todos modos):', e?.message);
+  }
 }
 
 /**
