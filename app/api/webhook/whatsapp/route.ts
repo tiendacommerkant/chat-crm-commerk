@@ -56,8 +56,20 @@ export async function POST(req: Request) {
 
           const message = change.value.messages[0];
           const contact = change.value.contacts?.[0];
-          const rawPhone = message.from;
-          const phone = formatearNumeroWhatsApp(rawPhone);
+          // Clientes con nombre de usuario de WhatsApp que ocultan su número
+          // llegan SIN `from`/`wa_id`: Meta solo manda su ID de usuario
+          // (`from_user_id` / `user_id`, ej. "CO.1349..."). Antes se leía solo
+          // `from`, el mensaje reventaba antes de guardarse y se perdía sin
+          // rastro — ni respuesta ni registro en el CRM.
+          const userIdWA: string | null = message.from_user_id || contact?.user_id || null;
+          const usernameWA: string | null = contact?.profile?.username || null;
+          const rawPhone: string | null = message.from || contact?.wa_id || null;
+          // Destino de las respuestas: el número si vino; si no, el ID de usuario
+          const phone: string | null = rawPhone ? formatearNumeroWhatsApp(rawPhone) : userIdWA;
+          if (!phone) {
+            console.error('[WA] Mensaje sin número ni ID de usuario, no se puede responder:', JSON.stringify(message).slice(0, 300));
+            continue;
+          }
           const messageId = message.id;
           const msgType: string = message.type || 'text';
 
@@ -82,7 +94,10 @@ export async function POST(req: Request) {
 
           if (messageId) await marcarComoLeido(messageId);
 
-          const cliente = await buscarOCrearCliente(phone, contact?.profile?.name);
+          const cliente = await buscarOCrearCliente(phone, contact?.profile?.name, {
+            userId: userIdWA,
+            username: usernameWA,
+          });
           const conversacion = await obtenerConversacionActiva(cliente.id);
 
           // Reclamar la conversación: si el cliente manda dos mensajes casi

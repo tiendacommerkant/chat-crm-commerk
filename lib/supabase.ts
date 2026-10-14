@@ -4,6 +4,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { esIdUsuarioWhatsApp } from './whatsapp-id';
 
 // Cliente para uso en cliente (browser)
 export const supabase = createClient(
@@ -36,29 +37,70 @@ import type {
 } from '@/types';
 
 /**
- * Buscar o crear un cliente por su número de teléfono
+ * Buscar o crear un cliente.
+ *
+ * `telefono` es el número del cliente o, si WhatsApp no lo envía (cliente con
+ * nombre de usuario que oculta su número), su ID de usuario de Meta (BSUID).
+ * `idWhatsApp.userId` llega en todos los webhooks y permite reconocer al mismo
+ * cliente aunque unas veces escriba con número visible y otras sin él — sin
+ * eso se crearían clientes duplicados y se perdería su carrito/historial.
+ *
+ * Si las columnas wa_user_id/wa_username aún no existen (migración pendiente),
+ * funciona igual que antes buscando solo por `telefono`.
  */
-export async function buscarOCrearCliente(telefono: string, nombre?: string): Promise<Cliente> {
-  const { data: clienteExistente } = await supabaseAdmin
-    .from('clientes')
-    .select('*')
-    .eq('telefono', telefono)
-    .single();
+export async function buscarOCrearCliente(
+  telefono: string,
+  nombre?: string,
+  idWhatsApp?: { userId?: string | null; username?: string | null }
+): Promise<Cliente> {
+  const userId = idWhatsApp?.userId || null;
+  const username = idWhatsApp?.username || null;
 
-  if (clienteExistente) {
-    return clienteExistente;
+  let existente: Cliente | null = null;
+
+  // 1) Por ID de usuario (el identificador estable de Meta)
+  if (userId) {
+    const { data, error } = await supabaseAdmin
+      .from('clientes').select('*').eq('wa_user_id', userId).maybeSingle();
+    if (!error && data) existente = data;
+  }
+  // 2) Por número (o por el ID guardado como teléfono si oculta su número)
+  if (!existente) {
+    const { data } = await supabaseAdmin
+      .from('clientes').select('*').eq('telefono', telefono).maybeSingle();
+    if (data) existente = data;
+  }
+  // 3) Ahora llega con número, pero antes solo lo conocíamos por su ID
+  if (!existente && userId && telefono !== userId) {
+    const { data } = await supabaseAdmin
+      .from('clientes').select('*').eq('telefono', userId).maybeSingle();
+    if (data) existente = data;
   }
 
-  const { data: nuevoCliente, error: errorCreacion } = await supabaseAdmin
-    .from('clientes')
-    .insert({
-      telefono,
-      nombre: nombre || null,
-    })
-    .select()
-    .single();
+  if (existente) {
+    return await completarIdentidadCliente(existente, telefono, userId, username);
+  }
+
+  const fila: Record<string, any> = { telefono, nombre: nombre || null };
+  if (userId) fila.wa_user_id = userId;
+  if (username) fila.wa_username = username;
+
+  let { data: nuevoCliente, error: errorCreacion } = await supabaseAdmin
+    .from('clientes').insert(fila).select().single();
+
+  // Migración aún no aplicada: se crea sin las columnas nuevas
+  if (errorCreacion && /wa_user_id|wa_username/.test(errorCreacion.message)) {
+    ({ data: nuevoCliente, error: errorCreacion } = await supabaseAdmin
+      .from('clientes').insert({ telefono, nombre: nombre || null }).select().single());
+  }
 
   if (errorCreacion) {
+    if (/too long|demasiado larg/i.test(errorCreacion.message)) {
+      console.error(
+        `[Clientes] No se pudo registrar al cliente ${telefono}: la columna clientes.telefono es muy corta ` +
+        'para el ID de usuario de WhatsApp. Falta aplicar la migración (ALTER COLUMN telefono TYPE TEXT).'
+      );
+    }
     // Carrera: dos mensajes casi simultáneos de un cliente NUEVO pueden hacer
     // que ambos lean "no existe" y ambos intenten insertar. Si el segundo
     // choca contra una restricción única (o cualquier error de inserción),
@@ -70,12 +112,45 @@ export async function buscarOCrearCliente(telefono: string, nombre?: string): Pr
       .from('clientes')
       .select('*')
       .eq('telefono', telefono)
-      .single();
+      .maybeSingle();
     if (reintento) return reintento;
     throw new Error(`Error creando cliente: ${errorCreacion.message}`);
   }
 
   return nuevoCliente!;
+}
+
+/**
+ * Guarda en el cliente lo que aprendimos de este mensaje: su ID de usuario, su
+ * @usuario, y su número real si antes solo lo teníamos por ID. Nunca falla:
+ * si la columna no existe o hay un choque de unicidad, devuelve el cliente tal
+ * como estaba (la conversación sigue funcionando).
+ */
+async function completarIdentidadCliente(
+  cliente: Cliente,
+  telefono: string,
+  userId: string | null,
+  username: string | null
+): Promise<Cliente> {
+  const cambios: Record<string, any> = {};
+  if (userId && cliente.wa_user_id !== userId) cambios.wa_user_id = userId;
+  if (username && cliente.wa_username !== username) cambios.wa_username = username;
+  // Lo teníamos solo por su ID y ahora llegó su número: guardar el número
+  if (!esIdUsuarioWhatsApp(telefono) && esIdUsuarioWhatsApp(cliente.telefono)) cambios.telefono = telefono;
+
+  if (Object.keys(cambios).length === 0) return cliente;
+
+  const { data, error } = await supabaseAdmin
+    .from('clientes').update(cambios).eq('id', cliente.id).select().maybeSingle();
+  if (!error && data) return data;
+
+  // Migración pendiente: al menos actualizar el número si correspondía
+  if (cambios.telefono) {
+    const { data: soloTel } = await supabaseAdmin
+      .from('clientes').update({ telefono: cambios.telefono }).eq('id', cliente.id).select().maybeSingle();
+    if (soloTel) return soloTel;
+  }
+  return cliente;
 }
 
 /**

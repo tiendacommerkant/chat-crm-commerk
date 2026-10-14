@@ -22,6 +22,8 @@ import { enviarMensajeWhatsApp } from './whatsapp';
 import { enviarLeadMayorista } from './whatsapp-templates';
 import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_REGISTRO, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
+import { esIdUsuarioWhatsApp, contactoVisible } from './whatsapp-id';
+import { evaluarCobertura } from './cobertura';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -217,8 +219,11 @@ export async function procesarMensajeBot(
     if (tieneAliasEspecifico) {
       const productoDirecto = await detectarProducto(textoLower);
       if (productoDirecto && productoDirecto.inventario > 0) {
+        const yaEnCarrito = pendingCart.find((i) => i.shopify_id === productoDirecto.shopify_id)?.cantidad || 0;
         return {
-          texto: `¡Perfecto! ¿Cuántas unidades de *${productoDirecto.titulo}* quieres?\n\nEscribe el número (ej: *1*, *2*, *3*).`,
+          texto: yaEnCarrito
+            ? asegurarPreguntaCantidad('¡Perfecto!', productoDirecto.titulo, yaEnCarrito)
+            : `¡Perfecto! ¿Cuántas unidades de *${productoDirecto.titulo}* quieres?\n\nEscribe el número (ej: *1*, *2*, *3*).`,
           metadata: {
             awaiting: 'cantidad',
             pending_product_id: productoDirecto.shopify_id,
@@ -238,6 +243,9 @@ export async function procesarMensajeBot(
     // del checkout (entrega → dirección → confirmación → link de Wompi).
     const cierre = await checkoutDesdeSofi(respuestaSofi, pendingCart, pendingProductId, pendingCantidad);
     if (cierre) return cierre;
+
+    const ajuste = await aplicarAjusteCarrito(respuestaSofi, pendingCart, context);
+    if (ajuste) return ajuste;
 
     // Compra por volumen / corporativa detectada por Sofi → flujo mayorista real
     // (muestra sedes y avisa a la elegida; el mensaje del cliente viaja en el lead).
@@ -272,6 +280,19 @@ export async function procesarMensajeBot(
       // Derivación activa: el lead ya llegó a la sede, así que la conversación
       // queda transferida (bot en pausa, etiquetada en el CRM). La red de
       // seguridad del webhook reactiva el bot si nadie atiende en 30 min.
+      // Si el cliente usa nombre de usuario y oculta su número, la sede NO
+      // puede escribirle: no le prometemos que lo van a contactar, le pedimos
+      // que él les escriba (el enlace ya lleva el mensaje listo).
+      if (esIdUsuarioWhatsApp(context.cliente.telefono)) {
+        return {
+          texto:
+            `✅ ¡Listo! Ya le pasé tu solicitud, con el resumen de lo que buscas, a la sede *${sede.nombre}*.\n\n` +
+            `Como usas nombre de usuario en WhatsApp, la sede no ve tu número para escribirte. Escríbeles tú directo y te dan precios y condiciones especiales: 🤝\n👉 ${enlaceSede}\n\n` +
+            `Si prefieres, también puedes seguir por aquí y te ayudo con lo que necesites. 😊`,
+          metadata: { awaiting: '', derivacion: 'mayorista', sede_mayorista: sede.nombre },
+        };
+      }
+
       return {
         texto:
           `✅ ¡Listo! Ya le pasé tu solicitud, con el resumen de lo que buscas, a la sede *${sede.nombre}*.\n\n` +
@@ -346,7 +367,7 @@ export async function procesarMensajeBot(
         };
       }
 
-      let updatedCart = agregarAlCarrito(pendingCart, producto, cantidad);
+      let updatedCart = ponerEnCarrito(pendingCart, producto, cantidad);
 
       // Quedan productos en cola (el cliente pidió varios a la vez)
       if (pendingQueue.length > 0) {
@@ -358,7 +379,7 @@ export async function procesarMensajeBot(
           // Si ya dio todas las cantidades de una ("una y una"), aplicarlas sin volver a preguntar
           const cantSiguiente = cantidades[1];
           if (cantSiguiente && cantSiguiente > 0 && cantSiguiente <= 12 && siguiente.inventario >= cantSiguiente) {
-            updatedCart = agregarAlCarrito(updatedCart, siguiente, cantSiguiente);
+            updatedCart = ponerEnCarrito(updatedCart, siguiente, cantSiguiente);
             // Continuar con el resto de la cola, si queda
             if (restoCola.length > 0) {
               const tercero = productos.find((p) => p.shopify_id === restoCola[0]);
@@ -393,6 +414,7 @@ export async function procesarMensajeBot(
     const productos2 = await obtenerProductosCache();
     const prod2 = productos2.find((p) => p.shopify_id === pendingProductId);
     const nombreProd = prod2?.titulo || 'ese producto';
+    const yaEnCarritoPend = pendingCart.find((i) => i.shopify_id === pendingProductId)?.cantidad || 0;
     const metaCantidad = { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart };
 
     // No es un número: el cliente hizo una pregunta ("¿tengo descuento?", "¿hacen envío?").
@@ -404,13 +426,15 @@ export async function procesarMensajeBot(
         const accion = (r as any).accion;
         if (accion === 'iniciar_mayorista') return respuestaMayoristaOpciones(context, texto);
         if (accion === 'transferir_a_asesor') return r;
+        const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
+        if (ajuste) return ajuste;
         // Pidió foto del producto: se manda la imagen real y se sigue pidiendo
         // la cantidad del MISMO producto pendiente (no el que Sofi haya resuelto,
         // por si el cliente solo preguntó por la foto sin cambiar de producto).
         if (accion === 'enviar_foto') {
           return {
             ...r,
-            texto: asegurarPreguntaCantidad(r.texto, nombreProd),
+            texto: asegurarPreguntaCantidad(r.texto, nombreProd, yaEnCarritoPend),
             metadata: { ...r.metadata, ...metaCantidad },
           };
         }
@@ -423,7 +447,7 @@ export async function procesarMensajeBot(
         }
         // Solo aclaró una duda: se conserva el producto y se vuelve a pedir la cantidad
         if (r.texto?.trim()) {
-          return { texto: asegurarPreguntaCantidad(r.texto, nombreProd), metadata: metaCantidad };
+          return { texto: asegurarPreguntaCantidad(r.texto, nombreProd, yaEnCarritoPend), metadata: metaCantidad };
         }
       } catch (e: any) {
         console.error('[Bot] Sofi falló en estado cantidad, uso respuesta fija:', e?.message);
@@ -498,6 +522,8 @@ export async function procesarMensajeBot(
       const r = await procesarMensajeSofi(texto, context, pendingCart);
       const cierre = await checkoutDesdeSofi(r, pendingCart, pendingProductId, pendingCantidad);
       if (cierre) return cierre;
+      const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
+      if (ajuste) return ajuste;
       if ((r as any).accion === 'iniciar_mayorista') return respuestaMayoristaOpciones(context, texto);
       return r;
     }
@@ -533,6 +559,8 @@ export async function procesarMensajeBot(
     // pero seguimos esperando la elección de entrega.
     if (USE_AI) {
       const r = await procesarMensajeSofi(texto, context, pendingCart);
+      const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
+      if (ajuste) return ajuste;
       if (!r.accion && !r.metadata?.awaiting) {
         return {
           texto: `${r.texto}\n\n¿Entonces te lo enviamos a domicilio o lo recoges en tienda?`,
@@ -598,14 +626,44 @@ export async function procesarMensajeBot(
 
   // Estado: esperando dirección
   if (awaiting === 'direccion') {
+    // Fuera de cobertura (o lo prefiere): puede cambiar a recoger en tienda
+    if (/(recoger|recojo|recogerlo|en tienda|en la tienda|paso por|pasar por|voy por|retiro|retirar)/i.test(textoLower)) {
+      return preguntarSedeRecogida(pendingCart);
+    }
+
+    // Respuesta a "¿en qué municipio queda?": se une a la dirección guardada
+    const direccionSinMunicipio: string = ultimoBot?.metadata?.pending_direccion_sin_municipio || '';
+    const direccion = direccionSinMunicipio ? `${direccionSinMunicipio}, ${texto}` : texto;
+
     // Antes solo exigía 10+ caracteres: "no se todavia" (14) pasaba como
     // dirección válida y el pedido seguía hasta el link de pago con una
     // dirección sin sentido. Las direcciones colombianas reales siempre
     // llevan un número (Calle 50 #30-20, Cra 43 5 Sur-50, etc.).
-    if (texto.length < 10 || !/\d/.test(texto)) {
+    if (!direccionSinMunicipio && (texto.length < 10 || !/\d/.test(texto))) {
       return {
         texto: '📍 Por favor escribe la dirección completa con número y ciudad.\n_Ejemplo: Calle 50 #30-20, El Poblado, Medellín_',
         metadata: { awaiting: 'direccion', pending_cart: pendingCart },
+      };
+    }
+
+    // Validar la zona ANTES del resumen y del link de pago. Antes cualquier
+    // dirección pasaba (ej. Guarne): se generaba el link, el cliente pagaba y
+    // solo después, si preguntaba, se le decía que no llegamos hasta allá.
+    const cobertura = evaluarCobertura(direccion, COBERTURA_ENVIOS);
+    const zona = COBERTURA_ENVIOS.join(', ');
+    if (cobertura.estado === 'fuera') {
+      return {
+        texto:
+          `😕 Por ahora no hacemos domicilio a *${cobertura.municipio}*.\n\n` +
+          `El domicilio llega a: ${zona}.\n\n` +
+          `Puedes escribirme una dirección dentro de esa zona, o recoger tu pedido en una de nuestras tiendas — escribe *recoger*. 🏪`,
+        metadata: { awaiting: 'direccion', pending_cart: pendingCart },
+      };
+    }
+    if (cobertura.estado === 'desconocido') {
+      return {
+        texto: `📍 ¿En qué municipio queda esa dirección? Hacemos domicilio en ${zona}.`,
+        metadata: { awaiting: 'direccion', pending_cart: pendingCart, pending_direccion_sin_municipio: direccion },
       };
     }
 
@@ -634,7 +692,7 @@ export async function procesarMensajeBot(
       ? `Envío: 🎁 *GRATIS*\n`
       : `Envío: ${formatearPrecioCOP(costoEnvio)} _(gratis desde ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)})_\n`;
     resumen += `*TOTAL: ${formatearPrecioCOP(total)}*\n\n`;
-    resumen += `📍 Dirección: ${texto}\n\n`;
+    resumen += `📍 Dirección: ${direccion}\n\n`;
     resumen += `¿Confirmamos el pedido?\n*SI* para pagar | *NO* para cancelar`;
 
     return {
@@ -642,7 +700,7 @@ export async function procesarMensajeBot(
       metadata: {
         awaiting: 'confirmacion',
         pending_cart: cart,
-        pending_direccion: texto,
+        pending_direccion: direccion,
         pending_subtotal: subtotal,
         pending_costo_envio: costoEnvio,
         pending_total: total,
@@ -702,6 +760,10 @@ export async function procesarMensajeBot(
       // Si pidió un asesor humano, NO lo ignoramos empujándolo de vuelta a
       // "¿confirmamos?" — se respeta la transferencia tal cual.
       if ((r as any).accion === 'transferir_a_asesor') return r;
+      // Cambió la cantidad: el resumen con dirección/total ya no vale, se
+      // vuelve al carrito actualizado y de ahí sigue el cierre normal.
+      const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
+      if (ajuste) return ajuste;
       // Pidió foto del producto: se manda la imagen real sin perder el pedido
       // ya armado (dirección, totales) que se tiene listo para confirmar.
       if ((r as any).accion === 'enviar_foto') {
@@ -742,6 +804,10 @@ export async function procesarMensajeBot(
       const r = await procesarMensajeSofi(texto, context, pendingCart);
       // Pidió un asesor: se respeta, no se le insiste con el link.
       if ((r as any).accion === 'transferir_a_asesor') return r;
+      // Cambió la cantidad después del link: se arma el carrito nuevo y al
+      // finalizar se genera un link nuevo con el total correcto.
+      const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
+      if (ajuste) return ajuste;
       // Sofi cree que quiere cerrar/pagar: ya tiene un link activo, no se
       // reinicia el checkout (duplicaría el link de Wompi) — se le recuerda
       // que ya puede pagar con el que tiene. Antes esta señal se devolvía
@@ -847,21 +913,27 @@ async function enviarLeadASede(
 ): Promise<boolean> {
   const nombre = context.cliente.nombre || 'Sin nombre';
   const telefono = context.cliente.telefono;
+  // Cliente con nombre de usuario: no hay número ni enlace wa.me posible
+  const sinNumero = esIdUsuarioWhatsApp(telefono);
+  const contacto = contactoVisible(telefono, context.cliente.wa_username);
+  const comoContactar = sinNumero
+    ? 'No comparte su número (usa nombre de usuario de WhatsApp). Ya le enviamos el enlace para que él te escriba a ti.'
+    : `Escríbele directo: https://wa.me/${telefono}`;
 
   const mensajeLead =
     `📋 *Nuevo lead mayorista — Commerk Bot*\n\n` +
     `👤 Cliente: ${nombre}\n` +
-    `📱 Tel: +${telefono}\n` +
+    `📱 Contacto: ${contacto}\n` +
     `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
-    `👉 Escríbele directo desde tu WhatsApp: https://wa.me/${telefono}`;
+    `👉 ${comoContactar}`;
 
   // 1) Plantilla aprobada: llega siempre, incluso fuera de la ventana de 24h
   let entregado = await enviarLeadMayorista(
     sede.telefono,
     sede.nombre,
     nombre,
-    `+${telefono}`,
-    `${mensajeOriginal || 'Compra al por mayor'} | Escríbele directo: https://wa.me/${telefono}`
+    contacto,
+    `${mensajeOriginal || 'Compra al por mayor'} | ${comoContactar}`
   ).catch(() => false);
 
   // 2) Respaldo en texto libre mientras Meta aprueba la plantilla
@@ -1032,18 +1104,30 @@ const PALABRAS_NUM: Record<string, number> = {
   'doce': 12,
 };
 
-// Agrega un producto al carrito (suma la cantidad si ya existe)
-function agregarAlCarrito(cart: CartItem[], producto: Producto, cantidad: number): CartItem[] {
+// Fija la cantidad TOTAL de un producto en el carrito. La pregunta siempre es
+// "¿cuántas unidades quieres?" (y si ya está en el carrito, "¿cuántas en
+// total?"), así que la respuesta reemplaza — antes sumaba: con 8 en el
+// carrito, "solo una" → "1" dejaba 9 botellas y $861.300 (pasó en producción).
+function ponerEnCarrito(cart: CartItem[], producto: Producto, cantidad: number): CartItem[] {
   const idx = cart.findIndex((i) => i.shopify_id === producto.shopify_id);
   if (idx >= 0) {
-    return cart.map((item, i) => (i === idx ? { ...item, cantidad: item.cantidad + cantidad } : item));
+    return cart.map((item, i) => (i === idx ? { ...item, cantidad } : item));
   }
   return [...cart, { shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad }];
 }
 
+// Números que describen el PRODUCTO, no cuántas unidades quiere: "¿es el de
+// 8 años?", "el de 750 ml", "1 litro", "40%", o un tamaño de botella suelto
+// ("el de 750"). Antes "¿ese es el 8 años?" metía 8 botellas al carrito.
+function quitarNumerosDeProducto(t: string): string {
+  return t
+    .replace(/\d+(?:[.,]\d+)?\s*(?:años?|anos?|ml|mililitros?|cc|litros?|lts?|cl|oz|onzas?|%|grados?|°)(?![a-z])/gi, ' ')
+    .replace(/\b(?:350|375|500|700|750|1000|1500|1750|2000)\b/g, ' ');
+}
+
 // Extrae TODAS las cantidades en orden: "una y una" → [1,1] · "2 y 3" → [2,3]
 function extraerCantidades(t: string): number[] {
-  const lower = t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const lower = quitarNumerosDeProducto(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   const palabras = Object.keys(PALABRAS_NUM).join('|');
   const re = new RegExp(`\\b(\\d+|${palabras})\\b`, 'g');
   const out: number[] = [];
@@ -1165,6 +1249,49 @@ async function checkoutDesdeSofi(
   return intro ? { ...entrega, texto: `${intro}\n\n${entrega.texto}` } : entrega;
 }
 
+/**
+ * Sofi detectó que el cliente quiere cambiar la cantidad de algo que ya está
+ * en el carrito ("solo una", "quita el amarillo"). Antes Sofi no tenía cómo
+ * hacerlo: decía "un asesor te lo ajusta", el bot se pausaba esperando a esa
+ * persona y el cliente se quedaba con 9 botellas en el carrito sin poder pagar.
+ * Aquí el CÓDIGO aplica el cambio sobre el carrito real y muestra el total.
+ */
+async function aplicarAjusteCarrito(
+  r: BotResponse,
+  cart: CartItem[],
+  context: BotContext
+): Promise<BotResponse | null> {
+  if ((r as any).accion !== 'ajustar_carrito') return null;
+  const ajuste = r.metadata?.ajuste_carrito as { shopify_id: string; cantidad: number } | undefined;
+  if (!ajuste) return null;
+
+  if (ajuste.cantidad > 12) return respuestaMayoristaOpciones(context, `Quiero ${ajuste.cantidad} unidades`);
+
+  const productos = await obtenerProductosCache();
+  const prod = productos.find((p) => p.shopify_id === ajuste.shopify_id);
+  if (prod && ajuste.cantidad > prod.inventario) {
+    return {
+      texto: `⚠️ Solo tenemos *${prod.inventario}* unidades de *${prod.titulo}*. ¿Con cuántas te quedas en total?`,
+      metadata: { awaiting: 'cantidad', pending_product_id: ajuste.shopify_id, pending_queue: [], pending_cart: cart },
+    };
+  }
+
+  const nuevoCart = ajuste.cantidad <= 0
+    ? cart.filter((i) => i.shopify_id !== ajuste.shopify_id)
+    : cart.map((i) => (i.shopify_id === ajuste.shopify_id ? { ...i, cantidad: ajuste.cantidad } : i));
+
+  if (nuevoCart.length === 0) {
+    return {
+      texto: 'Listo, quité el producto de tu carrito 👌\n\nCuéntame qué te gustaría llevar. 😊',
+      metadata: { awaiting: '', pending_cart: [] },
+    };
+  }
+
+  const resumen = respuestaCarrito(nuevoCart);
+  const intro = r.texto?.trim();
+  return { ...resumen, texto: intro ? `${intro}\n\n${resumen.texto}` : resumen.texto };
+}
+
 function preguntarTipoEntrega(cart: CartItem[]): BotResponse {
   return {
     texto: `¡Perfecto! ¿Te lo enviamos a domicilio o prefieres recogerlo en una de nuestras tiendas? 🛵🏪`,
@@ -1208,7 +1335,9 @@ function respuestaProducto(producto: Producto, cart: CartItem[] = []): BotRespon
   msg += `💵 Precio: *${formatearPrecioCOP(producto.precio)}*\n`;
   msg += disponible ? `✅ Disponible\n` : `❌ Agotado temporalmente\n`;
   if (producto.descripcion) msg += `\n${producto.descripcion.substring(0, 200)}\n`;
-  msg += `\n📦 Envío gratis comprando más de ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}\n`;
+  msg += COSTO_ENVIO === 0
+    ? `\n📦 Envío gratis en nuestra zona de domicilio\n`
+    : `\n📦 Envío gratis comprando más de ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}\n`;
 
   if (cart.length > 0) {
     msg += `\n🛒 _Tienes ${cart.length} producto${cart.length !== 1 ? 's' : ''} en tu carrito._\n`;
@@ -1238,8 +1367,10 @@ function respuestaEnvio(cart: CartItem[] = []): BotResponse {
     texto:
       `🚚 *COBERTURA DE ENVÍOS*\n\n` +
       `Municipios: ${COBERTURA_ENVIOS.join(', ')}\n\n` +
-      `💵 Costo de envío: ${formatearPrecioCOP(COSTO_ENVIO)}\n` +
-      `🎁 *GRATIS* en compras mayores a ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}\n\n` +
+      (COSTO_ENVIO === 0
+        ? `🎁 Envío *GRATIS*, sin monto mínimo\n\n`
+        : `💵 Costo de envío: ${formatearPrecioCOP(COSTO_ENVIO)}\n` +
+          `🎁 *GRATIS* en compras mayores a ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}\n\n`) +
       `⏰ Entregas L-S en 24-48 horas\n\n` +
       `¿Necesitas algo más? Cuéntame. 😊` + avisoCarrito,
     metadata: { awaiting: cart.length > 0 ? 'carrito' : '', pending_cart: cart },

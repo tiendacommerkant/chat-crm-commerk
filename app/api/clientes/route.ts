@@ -12,7 +12,7 @@ export async function GET(req: Request) {
 
     let query = supabaseAdmin
       .from('clientes')
-      .select('id, nombre, telefono, email, ciudad, created_at')
+      .select('*')
       .order('created_at', { ascending: false })
       .limit(limit);
 

@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v18.0';
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v25.0';
 
 export async function GET(_req: Request, { params }: { params: { mediaId: string } }) {
   try {

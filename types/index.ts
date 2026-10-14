@@ -17,6 +17,11 @@ export interface Cliente {
   // NUEVOS:
   politicas_aceptadas?: boolean;
   sede_preferida?: string | null;
+  // Clientes que usan nombre de usuario en WhatsApp (sin número visible):
+  // wa_user_id es el ID que Meta envía siempre (BSUID, ej. "CO.1349..."),
+  // y en ese caso `telefono` guarda ese mismo ID en vez de un número.
+  wa_user_id?: string | null;
+  wa_username?: string | null;
 }
 
 export interface Conversacion {
@@ -121,7 +126,9 @@ export interface WhatsAppWebhookPayload {
 
 export interface WhatsAppSendMessagePayload {
   messaging_product: 'whatsapp';
-  to: string;
+  to?: string;
+  recipient_type?: 'individual';
+  recipient?: string;
   type: 'text' | 'template' | 'interactive';
   text?: {
     body: string;
@@ -271,7 +278,7 @@ export interface BotContext {
 
 export interface BotResponse {
   texto: string;
-  accion?: 'generar_link_pago' | 'transferir_humano' | 'cerrar_conversacion' | 'transferir_a_asesor' | 'iniciar_checkout' | 'iniciar_mayorista' | 'enviar_foto';
+  accion?: 'generar_link_pago' | 'transferir_humano' | 'cerrar_conversacion' | 'transferir_a_asesor' | 'iniciar_checkout' | 'iniciar_mayorista' | 'enviar_foto' | 'ajustar_carrito';
   producto_id?: string;
   metadata?: Record<string, any>;
 }

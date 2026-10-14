@@ -16,7 +16,7 @@ export async function GET(req: Request) {
       .from('conversaciones')
       .select(`
         id, estado, created_at, updated_at, etiqueta,
-        cliente:clientes(id, nombre, telefono, email, ciudad),
+        cliente:clientes(*),
         mensajes(id, tipo, contenido, metadata, created_at)
       `)
       .order('updated_at', { ascending: false })

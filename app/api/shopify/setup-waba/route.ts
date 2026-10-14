@@ -10,7 +10,7 @@ export async function GET(req: Request) {
 
   try {
     const res = await fetch(
-      `https://graph.facebook.com/v20.0/${wabaId}/subscribed_apps`,
+      `https://graph.facebook.com/v25.0/${wabaId}/subscribed_apps`,
       {
         method: 'POST',
         headers: {

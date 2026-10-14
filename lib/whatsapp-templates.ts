@@ -3,8 +3,9 @@
 // ============================================
 
 import { registrarEnvioPlantilla } from './costos';
+import { WHATSAPP_GRAPH_VERSION, destinatarioWhatsApp } from './whatsapp';
 
-const WA_API = `https://graph.facebook.com/v20.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+const WA_API = `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 const TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
 
 async function enviarPlantilla(telefono: string, templateName: string, components: any[]): Promise<boolean> {
@@ -16,7 +17,7 @@ async function enviarPlantilla(telefono: string, templateName: string, component
     },
     body: JSON.stringify({
       messaging_product: 'whatsapp',
-      to: telefono,
+      ...destinatarioWhatsApp(telefono),
       type: 'template',
       template: {
         name: templateName,

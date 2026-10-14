@@ -128,7 +128,7 @@ export async function procesarMensajeSofi(
 
 NEGOCIO
 Sedes: CC Tesoro · CC Fabricato · Autopista Sur (Itagüí) · Gran Manzana (Itagüí) · Mall Indiana · Urabá (Apartadó) · Parque Comercial Florida
-Envío: ${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)} | 24-48h | Zona: ${COBERTURA.join(', ')}
+Envío: ${COSTO_ENVIO === 0 ? 'GRATIS siempre, sin monto mínimo' : `${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}`} | 24-48h | Zona: ${COBERTURA.join(', ')}
 Pagos: Tarjeta, PSE, Nequi, Daviplata (Wompi)
 COBERTURA DE DOMICILIO: SOLO los municipios listados en "Zona". Nunca digas "Valle de Aburrá", "toda el área metropolitana" ni menciones otros municipios como cubiertos. Si preguntan por uno que no está en la lista (ej. Itagüí, Rionegro), di que no está en la cobertura estándar de domicilio y ofrece la opción de recoger en tienda. No agregues condiciones de envío que no estén escritas arriba (nada de "hábiles" u otros detalles).
 
@@ -165,7 +165,7 @@ REGLAS
 - Habla en texto corrido y natural, máximo 3 líneas. NUNCA listas numeradas (1. 2. 3.) ni viñetas.
 - SOLO hablas del negocio: productos, precios, regalos, ocasiones, maridaje, envíos, pagos y sedes. Si preguntan algo ajeno (clima, política, deportes, chistes, otros temas), redirige con calidez hacia cómo ayudar con nuestros licores. Nunca opines de temas externos.
 - SOLO recomiendas productos del CATÁLOGO con su precio EXACTO. JAMÁS inventes productos, precios, promociones, descuentos, grados de alcohol ni existencias que no aparezcan arriba.
-- DESCUENTOS: no tienes cupones ni descuentos para ofrecer y no debes prometer que "consultas" uno. Si preguntan si hay descuento, responde con honestidad y sin evasivas: los precios del catálogo ya son los vigentes, el envío es gratis desde el monto indicado arriba, y solo mencionas una promo si aparece escrita en el nombre de un producto del catálogo (ej. una "Promo 2 botellas"). Si van a comprar en volumen (más de 12 unidades o para un negocio/evento) usa accion "mayorista".
+- DESCUENTOS: no tienes cupones ni descuentos para ofrecer y no debes prometer que "consultas" uno. Si preguntan si hay descuento, responde con honestidad y sin evasivas: los precios del catálogo ya son los vigentes, el envío es como dice arriba en "Envío", y solo mencionas una promo si aparece escrita en el nombre de un producto del catálogo (ej. una "Promo 2 botellas"). Si van a comprar en volumen (más de 12 unidades o para un negocio/evento) usa accion "mayorista".
 - Vende inteligente: propón el producto ideal según ocasión y presupuesto; si encaja, sugiere un complemento; si dudan por el precio, ofrece una opción más económica del catálogo.
 - Presupuesto/regalo: recomienda dentro del monto, máximo 10% por encima.
 - Si algo está agotado, ofrece de inmediato una alternativa disponible parecida.
@@ -198,6 +198,17 @@ TU DECISIÓN (elige UNA acción):
    (el flujo adjunta la imagen real, tú no la describes). Nunca uses
    "transferir" por pedidos de foto.
 
+5) "ajustar_carrito" → el cliente quiere CAMBIAR la cantidad de un producto
+   que YA está en CARRITO ACTUAL, o quitarlo: "solo una", "déjame 2", "no 9,
+   una", "quita el amarillo", "mejor ninguna". Incluye producto_id del producto
+   del carrito y "cantidad" = el número TOTAL final que quiere (0 = quitarlo).
+   Texto: una frase corta confirmando; el flujo muestra el carrito actualizado.
+   Tú SÍ puedes ajustar el carrito: NUNCA uses "transferir" ni digas que un
+   asesor lo ajusta.
+
+OJO NÚMEROS: "¿es el de 8 años?", "el de 750 ml", "el litro", "15 años" hablan
+del PRODUCTO (añejamiento, tamaño), NO de cuántas unidades quiere.
+
 🚫 PROHIBIDO ABSOLUTO — esto lo hace el flujo automático, TÚ NO:
 - Pedir o confirmar la DIRECCIÓN de entrega.
 - Preguntar o confirmar el MÉTODO DE PAGO (Nequi, PSE, tarjeta...).
@@ -216,7 +227,7 @@ COMPRAS POR VOLUMEN → accion "mayorista": SOLO si el cliente dice explícitame
 VARIOS PRODUCTOS A LA VEZ: si el cliente pide 2 o más productos/presentaciones distintas en un mismo mensaje (ej. "una botella y una garrafa"), usa accion "iniciar_compra" e incluye TODOS en "productos" (en el orden que los mencionó). El flujo pedirá las cantidades una por una. Tu texto solo confirma con naturalidad, sin preguntar cantidades.
 
 RESPONDE SOLO JSON:
-{"texto":"...","accion":"continuar|iniciar_compra|finalizar_compra|mayorista|transferir|enviar_foto","producto_id":"solo si iniciar_compra o enviar_foto","producto_nombre":"nombre exacto del catálogo","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
+{"texto":"...","accion":"continuar|iniciar_compra|finalizar_compra|mayorista|transferir|enviar_foto|ajustar_carrito","producto_id":"si iniciar_compra, enviar_foto o ajustar_carrito","producto_nombre":"nombre exacto del catálogo","cantidad":"solo si ajustar_carrito: total final","productos":[{"producto_id":"...","producto_nombre":"..."}]}`;
 
   try {
     const response = await anthropic.messages.create(
@@ -308,7 +319,8 @@ RESPONDE SOLO JSON:
         // "¿Te la sumo al pedido?" y el cliente contestaba "sí" sin que el bot
         // esperara un sí sino un número. Se garantiza aquí, sin depender de que
         // el modelo obedezca la instrucción del prompt.
-        const texto = asegurarPreguntaCantidad(textoFinal, producto.titulo);
+        const yaEnCarrito = pendingCart.find((i) => i.shopify_id === producto.shopify_id)?.cantidad || 0;
+        const texto = asegurarPreguntaCantidad(textoFinal, producto.titulo, yaEnCarrito);
         return {
           texto,
           metadata: {
@@ -324,6 +336,37 @@ RESPONDE SOLO JSON:
       // Producto no encontrado — pedir al cliente que aclare
       return {
         texto: textoFinal + '\n\nEscríbeme el nombre exacto del producto para añadirlo.',
+        metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
+      };
+    }
+
+    if (parsed.accion === 'ajustar_carrito') {
+      const n = Number(parsed.cantidad);
+      const cantidadFinal = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : null;
+      const prod = encontrarProducto(productos, parsed.producto_id, parsed.producto_nombre, textoFinal);
+      // Solo se ajusta algo que ya está en el carrito; si hay un único
+      // producto, "solo una" se refiere a ese aunque Sofi no lo nombre exacto.
+      const item =
+        (prod && pendingCart.find((i) => i.shopify_id === prod.shopify_id)) ||
+        (pendingCart.length === 1 ? pendingCart[0] : null);
+
+      if (item && cantidadFinal !== null) {
+        return {
+          texto: textoFinal,
+          accion: 'ajustar_carrito',
+          metadata: {
+            awaiting: '',
+            sofi_ia: true,
+            pending_cart: pendingCart,
+            ajuste_carrito: { shopify_id: item.shopify_id, cantidad: cantidadFinal },
+          },
+        };
+      }
+
+      return {
+        texto: pendingCart.length > 0
+          ? `${textoFinal}\n\n¿De cuál producto y cuántas unidades en total quieres dejar?`
+          : textoFinal,
         metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
       };
     }

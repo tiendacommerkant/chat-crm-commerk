@@ -357,14 +357,14 @@ export async function crearPedidoShopify(params: {
         customer: {
           first_name: firstName,
           last_name: lastName,
-          phone: params.clienteTelefono,
+          phone: params.clienteTelefono || undefined,
           email: params.clienteEmail || undefined,
         },
         shipping_address: {
           first_name: firstName,
           last_name: lastName,
           address1: params.direccionEnvio,
-          phone: params.clienteTelefono,
+          phone: params.clienteTelefono || undefined,
           country: 'CO',
           country_code: 'CO',
         },
@@ -442,14 +442,14 @@ export async function crearPedidoShopifyMultiItem(params: {
         customer: {
           first_name: firstName,
           last_name: lastName,
-          phone: params.clienteTelefono,
+          phone: params.clienteTelefono || undefined,
           email: params.clienteEmail || undefined,
         },
         shipping_address: {
           first_name: firstName,
           last_name: lastName,
           address1: params.direccionEnvio,
-          phone: params.clienteTelefono,
+          phone: params.clienteTelefono || undefined,
           country: 'CO',
           country_code: 'CO',
         },

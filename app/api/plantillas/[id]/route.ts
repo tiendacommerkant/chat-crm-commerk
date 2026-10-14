@@ -2,7 +2,7 @@
 // DELETE /api/plantillas/[id]  → elimina la plantilla
 import { NextResponse } from 'next/server';
 
-const GRAPH_URL = 'https://graph.facebook.com/v20.0';
+const GRAPH_URL = 'https://graph.facebook.com/v25.0';
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
 const WABA_ID = process.env.WHATSAPP_WABA_ID!;
 

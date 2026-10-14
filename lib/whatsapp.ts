@@ -3,10 +3,30 @@
 // ============================================
 
 import type { WhatsAppSendMessagePayload } from '@/types';
+import { esIdUsuarioWhatsApp } from './whatsapp-id';
 
-const WHATSAPP_API_URL = 'https://graph.facebook.com/v18.0';
+// v18 ya está descontinuada: Meta la redirigía en silencio a v25. Se fija la
+// versión vigente para no depender de esa redirección (y para el campo
+// `recipient` de clientes con nombre de usuario).
+export const WHATSAPP_GRAPH_VERSION = 'v25.0';
+const WHATSAPP_API_URL = `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}`;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID!;
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
+
+export { esIdUsuarioWhatsApp };
+
+/**
+ * Destinatario para la API de mensajes: número (`to`) o, para clientes que
+ * usan nombre de usuario y ocultan su número, su ID de usuario (`recipient`).
+ */
+export function destinatarioWhatsApp(
+  id: string
+): { to: string } | { recipient_type: 'individual'; recipient: string } {
+  const limpio = id.trim();
+  return esIdUsuarioWhatsApp(limpio)
+    ? { recipient_type: 'individual', recipient: limpio }
+    : { to: limpio.replace('+', '') };
+}
 
 /**
  * Enviar mensaje de texto a un número de WhatsApp
@@ -18,7 +38,7 @@ export async function enviarMensajeWhatsApp(
   try {
     const payload: WhatsAppSendMessagePayload = {
       messaging_product: 'whatsapp',
-      to: to.replace('+', ''), // Remover + si existe
+      ...destinatarioWhatsApp(to),
       type: 'text',
       text: {
         body: mensaje,
@@ -81,7 +101,7 @@ export async function enviarImagenWhatsApp(
         },
         body: JSON.stringify({
           messaging_product: 'whatsapp',
-          to: to.replace('+', ''),
+          ...destinatarioWhatsApp(to),
           type: 'image',
           image: { link: imageUrl, caption: caption || '' },
         }),
@@ -145,7 +165,7 @@ export async function enviarMensajeConBotones(
 
     const payload = {
       messaging_product: 'whatsapp',
-      to: to.replace('+', ''),
+      ...destinatarioWhatsApp(to),
       type: 'interactive',
       interactive: {
         type: 'button',
@@ -215,7 +235,7 @@ export async function enviarMensajeConLista(
   try {
     const payload = {
       messaging_product: 'whatsapp',
-      to: to.replace('+', ''),
+      ...destinatarioWhatsApp(to),
       type: 'interactive',
       interactive: {
         type: 'list',
@@ -273,6 +293,10 @@ export async function enviarMensajeConLista(
  * Ejemplo: "+57 318 334 9171" -> "573183349171"
  */
 export function formatearNumeroWhatsApp(numero: string): string {
+  // Un ID de usuario (cliente con nombre de usuario) no es un número: quitarle
+  // los no-dígitos lo destruiría ("CO.1349..." → "1349...").
+  if (esIdUsuarioWhatsApp(numero)) return numero.trim();
+
   // Remover todos los caracteres que no sean dígitos
   let limpio = numero.replace(/\D/g, '');
   

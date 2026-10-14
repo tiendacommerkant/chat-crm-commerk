@@ -4,6 +4,7 @@ import { waitUntil } from '@vercel/functions';
 import { supabaseAdmin, actualizarEstadoVenta } from '@/lib/supabase';
 import { crearPedidoShopifyMultiItem, formatearPrecioCOP } from '@/lib/shopify';
 import { enviarMensajeWhatsApp } from '@/lib/whatsapp';
+import { esIdUsuarioWhatsApp } from '@/lib/whatsapp-id';
 import { enviarConfirmacionPago, enviarPedidoRecogerSede } from '@/lib/whatsapp-templates';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from '@/lib/sedes';
 import type { WompiWebhookEvent } from '@/types';
@@ -62,7 +63,10 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
   // cliente un total menor al que realmente se le cobró.
   const subtotalPedido = ventas.reduce((s, v) => s + Number(v.total), 0);
   const envioAplicado = recogida ? 0 : (subtotalPedido >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO);
-  const totalPedido = subtotalPedido + envioAplicado;
+  // El monto que Wompi realmente cobró es la verdad: si la regla de envío
+  // cambió entre que se generó el link y se pagó, recalcular daría otro total.
+  const montoCobrado = Number((transaction as any).amount_in_cents) / 100;
+  const totalPedido = montoCobrado > 0 ? Math.round(montoCobrado) : subtotalPedido + envioAplicado;
 
   if (transaction.status === 'APPROVED') {
     // 1. Marcar TODAS las ventas como pagadas (lo más crítico)
@@ -78,7 +82,9 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
       crearPedidoShopifyMultiItem({
         items: ventas.map((v) => ({ productoShopifyId: v.producto_shopify_id, cantidad: v.cantidad })),
         clienteNombre: nombreCliente || null,
-        clienteTelefono: telefono,
+        // Un cliente con nombre de usuario no tiene número: Shopify rechaza
+        // un "teléfono" con formato de ID de usuario y el pedido no se crearía.
+        clienteTelefono: esIdUsuarioWhatsApp(telefono) ? '' : telefono,
         clienteEmail: cliente?.email || null,
         direccionEnvio,
         referenciaPago: reference,
