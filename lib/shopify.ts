@@ -3,6 +3,7 @@
 // ============================================
 
 import type { ShopifyProduct } from '@/types';
+import { SEPARADOR_VARIANTE, type Variante } from './variantes';
 
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE!;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
@@ -121,31 +122,45 @@ export async function buscarProductosShopify(query: string): Promise<ShopifyProd
 /**
  * Mapear producto de Shopify a formato simple para el bot
  */
+// Inventario ilimitado si Shopify no rastrea stock o permite vender sin stock
+function inventarioVariante(variant: ShopifyProduct['variants'][number]): number {
+  const noRastreo = !variant.inventory_management || (variant.inventory_management as any) === null;
+  const politicaContinue = variant.inventory_policy === 'continue';
+  if (noRastreo || politicaContinue) return 9999; // ilimitado
+  return Math.max(0, variant.inventory_quantity || 0);
+}
+
 export function mapearProductoParaBot(producto: ShopifyProduct) {
   const variant = producto.variants?.[0];
 
-  // Inventario ilimitado si Shopify no rastrea stock o permite vender sin stock
-  let inventario = 0;
-  if (variant) {
-    const noRastreo = !variant.inventory_management || (variant.inventory_management as any) === null;
-    const politicaContinue = variant.inventory_policy === 'continue';
-    if (noRastreo || politicaContinue) {
-      inventario = 9999; // ilimitado
-    } else {
-      inventario = Math.max(0, variant.inventory_quantity || 0);
-    }
-  }
+  // Productos "Arma tu kit": una variante por botella, cada una con su precio.
+  // Antes solo se guardaba la primera (la más cara) y el bot cobraba ese
+  // precio con cualquier botella. Se guardan todas en metadata.variantes y el
+  // precio del producto pasa a ser el "desde".
+  const variantes: Variante[] = (producto.variants?.length || 0) > 1
+    ? producto.variants.map((v) => ({
+        id: v.id.toString(),
+        titulo: v.title,
+        precio: parseFloat(v.price),
+        inventario: inventarioVariante(v),
+      }))
+    : [];
 
   return {
     shopify_id: producto.id.toString(),
     titulo: producto.title,
     descripcion: producto.body_html?.replace(/<[^>]*>/g, '').substring(0, 200) || '',
-    precio: variant ? parseFloat(variant.price) : 0,
-    inventario,
+    precio: variantes.length
+      ? Math.min(...variantes.map((v) => v.precio))
+      : variant ? parseFloat(variant.price) : 0,
+    inventario: variantes.length
+      ? Math.max(...variantes.map((v) => v.inventario))
+      : variant ? inventarioVariante(variant) : 0,
     imagen_url: producto.image?.src || null,
     categoria: producto.product_type || 'General',
     tags: producto.tags ? producto.tags.split(', ') : [],
     activo: producto.status === 'active',
+    metadata: variantes.length ? { variantes } : null,
   };
 }
 
@@ -408,7 +423,8 @@ export async function crearPedidoShopify(params: {
  * Crear UN pedido en Shopify con MÚLTIPLES productos (carrito multi-ítem)
  */
 export async function crearPedidoShopifyMultiItem(params: {
-  items: Array<{ productoShopifyId: string; cantidad: number }>;
+  // productoNombre lleva la variante elegida ("Kit Decantador — Carta de Oro")
+  items: Array<{ productoShopifyId: string; cantidad: number; productoNombre?: string }>;
   clienteNombre?: string | null;
   clienteTelefono: string;
   clienteEmail?: string | null;
@@ -425,7 +441,15 @@ export async function crearPedidoShopifyMultiItem(params: {
         console.error('Producto no encontrado en Shopify:', item.productoShopifyId);
         continue;
       }
-      lineItems.push({ variant_id: producto.variants[0].id, quantity: item.cantidad });
+      // La botella elegida viaja en el nombre del ítem, igual que se guardó en
+      // ventas. Antes siempre salía la primera variante (Gran Reserva).
+      const variante = producto.variants.length > 1 && item.productoNombre
+        ? producto.variants.find((v) => item.productoNombre!.endsWith(`${SEPARADOR_VARIANTE}${v.title}`))
+        : undefined;
+      if (producto.variants.length > 1 && !variante) {
+        console.error('[Shopify] No se identificó la variante, se usa la primera:', item.productoNombre);
+      }
+      lineItems.push({ variant_id: (variante || producto.variants[0]).id, quantity: item.cantidad });
     }
 
     if (lineItems.length === 0) {

@@ -7,6 +7,17 @@
  * (ej. "¿Te la sumo al pedido?") se reemplaza por la pregunta de cantidad, y
  * si no hay ninguna se agrega al final.
  */
+/**
+ * El texto sin su última pregunta. Se usa cuando el flujo hace otra pregunta
+ * distinta a la de Sofi (ej. Sofi pregunta la cantidad de un kit pero antes
+ * hay que saber con qué botella lo arma).
+ */
+export function quitarUltimaPregunta(texto: string): string {
+  const t = texto.trim();
+  const ini = t.lastIndexOf('¿');
+  return ini === -1 ? t : t.slice(0, ini).trim();
+}
+
 export function asegurarPreguntaCantidad(texto: string, tituloProducto: string, yaEnCarrito = 0): string {
   // Si el producto ya está en el carrito, la respuesta REEMPLAZA la cantidad
   // (no suma), así que la pregunta tiene que pedir el total sin ambigüedad.

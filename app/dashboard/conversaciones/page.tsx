@@ -78,6 +78,7 @@ const ETIQUETAS: Record<string, { label: string; emoji: string; cls: string }> =
   cerro_venta:  { label: 'Cerró venta',  emoji: '✅', cls: 'bg-purple-100 text-purple-700 border-purple-200' },
   perdido:      { label: 'Perdido',      emoji: '❌', cls: 'bg-red-100 text-red-600 border-red-200' },
   mayorista:    { label: 'Mayorista',    emoji: '🏪', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
+  empresarial:  { label: 'Empresa',      emoji: '🏢', cls: 'bg-sky-100 text-sky-700 border-sky-200' },
 };
 
 const RESPUESTAS_RAPIDAS = [

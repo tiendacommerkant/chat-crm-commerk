@@ -80,7 +80,7 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
     const resumenProductos = ventas.map((v) => `${v.producto_nombre} × ${v.cantidad}`).join(', ');
     const [shopifyResult] = await Promise.allSettled([
       crearPedidoShopifyMultiItem({
-        items: ventas.map((v) => ({ productoShopifyId: v.producto_shopify_id, cantidad: v.cantidad })),
+        items: ventas.map((v) => ({ productoShopifyId: v.producto_shopify_id, cantidad: v.cantidad, productoNombre: v.producto_nombre })),
         clienteNombre: nombreCliente || null,
         // Un cliente con nombre de usuario no tiene número: Shopify rechaza
         // un "teléfono" con formato de ID de usuario y el pedido no se crearía.

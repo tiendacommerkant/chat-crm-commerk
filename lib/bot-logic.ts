@@ -3,12 +3,14 @@
 // ============================================
 // Estados (guardados en metadata del último mensaje bot):
 //   awaiting: 'compra'           → mostró producto, esperando si compra
+//   awaiting: 'variante'         → kit "Arma tu kit", esperando con qué botella
 //   awaiting: 'cantidad'         → esperando cuántas unidades
 //   awaiting: 'carrito'          → ítem agregado, esperando agregar más o pagar
 //   awaiting: 'direccion'        → esperando dirección de envío
 //   awaiting: 'confirmacion'     → resumen mostrado, esperando confirmar/cancelar
 //   awaiting: 'link_enviado'     → link de pago Wompi ya enviado en el chat
 //   awaiting: 'mayorista_sede'   → detección mayorista, esperando sede del cliente
+//   awaiting: 'empresa_correo'   → compra empresarial, esperando el correo para la propuesta
 // NOTA: El método de pago lo elige el cliente directamente en el link de Wompi
 //       (Tarjeta, PSE, Nequi, Daviplata) — no se pregunta en el chat.
 // ============================================
@@ -18,8 +20,12 @@ import { obtenerProductosCache, actualizarCliente, supabaseAdmin, obtenerPedidos
 import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { asegurarPreguntaCantidad } from './sofi-texto';
+import {
+  variantesDe, varianteDe, resolverVariante, preguntaVariante, tituloConVariante,
+  decodificarPendiente, type Variante,
+} from './variantes';
 import { enviarMensajeWhatsApp } from './whatsapp';
-import { enviarLeadMayorista } from './whatsapp-templates';
+import { enviarLeadMayorista, enviarLeadEmpresarial } from './whatsapp-templates';
 import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_REGISTRO, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
 import { esIdUsuarioWhatsApp, contactoVisible } from './whatsapp-id';
@@ -48,6 +54,8 @@ const ALIASES_PRODUCTO: Array<{ palabrasClave: string[]; tituloContiene: string 
 
 export interface CartItem {
   shopify_id: string;
+  // Botella elegida en un "Arma tu kit" (el título ya la incluye y el precio es el suyo)
+  variant_id?: string | null;
   titulo: string;
   precio: number;
   cantidad: number;
@@ -75,13 +83,15 @@ export async function procesarMensajeBot(
   // Expirar flujos de checkout abandonados: si el último mensaje del bot es
   // viejo, no dejamos al cliente "atascado" en un menú. Entra fresco y lo
   // atiende Sofi de forma conversacional (el carrito se conserva para retomarlo).
-  const ESTADOS_CHECKOUT = ['compra', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'confirmacion', 'link_enviado', 'mayorista_sede'];
+  const ESTADOS_CHECKOUT = ['compra', 'variante', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'confirmacion', 'link_enviado', 'mayorista_sede', 'empresa_correo'];
   if (awaiting && ESTADOS_CHECKOUT.includes(awaiting) && ultimoBot?.created_at) {
     const horasInactivo = (Date.now() - new Date(ultimoBot.created_at).getTime()) / 3_600_000;
     if (horasInactivo > 6) awaiting = '';
   }
 
   const pendingProductId: string = ultimoBot?.metadata?.pending_product_id || '';
+  // Botella ya elegida del producto pendiente (kits "Arma tu kit")
+  const pendingVariantId: string | null = ultimoBot?.metadata?.pending_variant_id || null;
   // Cola de productos cuando el cliente pide varios a la vez ("una botella y una garrafa")
   const pendingQueue: string[] = ultimoBot?.metadata?.pending_queue || [];
   const pendingCantidad: number = ultimoBot?.metadata?.pending_cantidad || 1;
@@ -136,6 +146,24 @@ export async function procesarMensajeBot(
     if (sedeElegida) {
       await actualizarCliente(context.cliente.id, { sede_preferida: sedeElegida });
       const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
+
+      // Lo que escribió antes de aceptar las políticas (ej. una empresa que
+      // cuenta de entrada qué necesita) se responde ya: antes se perdía y el
+      // cliente tenía que volver a escribirlo todo.
+      const inicial = mensajeInicialPendiente(context);
+      if (inicial && USE_AI) {
+        try {
+          const r = await atenderConSofi(
+            inicial,
+            { ...context, cliente: { ...context.cliente, sede_preferida: sedeElegida }, mensajes_previos: [] },
+            []
+          );
+          return { ...r, texto: `🏪 *Sede ${sedeElegida}* seleccionada. ¡Perfecto${nombre}! Soy Sofi ✨\n\n${r.texto}` };
+        } catch (e: any) {
+          console.error('[Bot] No se pudo responder el mensaje inicial:', e?.message);
+        }
+      }
+
       return {
         texto:
           `🏪 *Sede ${sedeElegida}* seleccionada. ¡Perfecto${nombre}!\n\n` +
@@ -181,9 +209,10 @@ export async function procesarMensajeBot(
       const productos = await obtenerProductosCache();
       const prod = productos.find((p) => p.shopify_id === pendingProductId);
       if (prod) {
+        const titulo = tituloConVariante(prod.titulo, varianteDe(prod, pendingVariantId));
         return {
-          texto: `¿Cuántas unidades de *${prod.titulo}* quieres agregar? Escribe el número y luego puedes ver el carrito. 😊`,
-          metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_cart: pendingCart },
+          texto: `¿Cuántas unidades de *${titulo}* quieres agregar? Escribe el número y luego puedes ver el carrito. 😊`,
+          metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_variant_id: pendingVariantId, pending_queue: pendingQueue, pending_cart: pendingCart },
         };
       }
     }
@@ -235,28 +264,84 @@ export async function procesarMensajeBot(
     // Sin alias específico → Sofi pregunta cuál exactamente
   }
 
+  // ── EMPRESA QUE DEJA SU CORREO fuera del paso en que se le pidió (ej.
+  // después de ver fotos o de que expiró la espera): igual se registra el lead.
+  const correoSuelto = awaiting === '' ? extraerCorreo(texto) : null;
+  if (correoSuelto && esConversacionEmpresarial(context) && !leadEmpresarialRegistrado(context)) {
+    return await registrarLeadEmpresarial(context, correoSuelto, texto, pendingCart);
+  }
+
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
   if (USE_AI && awaiting === '') {
-    const respuestaSofi = await procesarMensajeSofi(texto, context, pendingCart);
-
-    // Sofi detectó que el cliente quiere cerrar → el CÓDIGO toma el control
-    // del checkout (entrega → dirección → confirmación → link de Wompi).
-    const cierre = await checkoutDesdeSofi(respuestaSofi, pendingCart, pendingProductId, pendingCantidad);
-    if (cierre) return cierre;
-
-    const ajuste = await aplicarAjusteCarrito(respuestaSofi, pendingCart, context);
-    if (ajuste) return ajuste;
-
-    // Compra por volumen / corporativa detectada por Sofi → flujo mayorista real
-    // (muestra sedes y avisa a la elegida; el mensaje del cliente viaja en el lead).
-    if ((respuestaSofi as any).accion === 'iniciar_mayorista') {
-      return respuestaMayoristaOpciones(context, texto);
-    }
-
-    return respuestaSofi;
+    return await atenderConSofi(texto, context, pendingCart, pendingProductId, pendingCantidad, pendingVariantId);
   }
 
   // ── MÁQUINA DE ESTADOS ─────────────────────────────────────────
+
+  // Estado: compra empresarial, esperando el correo para enviarle la propuesta
+  if (awaiting === 'empresa_correo') {
+    const correo = extraerCorreo(texto);
+    if (correo) return await registrarLeadEmpresarial(context, correo, texto, pendingCart);
+    // Otra cosa (una duda, "¿qué requisitos piden?"): la responde Sofi, que ya
+    // conoce las condiciones empresariales, y se sigue esperando el correo.
+    if (USE_AI) {
+      const r = await atenderConSofi(texto, context, pendingCart);
+      if (!r.accion && !r.metadata?.awaiting) {
+        return { ...r, metadata: { ...r.metadata, awaiting: 'empresa_correo', empresarial: true } };
+      }
+      return r;
+    }
+    return respuestaEmpresarial(context, texto, pendingCart);
+  }
+
+  // Estado: kit "Arma tu kit" esperando con cuál botella lo quiere
+  if (awaiting === 'variante') {
+    const productos = await obtenerProductosCache();
+    const producto = productos.find((p) => p.shopify_id === pendingProductId);
+    if (!producto) return respuestaDefault(pendingCart);
+    const metaVariante = { awaiting: 'variante', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart };
+    const pregunta = preguntaVariante(producto, formatearPrecioCOP);
+
+    const variante = resolverVariante(producto, texto, { permitirNumero: true });
+    if (variante) {
+      if (variante.inventario <= 0) {
+        return { texto: `La botella *${variante.titulo}* está agotada para este kit 😕\n\n${pregunta}`, metadata: metaVariante };
+      }
+      return pedirCantidad(producto, variante, pendingQueue, pendingCart, '¡Buena elección! 🙌');
+    }
+
+    if (esNegacion(textoLower) || /cancelar|otro producto|no quiero ese|cambiar/i.test(textoLower)) {
+      return {
+        texto: '¡Sin problema! Cuéntame qué producto te interesa. 😊',
+        metadata: { awaiting: '', pending_cart: pendingCart },
+      };
+    }
+
+    // No eligió botella (hizo una pregunta, pidió la foto, cambió de producto):
+    // Sofi responde y, si sigue con el mismo kit, se le vuelve a preguntar.
+    if (USE_AI) {
+      try {
+        const r = await procesarMensajeSofi(texto, context, pendingCart);
+        const accion = (r as any).accion;
+        if (accion === 'transferir_a_asesor') return r;
+        const volumen = await derivacionVolumen(r, context, texto, pendingCart);
+        if (volumen) return volumen;
+        const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
+        if (ajuste) return ajuste;
+        const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1);
+        if (cierre) return cierre;
+        // Eligió la botella con otras palabras u otro producto: ese flujo ya quedó armado
+        if (r.metadata?.awaiting === 'cantidad' || r.metadata?.awaiting === 'variante') return r;
+        if (accion === 'enviar_foto') {
+          return { ...r, texto: `${r.texto}\n\n${pregunta}`, metadata: { ...r.metadata, ...metaVariante } };
+        }
+        if (r.texto?.trim()) return { texto: `${r.texto}\n\n${pregunta}`, metadata: metaVariante };
+      } catch (e: any) {
+        console.error('[Bot] Sofi falló en estado variante, uso respuesta fija:', e?.message);
+      }
+    }
+    return { texto: pregunta, metadata: metaVariante };
+  }
 
   // Estado: esperando elección de sede mayorista
   if (awaiting === 'mayorista_sede') {
@@ -303,14 +388,33 @@ export async function procesarMensajeBot(
         metadata: { awaiting: '', derivacion: 'mayorista', sede_mayorista: sede.nombre },
       };
     }
+    // No eligió sede. Se le aclara una vez que no tiene que ir a la tienda; si
+    // vuelve a escribir otra cosa, le responde Sofi y se sigue atento a que
+    // diga la sede. Antes el menú se repetía en bucle: una clienta que pidió
+    // seguir por este chat lo recibió 4 veces.
+    const metaSedeMayorista = {
+      awaiting: 'mayorista_sede',
+      pending_mayorista_mensaje: ultimoBot?.metadata?.pending_mayorista_mensaje || '',
+      mayorista_aclarado: true,
+    };
+    if (USE_AI && ultimoBot?.metadata?.mayorista_aclarado) {
+      const r = await procesarMensajeSofi(texto, context, pendingCart);
+      // Sofi insiste en mayorista o solo conversa: ya está en ese paso, no se repite el menú
+      if ((r as any).accion === 'iniciar_mayorista') {
+        return { texto: `${r.texto}\n\n_Escríbeme el número de la sede más cercana (del 1 al ${Object.keys(SEDES_FISICAS).length}) y te conecto._`, metadata: metaSedeMayorista };
+      }
+      if (!r.accion && !r.metadata?.awaiting) return { texto: r.texto, metadata: metaSedeMayorista };
+      return (await checkoutDesdeSofi(r, pendingCart, '', 1)) ||
+        (await aplicarAjusteCarrito(r, pendingCart, context)) ||
+        (await derivacionVolumen(r, context, texto, pendingCart)) ||
+        r;
+    }
     return {
       texto:
-        `Por favor escribe el *número* o el nombre de la sede:\n\n` +
+        `No tienes que ir a la tienda 😊 Un asesor de la sede que elijas te atiende por WhatsApp con precios y condiciones especiales.\n\n` +
+        `Escribe el *número* o el nombre de la sede más cercana:\n\n` +
         MENU_SEDES,
-      metadata: {
-        awaiting: 'mayorista_sede',
-        pending_mayorista_mensaje: ultimoBot?.metadata?.pending_mayorista_mensaje || '',
-      },
+      metadata: metaSedeMayorista,
     };
   }
 
@@ -350,9 +454,11 @@ export async function procesarMensajeBot(
     const noEsCantidad = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien|pregunta|duda|momento|descuento|problema|foto|fotos|imagen|imagenes|imágenes|catalogo|catálogo)\b/i.test(texto);
     const cantidad = noEsCantidad ? null : (cantidades[0] ?? null);
 
-    // Mayorista: más de 12 unidades
+    // Más de 12 unidades: compra empresarial si la conversación ya lo es, si no mayorista
     if (cantidad && cantidad > 12) {
-      return respuestaMayoristaOpciones(context, `Quiero ${cantidad} unidades`);
+      return esConversacionEmpresarial(context)
+        ? await respuestaEmpresarial(context, texto, pendingCart)
+        : respuestaMayoristaOpciones(context, `Quiero ${cantidad} unidades`);
     }
 
     if (cantidad && cantidad > 0 && cantidad <= 12) {
@@ -360,43 +466,48 @@ export async function procesarMensajeBot(
       const producto = productos.find((p) => p.shopify_id === pendingProductId);
       if (!producto) return respuestaDefault(pendingCart);
 
-      if (producto.inventario < cantidad) {
+      // Un kit sin botella elegida no tiene precio cierto: primero la botella
+      const variante = varianteDe(producto, pendingVariantId);
+      if (variantesDe(producto).length > 0 && !variante) {
         return {
-          texto: `⚠️ Solo tenemos *${producto.inventario}* unidades disponibles.\n\n¿Cuántas quieres? (máximo ${producto.inventario})`,
-          metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart },
+          texto: preguntaVariante(producto, formatearPrecioCOP),
+          metadata: { awaiting: 'variante', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart },
         };
       }
 
-      let updatedCart = ponerEnCarrito(pendingCart, producto, cantidad);
+      const disponible = variante ? variante.inventario : producto.inventario;
+      if (disponible < cantidad) {
+        return {
+          texto: `⚠️ Solo tenemos *${disponible}* unidades disponibles.\n\n¿Cuántas quieres? (máximo ${disponible})`,
+          metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_variant_id: pendingVariantId, pending_queue: pendingQueue, pending_cart: pendingCart },
+        };
+      }
+
+      let updatedCart = ponerEnCarrito(pendingCart, producto, cantidad, variante);
 
       // Quedan productos en cola (el cliente pidió varios a la vez)
       if (pendingQueue.length > 0) {
-        const siguienteId = pendingQueue[0];
+        const sig = decodificarPendiente(pendingQueue[0]);
         const restoCola = pendingQueue.slice(1);
-        const siguiente = productos.find((p) => p.shopify_id === siguienteId);
+        const siguiente = productos.find((p) => p.shopify_id === sig.productoId);
 
         if (siguiente) {
-          // Si ya dio todas las cantidades de una ("una y una"), aplicarlas sin volver a preguntar
+          // Si ya dio todas las cantidades de una ("una y una"), aplicarlas sin
+          // volver a preguntar (salvo que el siguiente sea un kit sin botella)
+          const varSiguiente = varianteDe(siguiente, sig.varianteId);
+          const faltaBotella = variantesDe(siguiente).length > 0 && !varSiguiente;
+          const dispSiguiente = varSiguiente ? varSiguiente.inventario : siguiente.inventario;
           const cantSiguiente = cantidades[1];
-          if (cantSiguiente && cantSiguiente > 0 && cantSiguiente <= 12 && siguiente.inventario >= cantSiguiente) {
-            updatedCart = ponerEnCarrito(updatedCart, siguiente, cantSiguiente);
+          if (!faltaBotella && cantSiguiente && cantSiguiente > 0 && cantSiguiente <= 12 && dispSiguiente >= cantSiguiente) {
+            updatedCart = ponerEnCarrito(updatedCart, siguiente, cantSiguiente, varSiguiente);
             // Continuar con el resto de la cola, si queda
-            if (restoCola.length > 0) {
-              const tercero = productos.find((p) => p.shopify_id === restoCola[0]);
-              if (tercero) {
-                return {
-                  texto: `¡Listo! Ahora, ¿cuántas unidades de *${tercero.titulo}* quieres?`,
-                  metadata: { awaiting: 'cantidad', pending_product_id: tercero.shopify_id, pending_queue: restoCola.slice(1), pending_cart: updatedCart },
-                };
-              }
-            }
-            return respuestaCarrito(updatedCart);
+            const resto = pedirSiguienteDeCola(productos, restoCola, updatedCart, '¡Listo!');
+            return resto || respuestaCarrito(updatedCart);
           }
 
-          return {
-            texto: `¡Listo! Agregué *${producto.titulo}* ×${cantidad}.\n\nAhora, ¿cuántas unidades de *${siguiente.titulo}* quieres?`,
-            metadata: { awaiting: 'cantidad', pending_product_id: siguienteId, pending_queue: restoCola, pending_cart: updatedCart },
-          };
+          const intro = `¡Listo! Agregué *${tituloConVariante(producto.titulo, variante)}* ×${cantidad}.`;
+          const resto = pedirSiguienteDeCola(productos, pendingQueue, updatedCart, intro);
+          if (resto) return resto;
         }
       }
 
@@ -413,9 +524,9 @@ export async function procesarMensajeBot(
 
     const productos2 = await obtenerProductosCache();
     const prod2 = productos2.find((p) => p.shopify_id === pendingProductId);
-    const nombreProd = prod2?.titulo || 'ese producto';
-    const yaEnCarritoPend = pendingCart.find((i) => i.shopify_id === pendingProductId)?.cantidad || 0;
-    const metaCantidad = { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_queue: pendingQueue, pending_cart: pendingCart };
+    const nombreProd = prod2 ? tituloConVariante(prod2.titulo, varianteDe(prod2, pendingVariantId)) : 'ese producto';
+    const yaEnCarritoPend = pendingCart.find((i) => mismoItem(i, pendingProductId, pendingVariantId))?.cantidad || 0;
+    const metaCantidad = { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_variant_id: pendingVariantId, pending_queue: pendingQueue, pending_cart: pendingCart };
 
     // No es un número: el cliente hizo una pregunta ("¿tengo descuento?", "¿hacen envío?").
     // Repetir el mismo "escribe solo el número" en bucle lo dejaba sin respuesta
@@ -424,7 +535,8 @@ export async function procesarMensajeBot(
       try {
         const r = await procesarMensajeSofi(texto, context, pendingCart);
         const accion = (r as any).accion;
-        if (accion === 'iniciar_mayorista') return respuestaMayoristaOpciones(context, texto);
+        const volumen = await derivacionVolumen(r, context, texto, pendingCart);
+        if (volumen) return volumen;
         if (accion === 'transferir_a_asesor') return r;
         const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
         if (ajuste) return ajuste;
@@ -441,8 +553,9 @@ export async function procesarMensajeBot(
         // Con carrito armado, "quiero pagar" cierra la compra (sin sumar el producto pendiente)
         const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1);
         if (cierre) return cierre;
-        // Cambió de producto ("mejor el de 375ml"): Sofi ya dejó la cantidad de ESE producto pendiente
-        if (r.metadata?.awaiting === 'cantidad' && r.metadata?.pending_product_id) {
+        // Cambió de producto ("mejor el de 375ml"): Sofi ya dejó la cantidad (o
+        // la botella, si es un kit) de ESE producto pendiente
+        if ((r.metadata?.awaiting === 'cantidad' || r.metadata?.awaiting === 'variante') && r.metadata?.pending_product_id) {
           return { ...r, metadata: { ...r.metadata, pending_cart: r.metadata.pending_cart ?? pendingCart } };
         }
         // Solo aclaró una duda: se conserva el producto y se vuelve a pedir la cantidad
@@ -524,7 +637,8 @@ export async function procesarMensajeBot(
       if (cierre) return cierre;
       const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
       if (ajuste) return ajuste;
-      if ((r as any).accion === 'iniciar_mayorista') return respuestaMayoristaOpciones(context, texto);
+      const volumen = await derivacionVolumen(r, context, texto, pendingCart);
+      if (volumen) return volumen;
       return r;
     }
     return respuestaCarrito(pendingCart);
@@ -586,13 +700,7 @@ export async function procesarMensajeBot(
     }
 
     let cart = pendingCart;
-    if (cart.length === 0 && pendingProductId) {
-      const productos = await obtenerProductosCache();
-      const producto = productos.find((p) => p.shopify_id === pendingProductId);
-      if (producto) {
-        cart = [{ shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad: pendingCantidad }];
-      }
-    }
+    if (cart.length === 0) cart = await carritoDesdePendiente(pendingProductId, pendingVariantId, pendingCantidad);
     if (cart.length === 0) return respuestaDefault();
 
     // Recoger en tienda = SIN costo de envío
@@ -668,13 +776,7 @@ export async function procesarMensajeBot(
     }
 
     let cart = pendingCart;
-    if (cart.length === 0 && pendingProductId) {
-      const productos = await obtenerProductosCache();
-      const producto = productos.find((p) => p.shopify_id === pendingProductId);
-      if (producto) {
-        cart = [{ shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad: pendingCantidad }];
-      }
-    }
+    if (cart.length === 0) cart = await carritoDesdePendiente(pendingProductId, pendingVariantId, pendingCantidad);
     if (cart.length === 0) return respuestaDefault();
 
     const subtotal = cart.reduce((s, item) => s + item.precio * item.cantidad, 0);
@@ -712,13 +814,7 @@ export async function procesarMensajeBot(
   if (awaiting === 'confirmacion') {
     if (esConfirmacion(textoLower)) {
       let cart = pendingCart;
-      if (cart.length === 0 && pendingProductId) {
-        const productos = await obtenerProductosCache();
-        const producto = productos.find((p) => p.shopify_id === pendingProductId);
-        if (producto) {
-          cart = [{ shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad: pendingCantidad }];
-        }
-      }
+      if (cart.length === 0) cart = await carritoDesdePendiente(pendingProductId, pendingVariantId, pendingCantidad);
       if (cart.length === 0) return respuestaDefault();
 
       const subtotal = pendingSubtotal || cart.reduce((s, i) => s + i.precio * i.cantidad, 0);
@@ -861,10 +957,179 @@ function respuestaMayoristaOpciones(context: BotContext, mensajeOriginal: string
   const nombre = context.cliente.nombre?.split(' ')[0];
   return {
     texto:
-      `¡Hola${nombre ? ` ${nombre}` : ''}! Para compras al por mayor te conectamos directamente con la sede más cercana. 🏪\n\n` +
-      `¿Cuál tienda te queda más cerca?\n\n` +
+      `¡Hola${nombre ? ` ${nombre}` : ''}! Para compras al por mayor te conectamos con un asesor de la sede más cercana, que te atiende por WhatsApp (no tienes que ir a la tienda). 🏪\n\n` +
+      `¿Cuál sede te queda más cerca?\n\n` +
       MENU_SEDES,
     metadata: { awaiting: 'mayorista_sede', pending_mayorista_mensaje: mensajeOriginal },
+  };
+}
+
+/**
+ * Mensajes con contenido que el cliente escribió antes de que le pidiéramos
+ * aceptar las políticas (un saludo suelto no cuenta). Vacío si no hay.
+ */
+function mensajeInicialPendiente(context: BotContext): string {
+  const msgs = context.mensajes_previos;
+  const textos: string[] = [];
+  msgs.forEach((m, i) => {
+    if (m.tipo !== 'user' || (m.contenido || '').trim().length < 25) return;
+    // Solo los que el bot contestó con el aviso de políticas
+    const respuesta = msgs.slice(i + 1).find((x) => x.tipo === 'bot');
+    if (respuesta?.metadata?.awaiting === 'politicas') textos.push(m.contenido.trim());
+  });
+  return textos.join('\n').slice(0, 1500);
+}
+
+// ──────────────────────────────────────────
+// VENTAS EMPRESARIALES
+// ──────────────────────────────────────────
+// Empresas que compran regalos de fin de año para sus colaboradores o
+// clientes (anchetas, aguinaldos). No es mayorista (reventa por sedes): se
+// pide el correo para enviar la propuesta del convenio empresarial y el lead
+// queda en el CRM (etiqueta "Empresa") y, si está configurado, llega por
+// WhatsApp al equipo de ventas empresariales.
+
+const VENTAS_EMPRESARIALES_WHATSAPP = (process.env.VENTAS_EMPRESARIALES_WHATSAPP || '').replace(/\D/g, '');
+const SEDE_EMPRESARIAL = 'Ventas Empresariales';
+
+function extraerCorreo(texto: string): string | null {
+  const m = texto.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return m ? m[0].toLowerCase() : null;
+}
+
+function esConversacionEmpresarial(context: BotContext): boolean {
+  return (context.conversacion as any)?.etiqueta === 'empresarial' ||
+    context.mensajes_previos.some((m) => m.tipo === 'bot' && m.metadata?.empresarial);
+}
+
+// La etiqueta se pone al registrar el lead, y sigue ahí aunque ese mensaje ya
+// haya salido de los últimos 15 que recibe el bot.
+function leadEmpresarialRegistrado(context: BotContext): boolean {
+  return (context.conversacion as any)?.etiqueta === 'empresarial' ||
+    context.mensajes_previos.some((m) => m.tipo === 'bot' && m.metadata?.lead_empresarial);
+}
+
+/**
+ * Sofi detectó una compra por volumen: empresarial (regalos de una empresa) o
+ * mayorista (reventa → sedes). Si la conversación ya es empresarial, un
+ * "mayorista" se trata como empresarial: antes una empresa que pedía 200 kits
+ * terminaba en el menú de sedes físicas, repetido en bucle.
+ */
+async function derivacionVolumen(
+  r: BotResponse,
+  context: BotContext,
+  texto: string,
+  cart: CartItem[]
+): Promise<BotResponse | null> {
+  const accion = (r as any).accion;
+  if (accion === 'iniciar_empresarial') return await respuestaEmpresarial(context, texto, cart, r.texto);
+  if (accion === 'iniciar_mayorista') {
+    return esConversacionEmpresarial(context)
+      ? await respuestaEmpresarial(context, texto, cart)
+      : respuestaMayoristaOpciones(context, texto);
+  }
+  return null;
+}
+
+async function respuestaEmpresarial(
+  context: BotContext,
+  texto: string,
+  cart: CartItem[],
+  textoSofi = ''
+): Promise<BotResponse> {
+  // Ya escribió el correo en este mismo mensaje: se registra de una vez
+  const correo = extraerCorreo(texto);
+  if (correo) return await registrarLeadEmpresarial(context, correo, texto, cart);
+
+  // Su solicitud ya está con el equipo: se responde sin volver a pedir el correo
+  if (leadEmpresarialRegistrado(context)) {
+    return {
+      texto: textoSofi.trim() ||
+        'Nuestro equipo de ventas empresariales ya tiene tu solicitud y te enviará la propuesta a tu correo. Mientras tanto te ayudo con lo que necesites por aquí. 😊',
+      metadata: { awaiting: '', empresarial: true, pending_cart: cart },
+    };
+  }
+
+  const nombre = context.cliente.nombre?.split(' ')[0];
+  const intro = textoSofi.trim() ||
+    `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Manejamos *convenio empresarial*: precio especial para tus anchetas en nuestros productos regulares (ron, aguardiente y cócteles), empaque de regalo gratis y obsequios sujetos a disponibilidad. Los regalos llegan en carro, sin costo adicional de envío.`;
+  const pideCorreo = /correo|e-?mail/i.test(intro)
+    ? ''
+    : `\n\n📧 ¿Me compartes tu *correo electrónico*? Así nuestro equipo de ventas empresariales te envía la propuesta.`;
+  return {
+    texto: `${intro}${pideCorreo}`,
+    metadata: { awaiting: 'empresa_correo', empresarial: true, pending_cart: cart },
+  };
+}
+
+async function registrarLeadEmpresarial(
+  context: BotContext,
+  correo: string,
+  texto: string,
+  cart: CartItem[]
+): Promise<BotResponse> {
+  const nombre = context.cliente.nombre?.split(' ')[0];
+  // El resumen empieza por el mensaje en que se detectó la compra empresarial
+  // (empresa, cantidades, qué busca): los últimos suelen ser solo dudas.
+  // Si dio el correo en ese mismo mensaje, el disparador es este.
+  const msgs = context.mensajes_previos;
+  const idxDeteccion = msgs.findIndex((m) => m.tipo === 'bot' && m.metadata?.empresarial);
+  const disparador = (idxDeteccion > 0
+    ? [...msgs.slice(0, idxDeteccion)].reverse().find((m) => m.tipo === 'user')?.contenido?.trim()
+    : '') || texto.trim();
+  // El resto de lo que dijo, sin repetir el disparador ni el mensaje del correo
+  const otros = armarConsultaMayorista(context, texto, cart)
+    .split(' | ')
+    .filter((p) => p && p !== 'Compra al por mayor' && !disparador.startsWith(p) && !p.includes(correo));
+  // Sin saltos de línea: Meta rechaza parámetros de plantilla que los traigan
+  const solicitud = [disparador.slice(0, 350), ...otros].join(' | ').replace(/\s+/g, ' ').slice(0, 600);
+  const resumen = `${solicitud} | Correo: ${correo}`;
+
+  // El correo queda en el cliente solo si no tenía uno: el que ya tiene es al
+  // que llegan sus pedidos de Shopify y no se pisa.
+  if (!(context.cliente as any).email) {
+    await actualizarCliente(context.cliente.id, { email: correo }).catch(() => {});
+  }
+
+  // Etiqueta visible en el CRM para el equipo (no pisa "Compró" ni otras)
+  if (context.conversacion?.id) {
+    const { error } = await supabaseAdmin
+      .from('conversaciones')
+      .update({ etiqueta: 'empresarial' })
+      .eq('id', context.conversacion.id)
+      .or('etiqueta.is.null,etiqueta.eq.mayorista');
+    if (error) console.error('[Lead empresarial] Error etiquetando conversación:', error.message);
+  }
+
+  // La venta pasa al canal de ventas empresariales: se le avisa con su
+  // plantilla y el cliente recibe el enlace para escribirles directo.
+  const sinNumero = esIdUsuarioWhatsApp(context.cliente.telefono);
+  let enlaceEquipo = '';
+  if (VENTAS_EMPRESARIALES_WHATSAPP) {
+    const contacto = contactoVisible(context.cliente.telefono, context.cliente.wa_username);
+    const nota = sinNumero ? ' | No comparte su número: le dimos el enlace para que te escriba' : '';
+    // Mientras Meta aprueba lead_empresarial, respaldo con lead_mayorista o texto libre
+    const entregado = await enviarLeadEmpresarial(
+      VENTAS_EMPRESARIALES_WHATSAPP, context.cliente.nombre || 'Sin nombre', contacto, correo, `${solicitud}${nota}`
+    ).catch(() => false);
+    if (!entregado) {
+      await avisarLead({ nombre: SEDE_EMPRESARIAL, telefono: VENTAS_EMPRESARIALES_WHATSAPP }, context, resumen, 'empresarial');
+    }
+    const msgEnlace = `Hola${nombre ? `, soy ${nombre}` : ''}. Vengo del chat de Commerk y quiero la propuesta del convenio empresarial (correo: ${correo}).`;
+    const url = `https://wa.me/${VENTAS_EMPRESARIALES_WHATSAPP}?text=${encodeURIComponent(msgEnlace)}`;
+    enlaceEquipo = sinNumero
+      ? `\n\nComo usas nombre de usuario en WhatsApp, el equipo no ve tu número: escríbeles directo aquí 👉 ${url}`
+      : `\n\nSi prefieres adelantar, escríbele directo a nuestro equipo de ventas empresariales 👉 ${url}`;
+  }
+  await guardarLead(SEDE_EMPRESARIAL, VENTAS_EMPRESARIALES_WHATSAPP, context, resumen);
+
+  return {
+    texto:
+      `¡Gracias${nombre ? `, ${nombre}` : ''}! 🙌 Ya le pasé tu solicitud a nuestro equipo de *ventas empresariales*; te enviarán la propuesta a *${correo}*.\n\n` +
+      `Para activar el descuento empresarial solo necesitamos tu *RUT actualizado* (el certificado bancario es opcional).` +
+      enlaceEquipo +
+      `\n\nMientras tanto, si quieres te muestro opciones para tus anchetas por aquí. 😊`,
+    metadata: { awaiting: '', empresarial: true, lead_empresarial: true, pending_cart: cart },
   };
 }
 
@@ -911,20 +1176,35 @@ async function enviarLeadASede(
   context: BotContext,
   mensajeOriginal: string
 ): Promise<boolean> {
+  const entregado = await avisarLead(sede, context, mensajeOriginal, 'mayorista');
+  await guardarLead(sede.nombre, sede.telefono, context, mensajeOriginal);
+  return entregado;
+}
+
+/** Avisa por WhatsApp a la sede (o al equipo empresarial) que llegó un lead. */
+async function avisarLead(
+  sede: { nombre: string; telefono: string },
+  context: BotContext,
+  mensajeOriginal: string,
+  tipo: 'mayorista' | 'empresarial'
+): Promise<boolean> {
   const nombre = context.cliente.nombre || 'Sin nombre';
   const telefono = context.cliente.telefono;
+  const consultaPorDefecto = tipo === 'empresarial' ? 'Compra empresarial' : 'Compra al por mayor';
   // Cliente con nombre de usuario: no hay número ni enlace wa.me posible
   const sinNumero = esIdUsuarioWhatsApp(telefono);
   const contacto = contactoVisible(telefono, context.cliente.wa_username);
-  const comoContactar = sinNumero
-    ? 'No comparte su número (usa nombre de usuario de WhatsApp). Ya le enviamos el enlace para que él te escriba a ti.'
-    : `Escríbele directo: https://wa.me/${telefono}`;
+  const comoContactar = !sinNumero
+    ? `Escríbele directo: https://wa.me/${telefono}`
+    : tipo === 'empresarial'
+      ? 'No comparte su número (usa nombre de usuario de WhatsApp). Contáctalo por el correo o respóndele desde el CRM.'
+      : 'No comparte su número (usa nombre de usuario de WhatsApp). Ya le enviamos el enlace para que él te escriba a ti.';
 
   const mensajeLead =
-    `📋 *Nuevo lead mayorista — Commerk Bot*\n\n` +
+    `📋 *Nuevo lead ${tipo} — Commerk Bot*\n\n` +
     `👤 Cliente: ${nombre}\n` +
     `📱 Contacto: ${contacto}\n` +
-    `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
+    `💬 Consulta: "${mensajeOriginal || consultaPorDefecto}"\n\n` +
     `👉 ${comoContactar}`;
 
   // 1) Plantilla aprobada: llega siempre, incluso fuera de la ventana de 24h
@@ -933,7 +1213,7 @@ async function enviarLeadASede(
     sede.nombre,
     nombre,
     contacto,
-    `${mensajeOriginal || 'Compra al por mayor'} | ${comoContactar}`
+    `${mensajeOriginal || consultaPorDefecto} | ${comoContactar}`
   ).catch(() => false);
 
   // 2) Respaldo en texto libre mientras Meta aprueba la plantilla
@@ -953,20 +1233,28 @@ async function enviarLeadASede(
   if (!entregado) {
     console.error(`[Lead sede] El lead de ${nombre} (+${telefono}) NO llegó a ${sede.nombre}. Revisar plantilla lead_mayorista / ventana 24h.`);
   }
+  return entregado;
+}
 
+/** Registra el lead en leads_sedes (lo cuenta el panel del CRM por sede). */
+async function guardarLead(
+  sede: string,
+  telefonoSede: string,
+  context: BotContext,
+  mensajeOriginal: string
+): Promise<void> {
   const { error } = await supabaseAdmin
     .from('leads_sedes')
     .insert({
       cliente_id: context.cliente.id,
-      telefono_cliente: telefono,
-      nombre_cliente: nombre,
-      sede: sede.nombre,
-      telefono_sede: sede.telefono,
+      telefono_cliente: context.cliente.telefono,
+      nombre_cliente: context.cliente.nombre || 'Sin nombre',
+      sede,
+      telefono_sede: telefonoSede,
       mensaje_original: mensajeOriginal || 'compra al por mayor',
       conversacion_id: context.conversacion?.id || null,
     });
   if (error) console.error('[Lead sede] Error guardando:', error.message);
-  return entregado;
 }
 
 // ──────────────────────────────────────────
@@ -1108,12 +1396,67 @@ const PALABRAS_NUM: Record<string, number> = {
 // "¿cuántas unidades quieres?" (y si ya está en el carrito, "¿cuántas en
 // total?"), así que la respuesta reemplaza — antes sumaba: con 8 en el
 // carrito, "solo una" → "1" dejaba 9 botellas y $861.300 (pasó en producción).
-function ponerEnCarrito(cart: CartItem[], producto: Producto, cantidad: number): CartItem[] {
-  const idx = cart.findIndex((i) => i.shopify_id === producto.shopify_id);
+// En un kit, cada botella es un ítem distinto del carrito (con su precio).
+function ponerEnCarrito(cart: CartItem[], producto: Producto, cantidad: number, variante: Variante | null = null): CartItem[] {
+  const idx = cart.findIndex((i) => mismoItem(i, producto.shopify_id, variante?.id));
   if (idx >= 0) {
     return cart.map((item, i) => (i === idx ? { ...item, cantidad } : item));
   }
-  return [...cart, { shopify_id: producto.shopify_id, titulo: producto.titulo, precio: producto.precio, cantidad }];
+  return [...cart, {
+    shopify_id: producto.shopify_id,
+    variant_id: variante?.id || null,
+    titulo: tituloConVariante(producto.titulo, variante),
+    precio: variante ? variante.precio : producto.precio,
+    cantidad,
+  }];
+}
+
+function mismoItem(item: CartItem, productoId: string, varianteId?: string | null): boolean {
+  return item.shopify_id === productoId && (item.variant_id || null) === (varianteId || null);
+}
+
+// Carrito de un ítem desde el producto pendiente (cuando no viene el carrito
+// en el estado). Un kit sin botella elegida no se arma: no hay precio cierto.
+async function carritoDesdePendiente(productoId: string, varianteId: string | null, cantidad: number): Promise<CartItem[]> {
+  if (!productoId) return [];
+  const productos = await obtenerProductosCache();
+  const producto = productos.find((p) => p.shopify_id === productoId);
+  if (!producto) return [];
+  const variante = varianteDe(producto, varianteId);
+  if (variantesDe(producto).length > 0 && !variante) return [];
+  return ponerEnCarrito([], producto, cantidad || 1, variante);
+}
+
+function pedirCantidad(producto: Producto, variante: Variante | null, cola: string[], cart: CartItem[], intro: string): BotResponse {
+  const titulo = tituloConVariante(producto.titulo, variante);
+  const yaEnCarrito = cart.find((i) => mismoItem(i, producto.shopify_id, variante?.id))?.cantidad || 0;
+  return {
+    texto: asegurarPreguntaCantidad(intro, titulo, yaEnCarrito).trim(),
+    metadata: {
+      awaiting: 'cantidad',
+      pending_product_id: producto.shopify_id,
+      pending_variant_id: variante?.id || null,
+      pending_queue: cola,
+      pending_cart: cart,
+    },
+  };
+}
+
+// Siguiente producto de la cola (pidió varios a la vez): si es un kit sin
+// botella elegida se pregunta la botella; si no, la cantidad.
+function pedirSiguienteDeCola(productos: Producto[], cola: string[], cart: CartItem[], intro: string): BotResponse | null {
+  if (cola.length === 0) return null;
+  const { productoId, varianteId } = decodificarPendiente(cola[0]);
+  const producto = productos.find((p) => p.shopify_id === productoId);
+  if (!producto) return null;
+  const variante = varianteDe(producto, varianteId);
+  if (variantesDe(producto).length > 0 && !variante) {
+    return {
+      texto: `${intro}\n\n${preguntaVariante(producto, formatearPrecioCOP)}`,
+      metadata: { awaiting: 'variante', pending_product_id: productoId, pending_queue: cola.slice(1), pending_cart: cart },
+    };
+  }
+  return pedirCantidad(producto, variante, cola.slice(1), cart, intro);
 }
 
 // Números que describen el PRODUCTO, no cuántas unidades quiere: "¿es el de
@@ -1221,6 +1564,36 @@ function respuestaCarrito(cart: CartItem[]): BotResponse {
 }
 
 /**
+ * Conversación libre con Sofi. Sofi solo clasifica; el CÓDIGO ejecuta lo que
+ * implica cada señal (checkout, ajuste de carrito, mayorista, empresarial).
+ */
+async function atenderConSofi(
+  texto: string,
+  context: BotContext,
+  pendingCart: CartItem[],
+  pendingProductId = '',
+  pendingCantidad = 1,
+  pendingVariantId: string | null = null
+): Promise<BotResponse> {
+  const respuestaSofi = await procesarMensajeSofi(texto, context, pendingCart);
+
+  // Sofi detectó que el cliente quiere cerrar → el CÓDIGO toma el control
+  // del checkout (entrega → dirección → confirmación → link de Wompi).
+  const cierre = await checkoutDesdeSofi(respuestaSofi, pendingCart, pendingProductId, pendingCantidad, pendingVariantId);
+  if (cierre) return cierre;
+
+  const ajuste = await aplicarAjusteCarrito(respuestaSofi, pendingCart, context);
+  if (ajuste) return ajuste;
+
+  // Compra por volumen detectada por Sofi → flujo empresarial (pide el correo
+  // para la propuesta) o mayorista (muestra sedes y avisa a la elegida).
+  const volumen = await derivacionVolumen(respuestaSofi, context, texto, pendingCart);
+  if (volumen) return volumen;
+
+  return respuestaSofi;
+}
+
+/**
  * Sofi solo DETECTA que el cliente quiere cerrar; el checkout lo ejecuta el
  * código. Si la señal llegó, devuelve la respuesta del flujo; si no, null.
  */
@@ -1228,19 +1601,14 @@ async function checkoutDesdeSofi(
   respuestaSofi: BotResponse,
   pendingCart: CartItem[],
   pendingProductId: string,
-  pendingCantidad: number
+  pendingCantidad: number,
+  pendingVariantId: string | null = null
 ): Promise<BotResponse | null> {
   if ((respuestaSofi as any).accion !== 'iniciar_checkout') return null;
 
   // Usar el carrito, o reconstruirlo desde el producto pendiente
   let cart = pendingCart;
-  if (cart.length === 0 && pendingProductId) {
-    const productos = await obtenerProductosCache();
-    const prod = productos.find((p) => p.shopify_id === pendingProductId);
-    if (prod) {
-      cart = [{ shopify_id: prod.shopify_id, titulo: prod.titulo, precio: prod.precio, cantidad: pendingCantidad || 1 }];
-    }
-  }
+  if (cart.length === 0) cart = await carritoDesdePendiente(pendingProductId, pendingVariantId, pendingCantidad);
   if (cart.length === 0) return null;
 
   // Arrancamos por la entrega (no saltamos pasos del flujo real)
@@ -1262,23 +1630,29 @@ async function aplicarAjusteCarrito(
   context: BotContext
 ): Promise<BotResponse | null> {
   if ((r as any).accion !== 'ajustar_carrito') return null;
-  const ajuste = r.metadata?.ajuste_carrito as { shopify_id: string; cantidad: number } | undefined;
+  const ajuste = r.metadata?.ajuste_carrito as { shopify_id: string; variant_id?: string | null; cantidad: number } | undefined;
   if (!ajuste) return null;
 
-  if (ajuste.cantidad > 12) return respuestaMayoristaOpciones(context, `Quiero ${ajuste.cantidad} unidades`);
+  if (ajuste.cantidad > 12) {
+    return esConversacionEmpresarial(context)
+      ? await respuestaEmpresarial(context, `Quiero ${ajuste.cantidad} unidades`, cart)
+      : respuestaMayoristaOpciones(context, `Quiero ${ajuste.cantidad} unidades`);
+  }
 
   const productos = await obtenerProductosCache();
   const prod = productos.find((p) => p.shopify_id === ajuste.shopify_id);
-  if (prod && ajuste.cantidad > prod.inventario) {
+  const variante = varianteDe(prod, ajuste.variant_id);
+  const disponible = variante ? variante.inventario : prod?.inventario ?? Infinity;
+  if (prod && ajuste.cantidad > disponible) {
     return {
-      texto: `⚠️ Solo tenemos *${prod.inventario}* unidades de *${prod.titulo}*. ¿Con cuántas te quedas en total?`,
-      metadata: { awaiting: 'cantidad', pending_product_id: ajuste.shopify_id, pending_queue: [], pending_cart: cart },
+      texto: `⚠️ Solo tenemos *${disponible}* unidades de *${tituloConVariante(prod.titulo, variante)}*. ¿Con cuántas te quedas en total?`,
+      metadata: { awaiting: 'cantidad', pending_product_id: ajuste.shopify_id, pending_variant_id: ajuste.variant_id || null, pending_queue: [], pending_cart: cart },
     };
   }
 
   const nuevoCart = ajuste.cantidad <= 0
-    ? cart.filter((i) => i.shopify_id !== ajuste.shopify_id)
-    : cart.map((i) => (i.shopify_id === ajuste.shopify_id ? { ...i, cantidad: ajuste.cantidad } : i));
+    ? cart.filter((i) => !mismoItem(i, ajuste.shopify_id, ajuste.variant_id))
+    : cart.map((i) => (mismoItem(i, ajuste.shopify_id, ajuste.variant_id) ? { ...i, cantidad: ajuste.cantidad } : i));
 
   if (nuevoCart.length === 0) {
     return {
@@ -1332,7 +1706,7 @@ function respuestaProducto(producto: Producto, cart: CartItem[] = []): BotRespon
   const emoji = asignarEmojiProducto(producto.titulo);
   const disponible = producto.inventario > 0;
   let msg = `${emoji} *${producto.titulo}*\n\n`;
-  msg += `💵 Precio: *${formatearPrecioCOP(producto.precio)}*\n`;
+  msg += `💵 Precio: *${variantesDe(producto).length > 0 ? 'desde ' : ''}${formatearPrecioCOP(producto.precio)}*\n`;
   msg += disponible ? `✅ Disponible\n` : `❌ Agotado temporalmente\n`;
   if (producto.descripcion) msg += `\n${producto.descripcion.substring(0, 200)}\n`;
   msg += COSTO_ENVIO === 0

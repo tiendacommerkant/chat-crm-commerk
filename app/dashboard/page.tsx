@@ -536,18 +536,18 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Leads mayoristas por sede */}
+      {/* Leads mayoristas por sede (y empresariales, como "Ventas Empresariales") */}
       <Card className="overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="font-bold text-commerk-navy">Leads Mayoristas por Sede</h2>
+            <h2 className="font-bold text-commerk-navy">Leads Mayoristas y Empresariales</h2>
             <span className="text-xs bg-commerk-navy/10 text-commerk-navy px-2 py-0.5 rounded-full font-semibold">{totalLeads} total</span>
           </div>
           <span className="text-xs text-slate-400">Redirigidos desde el bot</span>
         </div>
         <div className="p-6">
           {leadsSedes.length === 0 ? (
-            <p className="text-sm text-slate-400 text-center py-4">Sin leads mayoristas aún</p>
+            <p className="text-sm text-slate-400 text-center py-4">Sin leads aún</p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {leadsSedes.map((item) => {

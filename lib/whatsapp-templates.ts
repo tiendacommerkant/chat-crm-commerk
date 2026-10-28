@@ -166,6 +166,32 @@ export async function enviarLeadMayorista(
 }
 
 /**
+ * lead_empresarial — UTILITY (enviada a aprobación el 2026-10-28)
+ * Aviso al equipo de ventas empresariales cuando una empresa pide la
+ * propuesta del convenio (regalos de fin de año para colaboradores/clientes).
+ * {{1}}=cliente, {{2}}=contacto, {{3}}=correo, {{4}}=solicitud
+ */
+export async function enviarLeadEmpresarial(
+  telefonoEquipo: string,
+  cliente: string,
+  contacto: string,
+  correo: string,
+  solicitud: string
+): Promise<boolean> {
+  return enviarPlantilla(telefonoEquipo, 'lead_empresarial', [
+    {
+      type: 'body',
+      parameters: [
+        { type: 'text', text: cliente || 'Cliente' },
+        { type: 'text', text: contacto || 'N/D' },
+        { type: 'text', text: correo || 'N/D' },
+        { type: 'text', text: solicitud || 'Compra empresarial' },
+      ],
+    },
+  ]);
+}
+
+/**
  * carrito_abandonado — MARKETING
  * {{1}}=nombre, {{2}}=producto, {{3}}=precio
  * Botones: "Completar compra", "No me interesa"

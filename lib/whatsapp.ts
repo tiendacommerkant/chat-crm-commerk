@@ -80,6 +80,50 @@ export async function enviarMensajeWhatsApp(
   }
 }
 
+const MAX_IMAGEN_WHATSAPP = 5 * 1024 * 1024;
+
+/**
+ * Descarga la foto y la sube a WhatsApp; devuelve el media ID (o null).
+ * WhatsApp solo acepta JPG/PNG de hasta 5 MB, y el CDN de Shopify entrega
+ * WebP a quien lo acepte —como los servidores de Meta— aunque la URL diga
+ * otra cosa; además hay fotos de producto en PNG de casi 5 MB. Al mandar solo
+ * el link, Meta aceptaba el mensaje y luego la foto no llegaba (ni el texto
+ * que iba como pie de foto). Aquí se pide JPG/PNG a 1200 px y se sube.
+ */
+export async function subirImagenWhatsApp(imageUrl: string): Promise<string | null> {
+  const url = new URL(imageUrl);
+  if (url.hostname.endsWith('shopify.com') || url.pathname.includes('/cdn/shop/')) {
+    url.searchParams.set('width', '1200');
+  }
+  const res = await fetch(url, { headers: { Accept: 'image/jpeg,image/png' } });
+  if (!res.ok) {
+    console.error(`[WA] No se pudo descargar la foto (${res.status}):`, imageUrl);
+    return null;
+  }
+  const tipo = (res.headers.get('content-type') || '').split(';')[0].trim();
+  const datos = await res.arrayBuffer();
+  if ((tipo !== 'image/jpeg' && tipo !== 'image/png') || datos.byteLength > MAX_IMAGEN_WHATSAPP) {
+    console.error(`[WA] Foto no apta para WhatsApp (${tipo}, ${datos.byteLength} bytes):`, imageUrl);
+    return null;
+  }
+
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', tipo);
+  form.append('file', new Blob([datos], { type: tipo }), tipo === 'image/png' ? 'producto.png' : 'producto.jpg');
+  const subida = await fetch(`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/media`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` },
+    body: form,
+  });
+  const data = await subida.json().catch(() => ({}));
+  if (!subida.ok || !data.id) {
+    console.error('[WA] Error subiendo la foto a WhatsApp:', data?.error?.message || subida.status);
+    return null;
+  }
+  return data.id;
+}
+
 /**
  * Enviar una foto de producto (viene de Shopify, cacheada como imagen_url).
  * Antes Sofi decía "no puedo mandar fotos" y conectaba con un asesor que casi
@@ -91,6 +135,11 @@ export async function enviarImagenWhatsApp(
   caption?: string
 ): Promise<{ success: boolean; messageId?: string; error?: string }> {
   try {
+    // Si la subida falla, se intenta con el link como antes
+    const mediaId = await subirImagenWhatsApp(imageUrl).catch((e) => {
+      console.error('[WA] Falló la subida de la foto, se envía por link:', e?.message);
+      return null;
+    });
     const response = await fetch(
       `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
       {
@@ -103,7 +152,7 @@ export async function enviarImagenWhatsApp(
           messaging_product: 'whatsapp',
           ...destinatarioWhatsApp(to),
           type: 'image',
-          image: { link: imageUrl, caption: caption || '' },
+          image: mediaId ? { id: mediaId, caption: caption || '' } : { link: imageUrl, caption: caption || '' },
         }),
       }
     );

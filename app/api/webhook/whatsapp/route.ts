@@ -41,11 +41,17 @@ export async function POST(req: Request) {
                 .select('id, metadata')
                 .eq('metadata->>whatsapp_message_id', waMsgId)
                 .limit(1);
+              // Si Meta no pudo entregarlo (ej. una foto que rechaza), queda el
+              // motivo: antes las fotos fallaban sin dejar ningún rastro.
+              const errorWa = estado === 'failed' && st.errors?.[0]
+                ? `${st.errors[0].code}: ${st.errors[0].title || st.errors[0].message || ''}`
+                : null;
+              if (errorWa) console.error('[WA] Mensaje no entregado:', waMsgId, errorWa);
               if (msgs?.length) {
                 const m = msgs[0];
                 await supabaseAdmin
                   .from('mensajes')
-                  .update({ metadata: { ...m.metadata, estado_wa: estado } })
+                  .update({ metadata: { ...m.metadata, estado_wa: estado, ...(errorWa && { error_wa: errorWa }) } })
                   .eq('id', m.id);
               }
             }
@@ -335,21 +341,50 @@ export async function POST(req: Request) {
 
           // ── Acción: enviar foto real del producto (Shopify) ─────────────
           if (respuesta.accion === 'enviar_foto' && respuesta.metadata?.imagen_url) {
+            const imagenes: Array<{ url: string; caption: string }> = respuesta.metadata.imagenes || [];
+
+            // Varias fotos ("fotos de esas opciones"): primero el texto y luego
+            // cada foto con su nombre y precio. Cada mensaje se guarda con el
+            // estado completo, porque el último mensaje del bot es el que manda.
+            if (imagenes.length > 1) {
+              const resTexto = await enviarMensajeWhatsApp(phone, respuesta.texto);
+              await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
+                ...respuesta.metadata,
+                tipo_wa: 'text',
+                whatsapp_message_id: resTexto.messageId || null,
+              });
+              for (const img of imagenes) {
+                const resImg = await enviarImagenWhatsApp(phone, img.url, img.caption);
+                if (!resImg.success) console.error('[WA] Falló el envío de la foto de producto:', resImg.error);
+                await guardarMensaje(conversacion.id, 'bot', img.caption, {
+                  ...respuesta.metadata,
+                  tipo_wa: 'image',
+                  media_url: img.url,
+                  whatsapp_message_id: resImg.messageId || null,
+                });
+              }
+              continue;
+            }
+
             const imagenUrl: string = respuesta.metadata.imagen_url;
             const resultadoImg = await enviarImagenWhatsApp(phone, imagenUrl, respuesta.texto);
 
-            await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
-              ...respuesta.metadata,
-              tipo_wa: 'image',
-              media_url: imagenUrl,
-            });
-
             // Si la imagen falló (ej. formato que WhatsApp rechaza), no dejamos
             // al cliente sin nada: mandamos el texto solo como respaldo.
+            let messageId = resultadoImg.messageId;
             if (!resultadoImg.success) {
               console.error('[WA] Falló el envío de la foto de producto:', resultadoImg.error);
-              await enviarMensajeWhatsApp(phone, respuesta.texto);
+              messageId = (await enviarMensajeWhatsApp(phone, respuesta.texto)).messageId;
             }
+
+            // Con el ID de WhatsApp, el estado de entrega (o el error si Meta
+            // la rechaza después) queda registrado en el mensaje.
+            await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
+              ...respuesta.metadata,
+              tipo_wa: resultadoImg.success ? 'image' : 'text',
+              media_url: imagenUrl,
+              whatsapp_message_id: messageId || null,
+            });
             continue;
           }
 
