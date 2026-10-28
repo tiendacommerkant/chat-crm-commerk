@@ -11,6 +11,8 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const busqueda = searchParams.get('q') || '';
     const estado = searchParams.get('estado') || 'todas';
+    // Filtro por etiqueta (ej. "empresarial" para quien revisa ventas empresariales)
+    const etiqueta = searchParams.get('etiqueta') || '';
 
     let query = supabaseAdmin
       .from('conversaciones')
@@ -24,6 +26,9 @@ export async function GET(req: Request) {
 
     if (estado !== 'todas') {
       query = query.eq('estado', estado);
+    }
+    if (etiqueta) {
+      query = query.eq('etiqueta', etiqueta);
     }
 
     const { data, error } = await query;

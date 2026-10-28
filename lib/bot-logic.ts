@@ -25,7 +25,7 @@ import {
   decodificarPendiente, type Variante,
 } from './variantes';
 import { enviarMensajeWhatsApp } from './whatsapp';
-import { enviarLeadMayorista, enviarLeadEmpresarial } from './whatsapp-templates';
+import { enviarLeadMayorista } from './whatsapp-templates';
 import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_REGISTRO, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
 import { esIdUsuarioWhatsApp, contactoVisible } from './whatsapp-id';
@@ -267,7 +267,7 @@ export async function procesarMensajeBot(
   // ── EMPRESA QUE DEJA SU CORREO fuera del paso en que se le pidió (ej.
   // después de ver fotos o de que expiró la espera): igual se registra el lead.
   const correoSuelto = awaiting === '' ? extraerCorreo(texto) : null;
-  if (correoSuelto && esConversacionEmpresarial(context) && !leadEmpresarialRegistrado(context)) {
+  if (correoSuelto && esConversacionEmpresarial(context) && !(await leadEmpresarialRegistrado(context))) {
     return await registrarLeadEmpresarial(context, correoSuelto, texto, pendingCart);
   }
 
@@ -984,12 +984,11 @@ function mensajeInicialPendiente(context: BotContext): string {
 // VENTAS EMPRESARIALES
 // ──────────────────────────────────────────
 // Empresas que compran regalos de fin de año para sus colaboradores o
-// clientes (anchetas, aguinaldos). No es mayorista (reventa por sedes): se
-// pide el correo para enviar la propuesta del convenio empresarial y el lead
-// queda en el CRM (etiqueta "Empresa") y, si está configurado, llega por
-// WhatsApp al equipo de ventas empresariales.
+// clientes (anchetas, aguinaldos). No es mayorista (reventa por sedes): todo
+// se atiende desde el chat center. Apenas se detecta el interés la
+// conversación queda con la etiqueta "Empresa" para que quien revisa la
+// filtre, y se pide el correo para enviar la propuesta del convenio.
 
-const VENTAS_EMPRESARIALES_WHATSAPP = (process.env.VENTAS_EMPRESARIALES_WHATSAPP || '').replace(/\D/g, '');
 const SEDE_EMPRESARIAL = 'Ventas Empresariales';
 
 function extraerCorreo(texto: string): string | null {
@@ -1002,11 +1001,33 @@ function esConversacionEmpresarial(context: BotContext): boolean {
     context.mensajes_previos.some((m) => m.tipo === 'bot' && m.metadata?.empresarial);
 }
 
-// La etiqueta se pone al registrar el lead, y sigue ahí aunque ese mensaje ya
-// haya salido de los últimos 15 que recibe el bot.
-function leadEmpresarialRegistrado(context: BotContext): boolean {
-  return (context.conversacion as any)?.etiqueta === 'empresarial' ||
-    context.mensajes_previos.some((m) => m.tipo === 'bot' && m.metadata?.lead_empresarial);
+// Se mira también leads_sedes porque el bot solo recibe los últimos 15
+// mensajes y el del registro puede haber quedado atrás.
+async function leadEmpresarialRegistrado(context: BotContext): Promise<boolean> {
+  if (context.mensajes_previos.some((m) => m.tipo === 'bot' && m.metadata?.lead_empresarial)) return true;
+  if (!context.conversacion?.id) return false;
+  const { count } = await supabaseAdmin
+    .from('leads_sedes')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversacion_id', context.conversacion.id)
+    .eq('sede', SEDE_EMPRESARIAL);
+  return (count || 0) > 0;
+}
+
+/**
+ * Etiqueta "Empresa" en el chat center desde que se detecta el interés, para
+ * que quien revisa las ventas empresariales las filtre. Solo reemplaza la
+ * etiqueta automática de mayorista, nunca las que pone el equipo a mano.
+ */
+async function etiquetarEmpresarial(context: BotContext): Promise<void> {
+  const conv = context.conversacion as any;
+  if (!conv?.id || conv.etiqueta === 'empresarial') return;
+  const { error } = await supabaseAdmin
+    .from('conversaciones')
+    .update({ etiqueta: 'empresarial' })
+    .eq('id', conv.id)
+    .or('etiqueta.is.null,etiqueta.eq.mayorista');
+  if (error) console.error('[Empresarial] Error etiquetando conversación:', error.message);
 }
 
 /**
@@ -1037,12 +1058,14 @@ async function respuestaEmpresarial(
   cart: CartItem[],
   textoSofi = ''
 ): Promise<BotResponse> {
+  await etiquetarEmpresarial(context);
+
   // Ya escribió el correo en este mismo mensaje: se registra de una vez
   const correo = extraerCorreo(texto);
   if (correo) return await registrarLeadEmpresarial(context, correo, texto, cart);
 
   // Su solicitud ya está con el equipo: se responde sin volver a pedir el correo
-  if (leadEmpresarialRegistrado(context)) {
+  if (await leadEmpresarialRegistrado(context)) {
     return {
       texto: textoSofi.trim() ||
         'Nuestro equipo de ventas empresariales ya tiene tu solicitud y te enviará la propuesta a tu correo. Mientras tanto te ayudo con lo que necesites por aquí. 😊',
@@ -1081,9 +1104,7 @@ async function registrarLeadEmpresarial(
   const otros = armarConsultaMayorista(context, texto, cart)
     .split(' | ')
     .filter((p) => p && p !== 'Compra al por mayor' && !disparador.startsWith(p) && !p.includes(correo));
-  // Sin saltos de línea: Meta rechaza parámetros de plantilla que los traigan
-  const solicitud = [disparador.slice(0, 350), ...otros].join(' | ').replace(/\s+/g, ' ').slice(0, 600);
-  const resumen = `${solicitud} | Correo: ${correo}`;
+  const resumen = [disparador.slice(0, 350), ...otros, `Correo: ${correo}`].join(' | ').replace(/\s+/g, ' ').slice(0, 700);
 
   // El correo queda en el cliente solo si no tenía uno: el que ya tiene es al
   // que llegan sus pedidos de Shopify y no se pisa.
@@ -1091,44 +1112,16 @@ async function registrarLeadEmpresarial(
     await actualizarCliente(context.cliente.id, { email: correo }).catch(() => {});
   }
 
-  // Etiqueta visible en el CRM para el equipo (no pisa "Compró" ni otras)
-  if (context.conversacion?.id) {
-    const { error } = await supabaseAdmin
-      .from('conversaciones')
-      .update({ etiqueta: 'empresarial' })
-      .eq('id', context.conversacion.id)
-      .or('etiqueta.is.null,etiqueta.eq.mayorista');
-    if (error) console.error('[Lead empresarial] Error etiquetando conversación:', error.message);
-  }
-
-  // La venta pasa al canal de ventas empresariales: se le avisa con su
-  // plantilla y el cliente recibe el enlace para escribirles directo.
-  const sinNumero = esIdUsuarioWhatsApp(context.cliente.telefono);
-  let enlaceEquipo = '';
-  if (VENTAS_EMPRESARIALES_WHATSAPP) {
-    const contacto = contactoVisible(context.cliente.telefono, context.cliente.wa_username);
-    const nota = sinNumero ? ' | No comparte su número: le dimos el enlace para que te escriba' : '';
-    // Mientras Meta aprueba lead_empresarial, respaldo con lead_mayorista o texto libre
-    const entregado = await enviarLeadEmpresarial(
-      VENTAS_EMPRESARIALES_WHATSAPP, context.cliente.nombre || 'Sin nombre', contacto, correo, `${solicitud}${nota}`
-    ).catch(() => false);
-    if (!entregado) {
-      await avisarLead({ nombre: SEDE_EMPRESARIAL, telefono: VENTAS_EMPRESARIALES_WHATSAPP }, context, resumen, 'empresarial');
-    }
-    const msgEnlace = `Hola${nombre ? `, soy ${nombre}` : ''}. Vengo del chat de Commerk y quiero la propuesta del convenio empresarial (correo: ${correo}).`;
-    const url = `https://wa.me/${VENTAS_EMPRESARIALES_WHATSAPP}?text=${encodeURIComponent(msgEnlace)}`;
-    enlaceEquipo = sinNumero
-      ? `\n\nComo usas nombre de usuario en WhatsApp, el equipo no ve tu número: escríbeles directo aquí 👉 ${url}`
-      : `\n\nSi prefieres adelantar, escríbele directo a nuestro equipo de ventas empresariales 👉 ${url}`;
-  }
-  await guardarLead(SEDE_EMPRESARIAL, VENTAS_EMPRESARIALES_WHATSAPP, context, resumen);
+  // El equipo lo atiende desde el chat center (etiqueta "Empresa"); el lead
+  // queda además en el conteo del panel como "Ventas Empresariales".
+  await etiquetarEmpresarial(context);
+  await guardarLead(SEDE_EMPRESARIAL, '', context, resumen);
 
   return {
     texto:
       `¡Gracias${nombre ? `, ${nombre}` : ''}! 🙌 Ya le pasé tu solicitud a nuestro equipo de *ventas empresariales*; te enviarán la propuesta a *${correo}*.\n\n` +
-      `Para activar el descuento empresarial solo necesitamos tu *RUT actualizado* (el certificado bancario es opcional).` +
-      enlaceEquipo +
-      `\n\nMientras tanto, si quieres te muestro opciones para tus anchetas por aquí. 😊`,
+      `Para activar el descuento empresarial solo necesitamos tu *RUT actualizado* (el certificado bancario es opcional).\n\n` +
+      `Mientras tanto, si quieres te muestro opciones para tus anchetas por aquí. 😊`,
     metadata: { awaiting: '', empresarial: true, lead_empresarial: true, pending_cart: cart },
   };
 }
@@ -1176,35 +1169,31 @@ async function enviarLeadASede(
   context: BotContext,
   mensajeOriginal: string
 ): Promise<boolean> {
-  const entregado = await avisarLead(sede, context, mensajeOriginal, 'mayorista');
+  const entregado = await avisarLead(sede, context, mensajeOriginal);
   await guardarLead(sede.nombre, sede.telefono, context, mensajeOriginal);
   return entregado;
 }
 
-/** Avisa por WhatsApp a la sede (o al equipo empresarial) que llegó un lead. */
+/** Avisa por WhatsApp a la sede que llegó un lead mayorista. */
 async function avisarLead(
   sede: { nombre: string; telefono: string },
   context: BotContext,
-  mensajeOriginal: string,
-  tipo: 'mayorista' | 'empresarial'
+  mensajeOriginal: string
 ): Promise<boolean> {
   const nombre = context.cliente.nombre || 'Sin nombre';
   const telefono = context.cliente.telefono;
-  const consultaPorDefecto = tipo === 'empresarial' ? 'Compra empresarial' : 'Compra al por mayor';
   // Cliente con nombre de usuario: no hay número ni enlace wa.me posible
   const sinNumero = esIdUsuarioWhatsApp(telefono);
   const contacto = contactoVisible(telefono, context.cliente.wa_username);
-  const comoContactar = !sinNumero
-    ? `Escríbele directo: https://wa.me/${telefono}`
-    : tipo === 'empresarial'
-      ? 'No comparte su número (usa nombre de usuario de WhatsApp). Contáctalo por el correo o respóndele desde el CRM.'
-      : 'No comparte su número (usa nombre de usuario de WhatsApp). Ya le enviamos el enlace para que él te escriba a ti.';
+  const comoContactar = sinNumero
+    ? 'No comparte su número (usa nombre de usuario de WhatsApp). Ya le enviamos el enlace para que él te escriba a ti.'
+    : `Escríbele directo: https://wa.me/${telefono}`;
 
   const mensajeLead =
-    `📋 *Nuevo lead ${tipo} — Commerk Bot*\n\n` +
+    `📋 *Nuevo lead mayorista — Commerk Bot*\n\n` +
     `👤 Cliente: ${nombre}\n` +
     `📱 Contacto: ${contacto}\n` +
-    `💬 Consulta: "${mensajeOriginal || consultaPorDefecto}"\n\n` +
+    `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
     `👉 ${comoContactar}`;
 
   // 1) Plantilla aprobada: llega siempre, incluso fuera de la ventana de 24h
@@ -1213,7 +1202,7 @@ async function avisarLead(
     sede.nombre,
     nombre,
     contacto,
-    `${mensajeOriginal || consultaPorDefecto} | ${comoContactar}`
+    `${mensajeOriginal || 'Compra al por mayor'} | ${comoContactar}`
   ).catch(() => false);
 
   // 2) Respaldo en texto libre mientras Meta aprueba la plantilla

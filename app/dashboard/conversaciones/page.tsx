@@ -435,6 +435,8 @@ function ConversacionesContent() {
   const [enviando, setEnviando] = useState(false);
   const [textoRespuesta, setTextoRespuesta] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('todas');
+  // '' = todas las etiquetas; "empresarial" muestra solo las de ventas empresariales
+  const [filtroEtiqueta, setFiltroEtiqueta] = useState('');
   const [busqueda, setBusqueda] = useState('');
   const [mostrarDetalle, setMostrarDetalle] = useState(false);
 
@@ -457,6 +459,7 @@ function ConversacionesContent() {
     try {
       const params = new URLSearchParams();
       if (filtroEstado !== 'todas') params.set('estado', filtroEstado);
+      if (filtroEtiqueta) params.set('etiqueta', filtroEtiqueta);
       if (busqueda) params.set('q', busqueda);
       const res = await fetch(`/api/conversaciones?${params}`);
       const json = await res.json();
@@ -464,7 +467,7 @@ function ConversacionesContent() {
     } finally {
       setCargandoConvs(false);
     }
-  }, [filtroEstado, busqueda]);
+  }, [filtroEstado, filtroEtiqueta, busqueda]);
 
   useEffect(() => { cargarConversaciones(); }, [cargarConversaciones]);
 
@@ -678,6 +681,19 @@ function ConversacionesContent() {
                 className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                   filtroEstado === t.k ? 'bg-commerk-navy text-white' : 'text-slate-500 hover:bg-slate-100'
                 }`}>{t.l}</button>
+            ))}
+          </div>
+          {/* Filtro por etiqueta: "Empresa" primero, la usa quien revisa ventas empresariales */}
+          <div className="flex flex-wrap gap-1 mt-2">
+            {[['', { label: 'Todas', emoji: '🏷️', cls: '' }] as const,
+              ['empresarial', ETIQUETAS.empresarial] as const,
+              ...Object.entries(ETIQUETAS).filter(([k]) => k !== 'empresarial')].map(([k, e]) => (
+              <button key={k || 'todas'} onClick={() => setFiltroEtiqueta(k)}
+                className={`px-2 py-1 rounded-full text-[11px] font-semibold border transition-all ${
+                  filtroEtiqueta === k
+                    ? (k ? e.cls : 'bg-commerk-navy text-white border-commerk-navy')
+                    : 'border-slate-200 text-slate-500 hover:bg-slate-100'
+                }`}>{e.emoji} {e.label}</button>
             ))}
           </div>
         </div>
