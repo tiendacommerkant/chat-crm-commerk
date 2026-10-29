@@ -5,16 +5,10 @@ import { registrarWebhooksShopify, listarWebhooksShopify } from '@/lib/shopify';
 
 export const dynamic = 'force-dynamic';
 
-function autorizado(req: Request): boolean {
-  const auth = req.headers.get('authorization') || '';
-  const secret = process.env.CRON_SECRET || '';
-  return !secret || auth === `Bearer ${secret}`;
-}
+// La protección la hace el middleware (sesión del CRM). Antes se pedía
+// CRON_SECRET, que el navegador no tiene: el botón del dashboard daba 401.
 
-export async function GET(req: Request) {
-  if (!autorizado(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+export async function GET() {
   try {
     const webhooks = await listarWebhooksShopify();
     return NextResponse.json({ success: true, total: webhooks.length, webhooks });
@@ -23,10 +17,7 @@ export async function GET(req: Request) {
   }
 }
 
-export async function POST(req: Request) {
-  if (!autorizado(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+export async function POST() {
   try {
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
     if (!baseUrl) {
