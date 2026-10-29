@@ -171,6 +171,81 @@ export async function enviarImagenWhatsApp(
   }
 }
 
+// Tipos de archivo que un asesor puede mandar desde el CRM y su límite en WhatsApp
+export const ARCHIVOS_PERMITIDOS: Record<string, { tipo: 'image' | 'document'; maxBytes: number }> = {
+  'image/jpeg': { tipo: 'image', maxBytes: MAX_IMAGEN_WHATSAPP },
+  'image/png': { tipo: 'image', maxBytes: MAX_IMAGEN_WHATSAPP },
+  'application/pdf': { tipo: 'document', maxBytes: 16 * 1024 * 1024 },
+};
+
+/**
+ * Sube un archivo (foto o PDF que adjunta un asesor) y devuelve el media ID.
+ * El mismo ID sirve para verlo luego en el CRM a través de /api/wa-media.
+ */
+export async function subirArchivoWhatsApp(
+  datos: ArrayBuffer,
+  mime: string,
+  nombreArchivo: string
+): Promise<{ id?: string; error?: string }> {
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', mime);
+  form.append('file', new Blob([datos], { type: mime }), nombreArchivo);
+  const res = await fetch(`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/media`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` },
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) return { error: data?.error?.message || `HTTP ${res.status}` };
+  return { id: data.id };
+}
+
+/** Envía una foto o un documento ya subido (media ID). */
+export async function enviarArchivoWhatsApp(
+  to: string,
+  tipo: 'image' | 'document',
+  mediaId: string,
+  opciones: { caption?: string; filename?: string } = {}
+): Promise<{ success: boolean; messageId?: string; error?: string; codigo?: number }> {
+  const contenido: Record<string, string> = { id: mediaId };
+  if (opciones.caption) contenido.caption = opciones.caption;
+  if (tipo === 'document' && opciones.filename) contenido.filename = opciones.filename;
+  const res = await fetch(`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', ...destinatarioWhatsApp(to), type: tipo, [tipo]: contenido }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { success: false, error: data?.error?.message || `HTTP ${res.status}`, codigo: data?.error?.code };
+  return { success: true, messageId: data.messages?.[0]?.id };
+}
+
+/**
+ * Envía cualquier plantilla aprobada. Es lo único que WhatsApp permite
+ * mandarle a un cliente que no ha escrito en las últimas 24 horas.
+ */
+export async function enviarPlantillaWhatsApp(
+  to: string,
+  nombre: string,
+  idioma: string,
+  components: any[]
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const res = await fetch(`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      ...destinatarioWhatsApp(to),
+      type: 'template',
+      template: { name: nombre, language: { code: idioma }, components },
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { success: false, error: data?.error?.message || `HTTP ${res.status}` };
+  return { success: true, messageId: data.messages?.[0]?.id };
+}
+
 /**
  * Marcar mensaje como leído
  */

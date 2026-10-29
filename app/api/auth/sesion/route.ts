@@ -28,7 +28,8 @@ export async function POST(req: Request) {
     }
 
     const res = NextResponse.json({ success: true });
-    res.cookies.set(COOKIE_SESION, await crearSesion({ id: usuario.id, email: usuario.email || '' }), {
+    const nombre = (usuario.user_metadata?.nombre as string | undefined) || undefined;
+    res.cookies.set(COOKIE_SESION, await crearSesion({ id: usuario.id, email: usuario.email || '', nombre }), {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',

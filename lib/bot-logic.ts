@@ -888,6 +888,16 @@ export async function procesarMensajeBot(
         metadata: { awaiting: 'link_enviado', pending_cart: pendingCart },
       };
     }
+    // Problema con el pago u otro medio (contra entrega, efectivo, transferencia):
+    // en octubre a estos clientes se les repetía el link y ninguno pagó. Ahora
+    // pasan a un asesor, que puede darles otra opción.
+    if (esProblemaDePago(textoLower)) {
+      return {
+        texto: 'Entiendo 🙌 Te paso con un asesor de Tienda Commerk para ayudarte con el pago y ver la mejor opción para ti. Te escribe por aquí mismo.',
+        accion: 'transferir_a_asesor',
+        metadata: { awaiting: '', pending_cart: pendingCart, motivo_transferencia: 'pago' },
+      };
+    }
     // Si el cliente pregunta por el link, recordarle que ya fue enviado
     if (/(link|enlace|pago|pagar|donde|c[oó]mo pago)/i.test(textoLower)) {
       return {
@@ -1260,6 +1270,10 @@ function esIntencionPago(t: string) {
   // SOLO frases explícitas de pago — NO incluir "si/ok/listo/dale/confirmar"
   // porque esas palabras son respuestas de confirmación en la máquina de estados.
   return /(^pagar$|^pago$|^finalizar$|^proceder$|^checkout$|proceder con el pago|quiero pagar|finalizar (la |mi )?compra|finalizar (el |mi )?pedido|realizar (el |mi )?pago|completar (la |mi )?compra|completar (el |mi )?pedido|ir a pagar|procesar (el |mi )?pago|quiero proceder|listo para pagar|dame el total|quiero el total)/i.test(t.trim());
+}
+/** El cliente no logra pagar con el link o pide otro medio de pago. */
+export function esProblemaDePago(t: string): boolean {
+  return /(contra ?entrega|pagar? al recibir|pago al recibir|cuando (me )?llegue|en efectivo|efectivo|transferencia|consignaci[oó]n|consignar|bancolombia|dat[aá]fono|otro medio|otra forma de pago|otro m[eé]todo|no me (da|deja|sirve|funciona|abre|carga|aparece|sale)|no (pude|puedo|logro|alcanc[eé] a) pagar|no (me )?(pas[oó]|entr[oó]) el pago|rechaz|fall[oó] el pago|error (en|con|al) (el )?pago|me sale error)/i.test(t);
 }
 function esConsultaEnvio(t: string) {
   return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);

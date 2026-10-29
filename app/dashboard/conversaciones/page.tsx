@@ -1,996 +1,445 @@
 'use client';
 
+// Chat center: bandeja de atención (izquierda), chat (centro) y ficha del cliente (derecha)
 import { useEffect, useState, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { esIdUsuarioWhatsApp, contactoVisible } from '@/lib/whatsapp-id';
+import {
+  ETIQUETAS, iniciales, mostrarContacto, enlaceWhatsApp, fmtFechaCompleta,
+  MensajeBurbuja, ModalNuevaConversacion, SeparadorFecha,
+  type Conversacion, type Mensaje,
+} from '@/components/chat/base';
+import { Bandeja, MOTIVOS, tiempoEspera, type BandejaId } from '@/components/chat/Bandeja';
+import { Compositor, type RespuestaRapida } from '@/components/chat/Compositor';
+import { FichaCliente, type Ficha, type Usuario } from '@/components/chat/FichaCliente';
+import { ModalPlantilla } from '@/components/chat/ModalPlantilla';
+import { ModalRespuestas } from '@/components/chat/ModalRespuestas';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-type Cliente = { id: string; nombre?: string; telefono: string; email?: string; ciudad?: string; wa_username?: string | null };
+type Nota = { id: string; conversacion_id: string; autor: string; autor_nombre?: string | null; contenido: string; created_at: string };
 
-// Clientes que usan nombre de usuario de WhatsApp no tienen número: se muestra
-// su @usuario y no se arma un enlace wa.me (quedaría roto).
-const mostrarContacto = (c?: Cliente | null) =>
-  !c?.telefono ? '' : esIdUsuarioWhatsApp(c.telefono) ? contactoVisible(c.telefono, c.wa_username) : c.telefono;
-const enlaceWhatsApp = (c?: Cliente | null) =>
-  c?.telefono && !esIdUsuarioWhatsApp(c.telefono) ? `https://wa.me/${c.telefono}` : undefined;
-type UltimoMensaje = { contenido: string; tipo: string; tipo_wa: string; created_at: string };
-type Conversacion = {
-  id: string; estado: string; created_at: string; updated_at: string;
-  cliente: Cliente; ultimo_mensaje: UltimoMensaje | null;
-  total_mensajes: number; no_leidos: number;
-  bot_activo?: boolean;
-  etiqueta?: string | null;
-};
-type Mensaje = {
-  id: string; conversacion_id: string; tipo: 'user' | 'bot';
-  contenido: string; created_at: string;
-  metadata?: {
-    tipo_wa?: string; media_url?: string; media_id?: string; media_mime_type?: string;
-    caption?: string; filename?: string; plantilla?: string; referencia_id?: string;
-    estado_envio?: string; enviado_por?: string; whatsapp_message_id?: string;
-    interactive_title?: string; error?: string; latitude?: number; longitude?: number;
-    estado_wa?: 'sent' | 'delivered' | 'read' | 'failed';
-  };
-};
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function iniciales(nombre?: string) {
-  if (!nombre) return '?';
-  return nombre.split(' ').slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+// Aviso sonoro corto (sin archivos): dos tonos al llegar un cliente a Pendientes
+function sonarAviso() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    [0, 0.18].forEach((t, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = i ? 880 : 660;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.16);
+      o.connect(g).connect(ctx.destination);
+      o.start(ctx.currentTime + t);
+      o.stop(ctx.currentTime + t + 0.17);
+    });
+  } catch { /* el navegador bloqueó el audio */ }
 }
 
-const TZ = 'America/Bogota';
-
-function fmtHora(iso: string) {
-  const d = new Date(iso);
-  const diff = Date.now() - d.getTime();
-  if (diff < 60000) return 'ahora';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
-  if (diff < 86400000) return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', timeZone: TZ });
-  if (diff < 604800000) return d.toLocaleDateString('es-CO', { weekday: 'short', timeZone: TZ });
-  return d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', timeZone: TZ });
+function leerPreferencia(clave: string, porDefecto: string) {
+  try { return localStorage.getItem(clave) || porDefecto; } catch { return porDefecto; }
+}
+function guardarPreferencia(clave: string, valor: string) {
+  try { localStorage.setItem(clave, valor); } catch { /* sin almacenamiento */ }
 }
 
-function fmtFechaCompleta(iso: string) {
-  return new Date(iso).toLocaleString('es-CO', {
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', timeZone: TZ,
-  });
-}
-
-const PLANTILLA_LABELS: Record<string, string> = {
-  pedido_confirmado: '🎉 Pedido Confirmado',
-  pedido_cancelado: '❌ Pedido Cancelado',
-  pedido_enviado: '🚚 Pedido Enviado',
-  carrito_abandonado: '🛒 Recuperación de Carrito',
-};
-
-const ESTADO_COLORS: Record<string, string> = {
-  activa:     'bg-emerald-400',
-  cerrada:    'bg-slate-400',
-  abandonada: 'bg-amber-400',
-};
-
-const ETIQUETAS: Record<string, { label: string; emoji: string; cls: string }> = {
-  compro:       { label: 'Compró',       emoji: '💰', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
-  notificado:   { label: 'Notificado',   emoji: '📤', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
-  cerro_venta:  { label: 'Cerró venta',  emoji: '✅', cls: 'bg-purple-100 text-purple-700 border-purple-200' },
-  perdido:      { label: 'Perdido',      emoji: '❌', cls: 'bg-red-100 text-red-600 border-red-200' },
-  mayorista:    { label: 'Mayorista',    emoji: '🏪', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
-  empresarial:  { label: 'Empresa',      emoji: '🏢', cls: 'bg-sky-100 text-sky-700 border-sky-200' },
-};
-
-const RESPUESTAS_RAPIDAS = [
-  { id: 'saludo',   texto: '¡Hola! 👋 ¿En qué te puedo ayudar hoy?' },
-  { id: 'espera',   texto: '⏳ Dame un momento, estoy verificando tu información.' },
-  { id: 'catalogo', texto: 'Escribe el nombre del producto que te interesa y con gusto te ayudo 🛍️' },
-  { id: 'pago',     texto: '✅ Recibimos tu pago correctamente. ¡Gracias por tu compra!' },
-  { id: 'camino',   texto: '🚚 Tu pedido ya está en camino. Llegará en 1-2 días hábiles.' },
-  { id: 'cierre',   texto: '¡Gracias por contactarnos! 🙏 Si necesitas algo más, aquí estamos.' },
-];
-
-// ─── Audio Player ─────────────────────────────────────────────────────────────
-function AudioPlayer({ src }: { src: string }) {
-  return (
-    <audio controls className="max-w-[220px] h-10 rounded-full" preload="none">
-      <source src={src} />
-    </audio>
-  );
-}
-
-// ─── Chulitos estilo WhatsApp ─────────────────────────────────────────────────
-function ChecksWA({ estado }: { estado?: string }) {
-  // 1 chulito gris = enviado al API
-  // 2 chulitos grises = entregado al dispositivo
-  // 2 chulitos azules = leído por el destinatario
-  const leido = estado === 'read';
-  const entregado = estado === 'delivered' || leido;
-  const color = leido ? '#53bdeb' : 'rgba(255,255,255,0.6)';
-
-  if (!entregado) {
-    // 1 solo chulito
-    return (
-      <svg viewBox="0 0 16 11" width="14" height="11" fill="none">
-        <path d="M11.071.653 4.42 7.3 1.943 4.822" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  // 2 chulitos
-  return (
-    <svg viewBox="0 0 18 11" width="16" height="11" fill="none">
-      <path d="M1 5.5 5.5 10 17 1" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M5 5.5 9.5 10 17 3" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-// ─── Burbuja de mensaje ───────────────────────────────────────────────────────
-function MensajeBurbuja({ msg }: { msg: Mensaje }) {
-  const esUser = msg.tipo === 'user';
-  const tipoWA = msg.metadata?.tipo_wa || 'text';
-  const esTemplate = tipoWA === 'template';
-  const esAgente = msg.metadata?.enviado_por === 'agente';
-
-  if (esTemplate) {
-    const label = PLANTILLA_LABELS[msg.metadata?.plantilla || ''] || '📋 Notificación';
-    const ok = msg.metadata?.estado_envio !== 'fallido';
-    return (
-      <div className="flex justify-center my-3">
-        <div className={`max-w-xs rounded-2xl border px-4 py-3 text-xs ${
-          ok ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-red-50 border-red-200 text-red-700'
-        }`}>
-          <div className="flex items-center gap-2 font-semibold mb-1.5">
-            <span className="text-sm">{ok ? '📤' : '⚠️'}</span>
-            <span>{label}</span>
-            <span className={`ml-auto font-bold ${ok ? 'text-emerald-600' : 'text-red-500'}`}>
-              {ok ? '✓ Enviado' : '✗ Error'}
-            </span>
-          </div>
-          <p className="text-slate-600 whitespace-pre-wrap line-clamp-4">{msg.contenido}</p>
-          <p className="text-slate-400 mt-1.5 text-right">{fmtFechaCompleta(msg.created_at)}</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`flex ${esUser ? 'justify-start' : 'justify-end'} mb-1.5`}>
-      <div className={`relative max-w-[72%] rounded-2xl px-4 py-2.5 shadow-sm ${
-        esUser
-          ? 'bg-white text-slate-800 rounded-tl-sm border border-slate-100'
-          : esAgente
-            ? 'bg-commerk-green text-white rounded-tr-sm'
-            : 'bg-commerk-navy text-white rounded-tr-sm'
-      }`}>
-        {esAgente && (
-          <p className="text-[10px] text-white/70 font-semibold mb-0.5 uppercase tracking-wide">Agente</p>
-        )}
-
-        {tipoWA === 'image' && msg.metadata?.media_url && (
-          <div className="mb-1">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={msg.metadata.media_url}
-              alt={msg.metadata.caption || 'Imagen'}
-              className="rounded-xl max-h-60 w-auto cursor-pointer hover:opacity-90 transition-opacity"
-              onClick={() => window.open(msg.metadata!.media_url, '_blank')}
-            />
-            {msg.metadata.caption && (
-              <p className="text-sm mt-1 opacity-80">{msg.metadata.caption}</p>
-            )}
-          </div>
-        )}
-
-        {tipoWA === 'audio' && msg.metadata?.media_url && (
-          <div className="py-1"><AudioPlayer src={msg.metadata.media_url} /></div>
-        )}
-
-        {tipoWA === 'video' && msg.metadata?.media_url && (
-          <div className="mb-1">
-            <video controls className="rounded-xl max-h-48 w-auto">
-              <source src={msg.metadata.media_url} type={msg.metadata.media_mime_type} />
-            </video>
-            {msg.metadata.caption && <p className="text-sm mt-1 opacity-80">{msg.metadata.caption}</p>}
-          </div>
-        )}
-
-        {tipoWA === 'document' && msg.metadata?.media_url && (
-          <a
-            href={msg.metadata.media_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 bg-white/10 rounded-xl px-3 py-2 hover:bg-white/20 transition-colors mb-1"
-          >
-            <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <span className="text-sm font-medium truncate">{msg.metadata.filename || 'Documento'}</span>
-          </a>
-        )}
-
-        {tipoWA === 'location' && msg.metadata?.latitude && (
-          <a
-            href={`https://maps.google.com/?q=${msg.metadata.latitude},${msg.metadata.longitude}`}
-            target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-2 text-sm hover:underline mb-1"
-          >
-            <span>📍</span><span>{msg.contenido}</span>
-          </a>
-        )}
-
-        {msg.contenido && !['📷 Imagen', '🎤 Nota de voz', '🎥 Video'].includes(msg.contenido) && (
-          <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{msg.contenido}</p>
-        )}
-
-        <p className={`text-[10px] mt-1 text-right flex items-center justify-end gap-1 ${esUser ? 'text-slate-400' : 'text-white/50'}`}>
-          {fmtFechaCompleta(msg.created_at)}
-          {!esUser && msg.metadata?.whatsapp_message_id && (
-            <ChecksWA estado={msg.metadata?.estado_wa} />
-          )}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ─── Modal Nueva Conversación ─────────────────────────────────────────────────
-function ModalNuevaConversacion({
-  onClose,
-  onCreada,
-}: {
-  onClose: () => void;
-  onCreada: (convId: string) => void;
-}) {
-  const [busqueda, setBusqueda] = useState('');
-  const [clientes, setClientes] = useState<any[]>([]);
-  const [clienteSeleccionado, setClienteSeleccionado] = useState<any>(null);
-  const [mensaje, setMensaje] = useState('');
-  const [enviando, setEnviando] = useState(false);
-  const [error, setError] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => { inputRef.current?.focus(); }, []);
-
-  useEffect(() => {
-    if (!busqueda.trim()) { setClientes([]); return; }
-    const timer = setTimeout(async () => {
-      const res = await fetch(`/api/clientes?q=${encodeURIComponent(busqueda)}&limit=8`);
-      const json = await res.json();
-      if (json.success) setClientes(json.clientes);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [busqueda]);
-
-  const enviar = async () => {
-    if (!clienteSeleccionado || !mensaje.trim()) return;
-    setEnviando(true);
-    setError('');
-    try {
-      const res = await fetch('/api/conversaciones', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cliente_id: clienteSeleccionado.id, mensaje: mensaje.trim() }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        onCreada(json.conversacion_id);
-      } else {
-        setError(json.error || 'Error enviando');
-      }
-    } catch {
-      setError('Error de conexión');
-    } finally {
-      setEnviando(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-          <div>
-            <h3 className="font-bold text-commerk-navy text-base">Nueva conversación</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Busca un cliente y envía el primer mensaje</p>
-          </div>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-400 transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          {/* Buscador de clientes */}
-          {!clienteSeleccionado ? (
-            <div>
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5 block">Cliente</label>
-              <div className="relative">
-                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                <input
-                  ref={inputRef}
-                  value={busqueda}
-                  onChange={(e) => setBusqueda(e.target.value)}
-                  placeholder="Nombre, teléfono o email..."
-                  className="w-full pl-9 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-commerk-navy/40 focus:ring-2 focus:ring-commerk-navy/10"
-                />
-              </div>
-              {clientes.length > 0 && (
-                <div className="mt-2 border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                  {clientes.map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => { setClienteSeleccionado(c); setBusqueda(''); setClientes([]); }}
-                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left border-b border-slate-50 last:border-0 transition-colors"
-                    >
-                      <div className="w-8 h-8 rounded-full bg-commerk-navy/10 flex items-center justify-center text-commerk-navy font-bold text-xs shrink-0">
-                        {(c.nombre || c.telefono || '?')[0].toUpperCase()}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-slate-800 truncate">{c.nombre || 'Sin nombre'}</p>
-                        <p className="text-xs text-slate-400">{mostrarContacto(c)}</p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {busqueda && clientes.length === 0 && (
-                <p className="text-xs text-slate-400 mt-2 text-center">Sin resultados para "{busqueda}"</p>
-              )}
-            </div>
-          ) : (
-            /* Cliente seleccionado */
-            <div className="flex items-center gap-3 p-3 bg-commerk-navy/5 rounded-xl border border-commerk-navy/10">
-              <div className="w-9 h-9 rounded-full bg-commerk-navy/10 flex items-center justify-center text-commerk-navy font-bold text-sm shrink-0">
-                {(clienteSeleccionado.nombre || clienteSeleccionado.telefono || '?')[0].toUpperCase()}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-slate-800 text-sm">{clienteSeleccionado.nombre || 'Sin nombre'}</p>
-                <p className="text-xs text-commerk-green">{mostrarContacto(clienteSeleccionado)}</p>
-              </div>
-              <button onClick={() => setClienteSeleccionado(null)} className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-white transition-colors">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          )}
-
-          {/* Mensaje */}
-          <div>
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5 block">Primer mensaje</label>
-            <textarea
-              value={mensaje}
-              onChange={(e) => setMensaje(e.target.value)}
-              placeholder="Escribe el mensaje que recibirá el cliente por WhatsApp..."
-              rows={4}
-              className="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm resize-none focus:outline-none focus:border-commerk-navy/40 focus:ring-2 focus:ring-commerk-navy/10"
-            />
-          </div>
-
-          {error && (
-            <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-xl border border-red-100">{error}</p>
-          )}
-
-          {/* Acciones */}
-          <div className="flex gap-2 pt-1">
-            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
-              Cancelar
-            </button>
-            <button
-              onClick={enviar}
-              disabled={!clienteSeleccionado || !mensaje.trim() || enviando}
-              className="flex-1 py-2.5 rounded-xl bg-commerk-navy text-white text-sm font-semibold hover:bg-commerk-navy/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {enviando ? (
-                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                </svg>
-              )}
-              {enviando ? 'Enviando...' : 'Enviar por WhatsApp'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SeparadorFecha({ fecha }: { fecha: string }) {
-  const d = new Date(fecha);
-  const hoy = new Date();
-  const ayer = new Date(hoy.getTime() - 86400000);
-  let label = d.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
-  if (d.toDateString() === hoy.toDateString()) label = 'Hoy';
-  else if (d.toDateString() === ayer.toDateString()) label = 'Ayer';
-  return (
-    <div className="flex items-center gap-3 my-4">
-      <div className="flex-1 h-px bg-slate-200" />
-      <span className="text-[11px] text-slate-400 font-medium capitalize bg-slate-50 px-2 rounded-full">{label}</span>
-      <div className="flex-1 h-px bg-slate-200" />
-    </div>
-  );
-}
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
 export default function ConversacionesPage() {
   return (
     <Suspense fallback={<div className="flex h-full items-center justify-center"><div className="w-8 h-8 border-4 border-commerk-navy/20 border-t-commerk-navy rounded-full animate-spin" /></div>}>
-      <ConversacionesContent />
+      <ChatCenter />
     </Suspense>
   );
 }
 
-function ConversacionesContent() {
+function ChatCenter() {
   const [conversaciones, setConversaciones] = useState<Conversacion[]>([]);
+  const [contadores, setContadores] = useState<{ pendientes: number | null; mias: number | null }>({ pendientes: null, mias: null });
+  const [bandeja, setBandejaState] = useState<BandejaId>('todas');
+  const [busqueda, setBusqueda] = useState('');
+  const [filtroEtiqueta, setFiltroEtiqueta] = useState('');
+  const [cargandoConvs, setCargandoConvs] = useState(true);
   const [activa, setActiva] = useState<Conversacion | null>(null);
   const [mensajes, setMensajes] = useState<Mensaje[]>([]);
-  const [cargandoConvs, setCargandoConvs] = useState(true);
+  const [notas, setNotas] = useState<Nota[]>([]);
   const [cargandoMsgs, setCargandoMsgs] = useState(false);
-  const [enviando, setEnviando] = useState(false);
-  const [textoRespuesta, setTextoRespuesta] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState('todas');
-  // '' = todas las etiquetas; "empresarial" muestra solo las de ventas empresariales
-  const [filtroEtiqueta, setFiltroEtiqueta] = useState('');
-  const [busqueda, setBusqueda] = useState('');
-  const [mostrarDetalle, setMostrarDetalle] = useState(false);
-
-  const [mostrarModal, setMostrarModal] = useState(false);
-  const [botActivo, setBotActivo] = useState(true);
-  const [togglingBot, setTogglingBot] = useState(false);
-  const [noLeidosPorConv, setNoLeidosPorConv] = useState<Record<string, number>>({});
-  const [etiquetaActiva, setEtiquetaActiva] = useState<string | null>(null);
-  const [guardandoEtiqueta, setGuardandoEtiqueta] = useState(false);
+  const [ficha, setFicha] = useState<Ficha | null>(null);
+  const [cargandoFicha, setCargandoFicha] = useState(false);
+  const [mostrarFicha, setMostrarFicha] = useState(true);
+  const [usuarios, setUsuarios] = useState<Usuario[]>([]);
+  const [yo, setYo] = useState<Usuario | null>(null);
+  const [respuestas, setRespuestas] = useState<RespuestaRapida[]>([]);
+  const [respuestasEditables, setRespuestasEditables] = useState(false);
+  const [noLeidos, setNoLeidos] = useState<Record<string, number>>({});
+  const [mostrarNueva, setMostrarNueva] = useState(false);
+  const [mostrarPlantilla, setMostrarPlantilla] = useState(false);
+  const [mostrarRespuestas, setMostrarRespuestas] = useState(false);
   const [mostrarEtiquetas, setMostrarEtiquetas] = useState(false);
+  const [aviso, setAviso] = useState('');
+  const [ahora, setAhora] = useState(() => Date.now());
 
   const searchParams = useSearchParams();
   const clienteIdParam = searchParams.get('cliente');
+  const finChatRef = useRef<HTMLDivElement>(null);
+  const pendientesPrevios = useRef<number | null>(null);
+  const activaRef = useRef<Conversacion | null>(null);
+  activaRef.current = activa;
 
-  const mensajesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Bandeja recordada por asesor
+  useEffect(() => { setBandejaState(leerPreferencia('crm_bandeja', 'todas') as BandejaId); }, []);
+  const setBandeja = (b: BandejaId) => { setBandejaState(b); guardarPreferencia('crm_bandeja', b); };
+
+  // Reloj para los tiempos de espera
+  useEffect(() => { const t = setInterval(() => setAhora(Date.now()), 30_000); return () => clearInterval(t); }, []);
 
   const cargarConversaciones = useCallback(async () => {
-    setCargandoConvs(true);
     try {
-      const params = new URLSearchParams();
-      if (filtroEstado !== 'todas') params.set('estado', filtroEstado);
+      const params = new URLSearchParams({ bandeja });
       if (filtroEtiqueta) params.set('etiqueta', filtroEtiqueta);
       if (busqueda) params.set('q', busqueda);
       const res = await fetch(`/api/conversaciones?${params}`);
       const json = await res.json();
-      if (json.success) setConversaciones(json.conversaciones);
+      if (!json.success) return;
+      setConversaciones(json.conversaciones);
+      setContadores(json.contadores || { pendientes: null, mias: null });
+      if (json.yo) setYo(json.yo);
+      // La conversación abierta se actualiza con su estado más reciente
+      const abierta = activaRef.current && json.conversaciones.find((c: Conversacion) => c.id === activaRef.current!.id);
+      if (abierta) setActiva((prev) => (prev ? { ...prev, ...abierta } : prev));
+
+      // Alerta: llegó alguien nuevo a Pendientes
+      const p = json.contadores?.pendientes;
+      if (typeof p === 'number') {
+        if (pendientesPrevios.current !== null && p > pendientesPrevios.current) {
+          sonarAviso();
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('🙋 Cliente esperando asesor', { body: 'Hay una conversación nueva en Pendientes', icon: '/logos_favicon.png' });
+          }
+        }
+        pendientesPrevios.current = p;
+        document.title = p > 0 ? `(${p}) Pendientes · CRM Commerk` : 'CRM Commerk';
+      }
     } finally {
       setCargandoConvs(false);
     }
-  }, [filtroEstado, filtroEtiqueta, busqueda]);
+  }, [bandeja, filtroEtiqueta, busqueda]);
 
-  useEffect(() => { cargarConversaciones(); }, [cargarConversaciones]);
+  useEffect(() => { setCargandoConvs(true); cargarConversaciones(); }, [cargarConversaciones]);
+  // Respaldo del tiempo real: los contadores se refrescan solos
+  useEffect(() => { const t = setInterval(cargarConversaciones, 20_000); return () => clearInterval(t); }, [cargarConversaciones]);
+  useEffect(() => () => { document.title = 'CRM Commerk'; }, []);
 
-  const seleccionarConv = useCallback((conv: Conversacion) => {
-    setActiva(conv);
-    setBotActivo(conv.bot_activo !== false);
-    setEtiquetaActiva(conv.etiqueta || null);
-    setMostrarEtiquetas(false);
-    // Resetear contador de no leídos al abrir la conversación
-    setNoLeidosPorConv((prev) => ({ ...prev, [conv.id]: 0 }));
+  const cargarRespuestas = useCallback(async () => {
+    const j = await fetch('/api/respuestas-rapidas').then((r) => r.json()).catch(() => null);
+    if (j?.success) { setRespuestas(j.respuestas); setRespuestasEditables(!!j.editable); }
   }, []);
 
-  const toggleBot = useCallback(async () => {
-    if (!activa || togglingBot) return;
-    setTogglingBot(true);
-    const nuevo = !botActivo;
-    setBotActivo(nuevo);
-    try {
-      await fetch(`/api/conversaciones/${activa.id}/bot-toggle`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bot_activo: nuevo }),
-      });
-    } catch {
-      setBotActivo(!nuevo); // revertir si falla
-    } finally {
-      setTogglingBot(false);
-    }
-  }, [activa, botActivo, togglingBot]);
-
-  const guardarEtiqueta = useCallback(async (nuevaEtiqueta: string | null) => {
-    if (!activa || guardandoEtiqueta) return;
-    setGuardandoEtiqueta(true);
-    setEtiquetaActiva(nuevaEtiqueta);
-    setMostrarEtiquetas(false);
-    try {
-      await fetch(`/api/conversaciones/${activa.id}/etiqueta`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ etiqueta: nuevaEtiqueta }),
-      });
-      cargarConversaciones();
-    } finally {
-      setGuardandoEtiqueta(false);
-    }
-  }, [activa, guardandoEtiqueta, cargarConversaciones]);
-
-  const onConversacionCreada = useCallback(async (convId: string) => {
-    setMostrarModal(false);
-    const res = await fetch('/api/conversaciones');
-    const json = await res.json();
-    if (json.success) {
-      setConversaciones(json.conversaciones);
-      const conv = json.conversaciones.find((c: Conversacion) => c.id === convId);
-      if (conv) seleccionarConv(conv);
-    }
-  }, [seleccionarConv]);
-
-  // Auto-seleccionar conversación si viene ?cliente= en la URL
   useEffect(() => {
-    if (!clienteIdParam || conversaciones.length === 0) return;
-    const conv = conversaciones.find((c) => c.cliente?.id === clienteIdParam);
-    if (conv) seleccionarConv(conv);
-  }, [clienteIdParam, conversaciones, seleccionarConv]);
+    cargarRespuestas();
+    fetch('/api/usuarios').then((r) => r.json()).then((j) => {
+      if (j.success) { setUsuarios(j.usuarios); if (j.yo) setYo(j.yo); }
+    }).catch(() => {});
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+    setMostrarFicha(leerPreferencia('crm_ficha', '1') === '1');
+  }, [cargarRespuestas]);
 
-  // Pedir permiso para notificaciones del navegador
-  useEffect(() => {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
+  const cargarMensajes = useCallback(async (id: string) => {
+    const [m, n] = await Promise.all([
+      fetch(`/api/conversaciones/${id}/messages`).then((r) => r.json()).catch(() => null),
+      fetch(`/api/conversaciones/${id}/notas`).then((r) => r.json()).catch(() => null),
+    ]);
+    if (activaRef.current?.id !== id) return;
+    if (m?.success) setMensajes(m.mensajes);
+    setNotas(n?.notas || []);
   }, []);
 
-  const cargarMensajes = useCallback(async (convId: string) => {
+  const cargarFicha = useCallback(async (id: string) => {
+    setCargandoFicha(true);
+    const j = await fetch(`/api/conversaciones/${id}/ficha`).then((r) => r.json()).catch(() => null);
+    if (activaRef.current?.id === id) setFicha(j?.success ? j : null);
+    setCargandoFicha(false);
+  }, []);
+
+  const seleccionar = useCallback((c: Conversacion) => {
+    setActiva(c);
+    setMensajes([]); setNotas([]); setFicha(null); setAviso('');
+    setMostrarEtiquetas(false);
+    setNoLeidos((prev) => ({ ...prev, [c.id]: 0 }));
+  }, []);
+
+  useEffect(() => {
+    if (!activa?.id) return;
     setCargandoMsgs(true);
-    try {
-      const res = await fetch(`/api/conversaciones/${convId}/messages`);
-      const json = await res.json();
-      if (json.success) setMensajes(json.mensajes);
-    } finally {
-      setCargandoMsgs(false);
-    }
-  }, []);
+    Promise.all([cargarMensajes(activa.id), cargarFicha(activa.id)]).finally(() => setCargandoMsgs(false));
+    // Solo al cambiar de conversación
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activa?.id]);
 
-  useEffect(() => {
-    if (activa) cargarMensajes(activa.id);
-    else setMensajes([]);
-  }, [activa, cargarMensajes]);
+  useEffect(() => { finChatRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [mensajes.length, notas.length]);
 
+  // ?cliente= en la URL abre su conversación
   useEffect(() => {
-    mensajesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [mensajes]);
+    if (!clienteIdParam || conversaciones.length === 0 || activa) return;
+    const c = conversaciones.find((x) => x.cliente?.id === clienteIdParam);
+    if (c) seleccionar(c);
+  }, [clienteIdParam, conversaciones, activa, seleccionar]);
 
-  // Realtime: escucha TODOS los mensajes nuevos (cualquier conversación)
+  // Tiempo real: mensajes nuevos de cualquier conversación
   useEffect(() => {
-    const chGlobal = supabase
-      .channel('mensajes-global')
-      .on('postgres_changes', {
-        event: 'INSERT', schema: 'public', table: 'mensajes',
-      }, (payload) => {
+    const canal = supabase
+      .channel('mensajes-chat-center')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'mensajes' }, (payload) => {
         const msg = payload.new as Mensaje;
-
-        // Si el mensaje es de la conversación activa → agregarlo al chat
-        if (activa && msg.conversacion_id === activa.id) {
-          setMensajes((prev) => {
-            if (prev.some((m) => m.id === msg.id)) return prev;
-            return [...prev, msg];
-          });
+        const abierta = activaRef.current;
+        if (abierta && msg.conversacion_id === abierta.id) {
+          setMensajes((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+          if (msg.tipo === 'user') cargarFicha(abierta.id);
         }
-
-        // Contador de no leídos + notificación de navegador
         if (msg.tipo === 'user') {
-          const esOtraConv = !activa || msg.conversacion_id !== activa.id;
-          if (esOtraConv) {
-            setNoLeidosPorConv((prev) => ({
-              ...prev,
-              [msg.conversacion_id]: (prev[msg.conversacion_id] || 0) + 1,
-            }));
-          }
-          if ('Notification' in window && Notification.permission === 'granted') {
-            const pestanaOculta = document.hidden;
-            if (esOtraConv || pestanaOculta) {
-              const conv = conversaciones.find((c) => c.id === msg.conversacion_id);
-              const nombre = conv?.cliente?.nombre || conv?.cliente?.telefono || 'WhatsApp';
-              new Notification(`💬 ${nombre}`, {
-                body: msg.contenido?.slice(0, 100) || 'Nuevo mensaje',
-                icon: '/logos_favicon.png',
-              });
-            }
+          const otra = !abierta || msg.conversacion_id !== abierta.id;
+          if (otra) setNoLeidos((prev) => ({ ...prev, [msg.conversacion_id]: (prev[msg.conversacion_id] || 0) + 1 }));
+          if ((otra || document.hidden) && 'Notification' in window && Notification.permission === 'granted') {
+            new Notification('💬 Nuevo mensaje', { body: msg.contenido?.slice(0, 100) || 'Nuevo mensaje', icon: '/logos_favicon.png' });
           }
         }
-
-        // Siempre recargar la lista de conversaciones para actualizar orden y último mensaje
         cargarConversaciones();
       })
       .subscribe();
+    return () => { supabase.removeChannel(canal); };
+  }, [cargarConversaciones, cargarFicha]);
 
-    return () => { supabase.removeChannel(chGlobal); };
-  }, [activa, conversaciones, cargarConversaciones]);
+  const refrescarTodo = useCallback(() => {
+    if (activaRef.current) { cargarMensajes(activaRef.current.id); cargarFicha(activaRef.current.id); }
+    cargarConversaciones();
+  }, [cargarMensajes, cargarFicha, cargarConversaciones]);
 
-  const enviarRespuesta = async () => {
-    if (!textoRespuesta.trim() || !activa || enviando) return;
-    setEnviando(true);
-    const texto = textoRespuesta.trim();
-    setTextoRespuesta('');
-    try {
-      const res = await fetch(`/api/conversaciones/${activa.id}/reply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mensaje: texto }),
-      });
-      const json = await res.json();
-      if (!json.success) {
-        setTextoRespuesta(texto);
-        alert(`Error al enviar: ${json.error}`);
-      }
-    } catch {
-      setTextoRespuesta(texto);
-    } finally {
-      setEnviando(false);
-      setTimeout(() => inputRef.current?.focus(), 100);
+  const accionAtencion = async (body: Record<string, any>) => {
+    if (!activa) return;
+    const res = await fetch(`/api/conversaciones/${activa.id}/atencion`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then((r) => r.json()).catch(() => null);
+    if (!res?.success) setAviso(res?.error || 'No se pudo actualizar la atención');
+    refrescarTodo();
+  };
+
+  const guardarNota = async (contenido: string) => {
+    if (!activa) return false;
+    const res = await fetch(`/api/conversaciones/${activa.id}/notas`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contenido }),
+    }).then((r) => r.json()).catch(() => null);
+    if (res?.success) { setNotas((prev) => [...prev, res.nota]); return true; }
+    setAviso(res?.error || 'No se pudo guardar la nota');
+    return false;
+  };
+
+  const guardarEtiqueta = async (etiqueta: string | null) => {
+    if (!activa) return;
+    setMostrarEtiquetas(false);
+    setActiva({ ...activa, etiqueta });
+    await fetch(`/api/conversaciones/${activa.id}/etiqueta`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ etiqueta }),
+    });
+    cargarConversaciones();
+  };
+
+  const onConversacionCreada = async (id: string, avisoEnvio?: string) => {
+    setMostrarNueva(false);
+    setBandeja('todas');
+    const res = await fetch('/api/conversaciones?bandeja=todas').then((r) => r.json()).catch(() => null);
+    const c = res?.conversaciones?.find((x: Conversacion) => x.id === id);
+    if (c) {
+      seleccionar(c);
+      if (avisoEnvio) { setAviso(avisoEnvio); setMostrarPlantilla(true); }
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviarRespuesta(); }
-  };
+  const toggleFicha = () => { const v = !mostrarFicha; setMostrarFicha(v); guardarPreferencia('crm_ficha', v ? '1' : '0'); };
 
-  // Agrupar mensajes por fecha
-  type ItemChat = Mensaje | { _tipo: 'fecha'; fecha: string; _id: string };
-  const mensajesConFecha = mensajes.reduce<ItemChat[]>((acc, msg, i) => {
-    const prev = mensajes[i - 1];
-    if (!prev || new Date(msg.created_at).toDateString() !== new Date(prev.created_at).toDateString()) {
-      acc.push({ _tipo: 'fecha', fecha: msg.created_at, _id: `f${i}` });
-    }
-    acc.push(msg);
-    return acc;
-  }, []);
+  // Mensajes y notas internas en una sola línea de tiempo
+  type Item = { k: 'msg'; m: Mensaje } | { k: 'nota'; n: Nota } | { k: 'fecha'; f: string; id: string };
+  const linea: Item[] = [];
+  const eventos = [
+    ...mensajes.map((m) => ({ t: m.created_at, item: { k: 'msg', m } as Item })),
+    ...notas.map((n) => ({ t: n.created_at, item: { k: 'nota', n } as Item })),
+  ].sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
+  eventos.forEach((e, i) => {
+    const prev = eventos[i - 1];
+    if (!prev || new Date(e.t).toDateString() !== new Date(prev.t).toDateString()) linea.push({ k: 'fecha', f: e.t, id: `f${i}` });
+    linea.push(e.item);
+  });
+
+  const estadoAtencion = activa?.estado_atencion || (activa?.bot_activo === false ? 'en_atencion' : 'bot');
+  const esperaActiva = estadoAtencion === 'pendiente' ? tiempoEspera(activa?.pendiente_desde, ahora) : null;
 
   return (
     <div className="flex h-full bg-slate-50 overflow-hidden">
-
-      {/* ── Lista de conversaciones ──────────────────────────────── */}
-      <aside className={`w-80 bg-white border-r border-slate-100 flex flex-col shrink-0 ${activa ? 'hidden lg:flex' : 'flex'}`}>
-        <div className="p-4 border-b border-slate-100">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-commerk-navy">Conversaciones</h2>
-            <button
-              onClick={() => setMostrarModal(true)}
-              className="w-8 h-8 rounded-xl bg-commerk-navy text-white flex items-center justify-center hover:bg-commerk-navy/90 transition-colors shadow-sm"
-              title="Nueva conversación"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-            </button>
-          </div>
-          <div className="relative mb-3">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar cliente o mensaje..."
-              className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-commerk-navy/40"
-            />
-          </div>
-          <div className="flex gap-1">
-            {[{ k: 'todas', l: 'Todas' }, { k: 'activa', l: 'Activas' }, { k: 'cerrada', l: 'Cerradas' }].map((t) => (
-              <button key={t.k} onClick={() => setFiltroEstado(t.k)}
-                className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  filtroEstado === t.k ? 'bg-commerk-navy text-white' : 'text-slate-500 hover:bg-slate-100'
-                }`}>{t.l}</button>
-            ))}
-          </div>
-          {/* Filtro por etiqueta: "Empresa" primero, la usa quien revisa ventas empresariales */}
-          <div className="flex flex-wrap gap-1 mt-2">
-            {[['', { label: 'Todas', emoji: '🏷️', cls: '' }] as const,
-              ['empresarial', ETIQUETAS.empresarial] as const,
-              ...Object.entries(ETIQUETAS).filter(([k]) => k !== 'empresarial')].map(([k, e]) => (
-              <button key={k || 'todas'} onClick={() => setFiltroEtiqueta(k)}
-                className={`px-2 py-1 rounded-full text-[11px] font-semibold border transition-all ${
-                  filtroEtiqueta === k
-                    ? (k ? e.cls : 'bg-commerk-navy text-white border-commerk-navy')
-                    : 'border-slate-200 text-slate-500 hover:bg-slate-100'
-                }`}>{e.emoji} {e.label}</button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {cargandoConvs ? (
-            <div className="flex justify-center items-center h-24">
-              <div className="w-5 h-5 border-2 border-commerk-navy/20 border-t-commerk-navy rounded-full animate-spin" />
-            </div>
-          ) : conversaciones.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-24 text-slate-400 gap-1">
-              <p className="text-xs">Sin conversaciones</p>
-            </div>
-          ) : conversaciones.map((conv) => {
-            const esActiva = activa?.id === conv.id;
-            const nombre = conv.cliente?.nombre || conv.cliente?.telefono || 'Desconocido';
-            const tipoWA = conv.ultimo_mensaje?.tipo_wa;
-            const preview = !conv.ultimo_mensaje ? 'Sin mensajes'
-              : tipoWA === 'image' ? '📷 Imagen'
-              : tipoWA === 'audio' ? '🎤 Nota de voz'
-              : tipoWA === 'video' ? '🎥 Video'
-              : tipoWA === 'template' ? '📤 Notificación enviada'
-              : (conv.ultimo_mensaje.contenido || '').slice(0, 45) + ((conv.ultimo_mensaje.contenido?.length || 0) > 45 ? '…' : '');
-
-            const noLeidos = noLeidosPorConv[conv.id] || 0;
-            const etiq = conv.etiqueta ? ETIQUETAS[conv.etiqueta] : null;
-            return (
-              <button key={conv.id} onClick={() => seleccionarConv(conv)}
-                className={`w-full flex items-start gap-3 px-4 py-3.5 text-left hover:bg-slate-50 transition-colors border-b border-slate-50 ${
-                  esActiva ? 'bg-commerk-navy/5 border-l-2 border-l-commerk-navy' : ''
-                } ${noLeidos > 0 && !esActiva ? 'bg-green-50/40' : ''}`}
-              >
-                <div className="relative shrink-0">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${noLeidos > 0 && !esActiva ? 'bg-commerk-navy text-white' : 'bg-commerk-navy/10 text-commerk-navy'}`}>
-                    {iniciales(conv.cliente?.nombre)}
-                  </div>
-                  <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${ESTADO_COLORS[conv.estado] || 'bg-slate-300'}`} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
-                    <p className={`text-sm truncate ${noLeidos > 0 && !esActiva ? 'font-bold text-slate-900' : 'font-semibold text-slate-800'}`}>{nombre}</p>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {noLeidos > 0 && !esActiva && (
-                        <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-commerk-green text-white text-[10px] font-bold flex items-center justify-center">
-                          {noLeidos > 9 ? '9+' : noLeidos}
-                        </span>
-                      )}
-                      {conv.ultimo_mensaje && (
-                        <p className="text-[10px] text-slate-400">{fmtHora(conv.ultimo_mensaje.created_at)}</p>
-                      )}
-                    </div>
-                  </div>
-                  <p className={`text-xs truncate mt-0.5 ${noLeidos > 0 && !esActiva ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>{preview}</p>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <p className="text-[10px] text-slate-400">{mostrarContacto(conv.cliente)}</p>
-                    {etiq && (
-                      <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${etiq.cls}`}>
-                        {etiq.emoji} {etiq.label}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="p-3 border-t border-slate-100 text-center">
-          <p className="text-xs text-slate-400">{conversaciones.length} conversaciones</p>
-        </div>
+      {/* Bandeja */}
+      <aside className={`w-full md:w-[340px] bg-white border-r border-slate-100 flex-col shrink-0 ${activa ? 'hidden md:flex' : 'flex'}`}>
+        <Bandeja
+          conversaciones={conversaciones}
+          activaId={activa?.id || null}
+          bandeja={bandeja}
+          onBandeja={setBandeja}
+          contadores={contadores}
+          busqueda={busqueda}
+          onBusqueda={setBusqueda}
+          filtroEtiqueta={filtroEtiqueta}
+          onFiltroEtiqueta={setFiltroEtiqueta}
+          onSeleccionar={seleccionar}
+          onNueva={() => setMostrarNueva(true)}
+          cargando={cargandoConvs}
+          noLeidos={noLeidos}
+          ahora={ahora}
+        />
       </aside>
 
-      {/* ── Panel de chat ───────────────────────────────────────── */}
       {activa ? (
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-
-          {/* Header */}
-          <div className="bg-white border-b border-slate-100 px-5 py-3 flex items-center gap-3 shrink-0 shadow-sm">
-            <button onClick={() => setActiva(null)} className="lg:hidden p-1.5 rounded-xl hover:bg-slate-100 text-slate-500">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
-            </button>
-            <div className="w-9 h-9 rounded-full bg-commerk-navy/10 flex items-center justify-center text-commerk-navy font-bold text-sm shrink-0">
-              {iniciales(activa.cliente?.nombre)}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-slate-800 truncate">{activa.cliente?.nombre || 'Sin nombre'}</p>
-              <div className="flex items-center gap-2">
-                {enlaceWhatsApp(activa.cliente)
-                  ? <a href={enlaceWhatsApp(activa.cliente)} target="_blank" rel="noopener noreferrer"
-                      className="text-xs text-commerk-green hover:underline">{mostrarContacto(activa.cliente)}</a>
-                  : <span className="text-xs text-commerk-green">{mostrarContacto(activa.cliente)}</span>}
-                <span className={`w-2 h-2 rounded-full ${ESTADO_COLORS[activa.estado] || 'bg-slate-300'}`} />
-                <span className="text-xs text-slate-400 capitalize">{activa.estado}</span>
-                <span className="text-xs text-slate-300">·</span>
-                <span className="text-xs text-slate-400">{mensajes.length} msgs</span>
+        <div className="flex-1 flex min-w-0 overflow-hidden">
+          <div className="flex-1 flex flex-col min-w-0">
+            {/* Encabezado del chat */}
+            <div className="bg-white border-b border-slate-100 px-4 py-2.5 flex items-center gap-3 shrink-0">
+              <button onClick={() => setActiva(null)} className="md:hidden p-1.5 rounded-xl hover:bg-slate-100 text-slate-500">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+              </button>
+              <div className="w-9 h-9 rounded-full bg-commerk-navy/10 flex items-center justify-center text-commerk-navy font-bold text-sm shrink-0">{iniciales(activa.cliente?.nombre)}</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-slate-800 truncate">{activa.cliente?.nombre || 'Sin nombre'}</p>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-commerk-green">{mostrarContacto(activa.cliente)}</span>
+                  <span className="text-slate-300">·</span>
+                  {estadoAtencion === 'pendiente' && <span className="font-semibold text-red-600">Esperando asesor{esperaActiva ? ` · ${esperaActiva.texto}` : ''}{activa.motivo_transferencia ? ` · ${MOTIVOS[activa.motivo_transferencia] || ''}` : ''}</span>}
+                  {estadoAtencion === 'en_atencion' && <span className="font-semibold text-amber-700">👤 {activa.asignado_a === yo?.email ? 'La atiendes tú' : activa.asignado_nombre || 'Asesor'}</span>}
+                  {estadoAtencion === 'bot' && <span className="font-semibold text-emerald-700">🤖 Sofi responde</span>}
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {/* Etiqueta */}
-              <div className="relative">
-                <button
-                  onClick={() => setMostrarEtiquetas(!mostrarEtiquetas)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
-                    etiquetaActiva && ETIQUETAS[etiquetaActiva]
-                      ? ETIQUETAS[etiquetaActiva].cls
-                      : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300'
-                  }`}
-                >
-                  {etiquetaActiva && ETIQUETAS[etiquetaActiva]
-                    ? `${ETIQUETAS[etiquetaActiva].emoji} ${ETIQUETAS[etiquetaActiva].label}`
-                    : '🏷️ Etiqueta'}
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {mostrarEtiquetas && (
-                  <div className="absolute right-0 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-slate-100 py-1 min-w-[160px]">
-                    {Object.entries(ETIQUETAS).map(([key, e]) => (
-                      <button
-                        key={key}
-                        onClick={() => guardarEtiqueta(key)}
-                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-slate-50 text-left ${etiquetaActiva === key ? 'bg-slate-50 font-bold' : ''}`}
-                      >
-                        <span>{e.emoji}</span> {e.label}
-                        {etiquetaActiva === key && <span className="ml-auto text-commerk-green">✓</span>}
-                      </button>
-                    ))}
-                    {etiquetaActiva && (
-                      <button
-                        onClick={() => guardarEtiqueta(null)}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-400 hover:bg-slate-50 border-t border-slate-100 mt-1"
-                      >
-                        Quitar etiqueta
-                      </button>
-                    )}
-                  </div>
+
+              <div className="flex items-center gap-1.5">
+                {(estadoAtencion !== 'en_atencion' || activa.asignado_a !== yo?.email) && (
+                  <button onClick={() => accionAtencion({ accion: 'tomar' })}
+                    className="hidden sm:inline-flex px-3 py-1.5 rounded-xl bg-commerk-navy text-white text-xs font-semibold hover:bg-commerk-navy/90">
+                    Tomar conversación
+                  </button>
                 )}
-              </div>
-
-              {/* Toggle Bot / Agente */}
-              <button
-                onClick={toggleBot}
-                disabled={togglingBot}
-                title={botActivo ? 'Bot activo — clic para tomar control manual' : 'Modo agente — clic para reactivar bot'}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
-                  botActivo
-                    ? 'bg-commerk-green/10 border-commerk-green/30 text-commerk-green hover:bg-commerk-green/20'
-                    : 'bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100'
-                } disabled:opacity-50`}
-              >
-                <span className={`w-2 h-2 rounded-full ${botActivo ? 'bg-commerk-green animate-pulse' : 'bg-amber-500'}`} />
-                {botActivo ? 'Bot' : 'Agente'}
-              </button>
-
-              <a href={enlaceWhatsApp(activa.cliente)} target="_blank" rel="noopener noreferrer"
-                className={`p-2 rounded-xl transition-colors ${enlaceWhatsApp(activa.cliente) ? 'hover:bg-slate-100' : 'opacity-40 cursor-not-allowed'}`}
-                title={enlaceWhatsApp(activa.cliente) ? 'Abrir en WhatsApp' : 'Este cliente usa nombre de usuario: respóndele desde aquí'}>
-                <svg className="w-5 h-5 text-[#25D366]" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
-                </svg>
-              </a>
-              <button onClick={() => setMostrarDetalle(!mostrarDetalle)}
-                className={`p-2 rounded-xl hover:bg-slate-100 transition-colors ${mostrarDetalle ? 'bg-slate-100 text-commerk-navy' : 'text-slate-400'}`}
-                title="Info del cliente">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 flex overflow-hidden">
-            {/* Mensajes */}
-            <div
-              className="flex-1 overflow-y-auto px-5 py-4"
-              style={{ background: 'linear-gradient(135deg, #f8fafc 25%, #f1f5f9 100%)' }}
-            >
-              {cargandoMsgs ? (
-                <div className="flex justify-center items-center h-32">
-                  <div className="w-6 h-6 border-2 border-commerk-navy/20 border-t-commerk-navy rounded-full animate-spin" />
-                </div>
-              ) : mensajesConFecha.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-32 text-slate-400 gap-2">
-                  <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                  </svg>
-                  <p className="text-sm">Sin mensajes aún</p>
-                </div>
-              ) : mensajesConFecha.map((item) => {
-                if ('_tipo' in item) return <SeparadorFecha key={item._id} fecha={item.fecha} />;
-                return <MensajeBurbuja key={item.id} msg={item} />;
-              })}
-              <div ref={mensajesEndRef} />
-            </div>
-
-            {/* Panel info cliente */}
-            {mostrarDetalle && (
-              <div className="w-60 bg-white border-l border-slate-100 p-4 overflow-y-auto shrink-0">
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Info del cliente</h3>
-                <div className="flex flex-col items-center mb-4">
-                  <div className="w-14 h-14 rounded-full bg-commerk-navy/10 flex items-center justify-center text-commerk-navy font-bold text-xl mb-2">
-                    {iniciales(activa.cliente?.nombre)}
-                  </div>
-                  <p className="font-bold text-slate-800 text-sm text-center">{activa.cliente?.nombre || 'Sin nombre'}</p>
-                </div>
-                <div className="space-y-3">
-                  {[
-                    { l: 'Teléfono', v: mostrarContacto(activa.cliente), link: enlaceWhatsApp(activa.cliente) },
-                    { l: 'Email', v: activa.cliente?.email },
-                    { l: 'Ciudad', v: activa.cliente?.ciudad },
-                    { l: 'Estado conv.', v: activa.estado },
-                    { l: 'Mensajes', v: `${mensajes.length}` },
-                    { l: 'Inicio', v: fmtFechaCompleta(activa.created_at) },
-                  ].filter((x) => x.v).map((x) => (
-                    <div key={x.l}>
-                      <p className="text-[10px] text-slate-400 uppercase tracking-wide font-semibold">{x.l}</p>
-                      {x.link
-                        ? <a href={x.link} target="_blank" rel="noopener noreferrer" className="text-xs text-commerk-green hover:underline">{x.v}</a>
-                        : <p className="text-xs text-slate-700 break-all">{x.v}</p>
-                      }
+                {estadoAtencion !== 'bot' && (
+                  <button onClick={() => accionAtencion({ accion: 'devolver_bot' })}
+                    className="hidden sm:inline-flex px-3 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100"
+                    title="El caso quedó resuelto: Sofi vuelve a responder">
+                    ✓ Resuelto · devolver a Sofi
+                  </button>
+                )}
+                <div className="relative">
+                  <button onClick={() => setMostrarEtiquetas(!mostrarEtiquetas)}
+                    className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold border ${activa.etiqueta && ETIQUETAS[activa.etiqueta] ? ETIQUETAS[activa.etiqueta].cls : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                    {activa.etiqueta && ETIQUETAS[activa.etiqueta] ? `${ETIQUETAS[activa.etiqueta].emoji} ${ETIQUETAS[activa.etiqueta].label}` : '🏷️'}
+                  </button>
+                  {mostrarEtiquetas && (
+                    <div className="absolute right-0 top-full mt-1 z-30 bg-white rounded-xl shadow-xl border border-slate-100 py-1 min-w-[170px]">
+                      {Object.entries(ETIQUETAS).map(([k, e]) => (
+                        <button key={k} onClick={() => guardarEtiqueta(k)} className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-slate-50 text-left">
+                          <span>{e.emoji}</span>{e.label}{activa.etiqueta === k && <span className="ml-auto text-commerk-green">✓</span>}
+                        </button>
+                      ))}
+                      {activa.etiqueta && <button onClick={() => guardarEtiqueta(null)} className="w-full px-3 py-2 text-xs text-slate-400 hover:bg-slate-50 border-t border-slate-100 text-left">Quitar etiqueta</button>}
                     </div>
-                  ))}
+                  )}
                 </div>
+                {enlaceWhatsApp(activa.cliente) && (
+                  <a href={enlaceWhatsApp(activa.cliente)} target="_blank" rel="noopener noreferrer" className="p-2 rounded-xl hover:bg-slate-100" title="Abrir en WhatsApp">
+                    <svg className="w-5 h-5 text-[#25D366]" fill="currentColor" viewBox="0 0 24 24"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91C21.95 6.45 17.5 2 12.04 2zm5.8 14.03c-.25.69-1.44 1.32-1.99 1.4-.51.08-1.15.11-1.86-.12-.43-.13-.98-.32-1.69-.62-2.97-1.28-4.91-4.27-5.06-4.47-.15-.2-1.21-1.61-1.21-3.07 0-1.46.77-2.18 1.04-2.48.27-.3.6-.37.79-.37.2 0 .4 0 .57.01.18.01.43-.07.67.51.25.6.84 2.06.92 2.21.07.15.12.32.02.52-.1.2-.15.32-.3.5-.15.17-.31.39-.45.52-.15.15-.3.31-.13.6.17.3.77 1.27 1.65 2.06 1.13 1.01 2.09 1.32 2.38 1.47.3.15.47.12.64-.07.17-.2.74-.86.94-1.16.2-.3.4-.25.67-.15.27.1 1.74.82 2.04.97.3.15.5.22.57.35.07.12.07.72-.18 1.41z" /></svg>
+                  </a>
+                )}
+                <button onClick={toggleFicha} className={`p-2 rounded-xl hover:bg-slate-100 ${mostrarFicha ? 'text-commerk-navy bg-slate-100' : 'text-slate-400'}`} title="Ficha del cliente">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+                </button>
+              </div>
+            </div>
+
+            {aviso && (
+              <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-2 text-xs text-amber-800">
+                <span>⚠️</span><span className="flex-1">{aviso}</span>
+                <button onClick={() => setAviso('')} className="text-amber-600 hover:text-amber-800">✕</button>
               </div>
             )}
+
+            {/* Mensajes y notas */}
+            <div className="flex-1 overflow-y-auto px-5 py-4" style={{ background: 'linear-gradient(135deg, #f8fafc 25%, #f1f5f9 100%)' }}>
+              {cargandoMsgs && mensajes.length === 0 ? (
+                <div className="flex justify-center items-center h-32"><div className="w-6 h-6 border-2 border-commerk-navy/20 border-t-commerk-navy rounded-full animate-spin" /></div>
+              ) : linea.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-32 text-slate-400 text-sm">Sin mensajes aún</div>
+              ) : linea.map((it) => {
+                if (it.k === 'fecha') return <SeparadorFecha key={it.id} fecha={it.f} />;
+                if (it.k === 'msg') return <MensajeBurbuja key={it.m.id} msg={it.m} />;
+                return (
+                  <div key={it.n.id} className="flex justify-center my-2">
+                    <div className="max-w-[80%] rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 shadow-sm">
+                      <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wide">🔒 Nota interna · {it.n.autor_nombre || it.n.autor}</p>
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap mt-0.5">{it.n.contenido}</p>
+                      <p className="text-[10px] text-amber-600/70 mt-1 text-right">{fmtFechaCompleta(it.n.created_at)}</p>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={finChatRef} />
+            </div>
+
+            <Compositor
+              conversacionId={activa.id}
+              ventanaAbierta={ficha ? ficha.ventana.abierta : null}
+              cierraEn={ficha?.ventana.cierra_en || null}
+              respuestas={respuestas}
+              onGestionarRespuestas={() => setMostrarRespuestas(true)}
+              onAbrirPlantilla={() => setMostrarPlantilla(true)}
+              onEnviado={refrescarTodo}
+              onNota={guardarNota}
+              estadoAtencion={estadoAtencion}
+            />
           </div>
 
-          {/* Input respuesta */}
-          <div className="bg-white border-t border-slate-100 px-4 pt-2 pb-3 shrink-0">
-            {/* Plantillas rápidas */}
-            <div className="flex gap-1.5 overflow-x-auto pb-2 scrollbar-hide">
-              {RESPUESTAS_RAPIDAS.map((r) => (
-                <button
-                  key={r.id}
-                  onClick={() => setTextoRespuesta(r.texto)}
-                  className="shrink-0 px-3 py-1 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 hover:bg-commerk-navy hover:text-white transition-all whitespace-nowrap"
-                >
-                  {r.texto.length > 30 ? r.texto.slice(0, 30) + '…' : r.texto}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-end gap-2">
-              <div className="flex-1">
-                <textarea
-                  ref={inputRef}
-                  value={textoRespuesta}
-                  onChange={(e) => {
-                    setTextoRespuesta(e.target.value);
-                    e.target.style.height = 'auto';
-                    e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
-                  }}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Escribe un mensaje… (Enter envía · Shift+Enter nueva línea)"
-                  rows={1}
-                  className="w-full px-4 py-3 text-sm border border-slate-200 rounded-2xl resize-none focus:outline-none focus:border-commerk-navy/40 focus:ring-2 focus:ring-commerk-navy/10 max-h-32 overflow-y-auto bg-slate-50"
-                />
-              </div>
-              <button
-                onClick={enviarRespuesta}
-                disabled={!textoRespuesta.trim() || enviando}
-                className="w-11 h-11 rounded-2xl bg-commerk-navy text-white flex items-center justify-center hover:bg-commerk-navy/90 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0 shadow-sm"
-              >
-                {enviando
-                  ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  : <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                    </svg>
-                }
-              </button>
-            </div>
-            <p className="text-[10px] text-slate-400 mt-1 px-1">
-              {botActivo
-                ? <span className="text-commerk-green font-medium">● Bot activo</span>
-                : <span className="text-amber-600 font-medium">● Modo agente — el bot no responderá</span>
-              }
-              {' · '}Enviando a {mostrarContacto(activa.cliente)} por WhatsApp
-            </p>
-          </div>
+          {mostrarFicha && (
+            <aside className="hidden xl:block w-[320px] bg-white border-l border-slate-100 shrink-0">
+              <FichaCliente
+                ficha={ficha}
+                cargando={cargandoFicha}
+                usuarios={usuarios}
+                yo={yo}
+                ahora={ahora}
+                onTomar={() => accionAtencion({ accion: 'tomar' })}
+                onDevolverBot={() => accionAtencion({ accion: 'devolver_bot' })}
+                onAsignar={(u) => accionAtencion({ accion: 'asignar', email: u.email, nombre: u.nombre })}
+                onCerrar={toggleFicha}
+              />
+            </aside>
+          )}
         </div>
       ) : (
-        <div className="flex-1 hidden lg:flex flex-col items-center justify-center text-slate-400 bg-slate-50">
-          <div className="w-20 h-20 rounded-full bg-white shadow flex items-center justify-center mb-4">
-            <svg className="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
-          </div>
-          <p className="text-sm font-semibold text-slate-500">Selecciona una conversación</p>
-          <p className="text-xs text-slate-400 mt-1">Las conversaciones de WhatsApp aparecen aquí en tiempo real</p>
+        <div className="flex-1 hidden md:flex flex-col items-center justify-center text-center bg-slate-50 px-6">
+          <div className="w-20 h-20 rounded-full bg-white shadow flex items-center justify-center mb-4 text-3xl">💬</div>
+          <p className="text-sm font-semibold text-slate-600">Selecciona una conversación</p>
+          <p className="text-xs text-slate-400 mt-1 max-w-xs">
+            {contadores.pendientes
+              ? `Hay ${contadores.pendientes} cliente${contadores.pendientes === 1 ? '' : 's'} esperando asesor en Pendientes.`
+              : 'Las conversaciones de WhatsApp aparecen aquí en tiempo real.'}
+          </p>
+          {!!contadores.pendientes && bandeja !== 'pendientes' && (
+            <button onClick={() => setBandeja('pendientes')} className="mt-3 px-4 py-2 rounded-xl bg-red-500 text-white text-xs font-semibold hover:bg-red-600">Ver pendientes</button>
+          )}
         </div>
       )}
 
-      {mostrarModal && (
-        <ModalNuevaConversacion
-          onClose={() => setMostrarModal(false)}
-          onCreada={onConversacionCreada}
+      {mostrarNueva && <ModalNuevaConversacion onClose={() => setMostrarNueva(false)} onCreada={onConversacionCreada} />}
+      {mostrarPlantilla && activa && (
+        <ModalPlantilla
+          conversacionId={activa.id}
+          clienteNombre={activa.cliente?.nombre}
+          onClose={() => setMostrarPlantilla(false)}
+          onEnviada={() => { setMostrarPlantilla(false); setAviso(''); refrescarTodo(); }}
+        />
+      )}
+      {mostrarRespuestas && (
+        <ModalRespuestas
+          respuestas={respuestas}
+          editable={respuestasEditables}
+          onClose={() => setMostrarRespuestas(false)}
+          onCambio={cargarRespuestas}
         />
       )}
     </div>

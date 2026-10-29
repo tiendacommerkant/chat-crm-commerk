@@ -14,7 +14,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase';
-import { extraerTelefonoPedido, extraerTelefonoCheckout, mapearProductoParaBot } from '@/lib/shopify';
+import { extraerTelefonoPedido, mapearProductoParaBot } from '@/lib/shopify';
 import { formatearNumeroWhatsApp } from '@/lib/whatsapp';
 import {
   notificarPedidoConfirmado,
@@ -23,8 +23,8 @@ import {
   notificarCarritoAbandonado,
 } from '@/lib/notificaciones';
 import type { ShopifyOrder, ShopifyCheckout } from '@/types';
+import { guardarCheckout } from '@/lib/carritos';
 
-const ABANDONO_MINUTOS = 45;
 
 // ─── Verificación HMAC ────────────────────────────────────────────────────────
 function verificarHmac(body: string, hmac: string | null, secret: string): boolean {
@@ -180,59 +180,18 @@ async function handleOrderFulfilled(order: ShopifyOrder) {
 
 // ─── Handler checkouts/create + checkouts/update ─────────────────────────────
 async function handleCheckout(checkout: ShopifyCheckout) {
-  // Shopify a veces envía id como undefined en ciertos eventos; usar token como fallback
-  const checkoutId = String(checkout.id ?? checkout.token ?? '');
-  if (!checkoutId) return;
-
-  const telefono = extraerTelefonoCheckout(checkout);
-  const telefonoFormateado = telefono ? formatearNumeroWhatsApp(telefono) : null;
-  const nombre = [checkout.customer?.first_name, checkout.customer?.last_name].filter(Boolean).join(' ') || null;
-
-  const items = (checkout.line_items || []).map((i) => ({
-    title: i.title,
-    quantity: i.quantity,
-    price: parseFloat(i.price),
-  }));
-
-  // Usar updated_at para detectar actividad reciente (created_at puede ser días atrás)
-  const ultimaActividad = new Date(checkout.updated_at || checkout.created_at);
-  const minutosInactivo = (Date.now() - ultimaActividad.getTime()) / 60000;
-  const estado = !isNaN(minutosInactivo) && minutosInactivo >= ABANDONO_MINUTOS ? 'abandonado' : 'en_progreso';
-
-  await supabaseAdmin.from('carritos_abandonados').upsert({
-    shopify_checkout_id: checkoutId,
-    shopify_token: checkout.token || null,
-    email: checkout.email || null,
-    telefono: telefonoFormateado,
-    nombre,
-    total: parseFloat(checkout.total_price || '0'),
-    items,
-    url_checkout: checkout.abandoned_checkout_url || null,
-    estado,
-    shopify_created_at: checkout.created_at || null,
-    shopify_updated_at: checkout.updated_at || null,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: 'shopify_checkout_id' });
-
+  const carrito = await guardarCheckout(checkout);
   // Auto-notificar si está abandonado y tiene teléfono
-  if (estado === 'abandonado' && telefonoFormateado) {
-    const { data: carrito } = await supabaseAdmin
-      .from('carritos_abandonados')
-      .select('id, notificado_whatsapp')
-      .eq('shopify_checkout_id', checkoutId)
-      .single();
-
-    if (carrito && !carrito.notificado_whatsapp) {
-      await notificarCarritoAbandonado({
-        id: carrito.id,
-        shopify_checkout_id: checkoutId,
-        nombre,
-        telefono: telefonoFormateado,
-        total: parseFloat(checkout.total_price || '0'),
-        url_checkout: checkout.abandoned_checkout_url || null,
-        items: (checkout.line_items || []).map((i) => ({ title: i.title, quantity: i.quantity })),
-      });
-    }
+  if (carrito && carrito.estado === 'abandonado' && carrito.telefono && !carrito.notificado) {
+    await notificarCarritoAbandonado({
+      id: carrito.id,
+      shopify_checkout_id: carrito.checkoutId,
+      nombre: carrito.nombre,
+      telefono: carrito.telefono,
+      total: carrito.total,
+      url_checkout: carrito.url,
+      items: carrito.items.map((i) => ({ title: i.title, quantity: i.quantity })),
+    });
   }
 }
 

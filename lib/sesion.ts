@@ -16,9 +16,31 @@ export const COOKIE_SESION = 'commerk_sesion';
 export const DURACION_SESION_S = 60 * 60 * 24 * 7; // 7 días
 
 export interface SesionCRM {
-  sub: string;   // id del usuario en Supabase Auth
+  sub: string;     // id del usuario en Supabase Auth
   email: string;
-  exp: number;   // segundos epoch
+  nombre?: string; // cómo aparece el asesor en el chat
+  exp: number;     // segundos epoch
+}
+
+/** "mateo.arbelaez@commerk.com.co" → "Mateo Arbelaez" (si no tiene nombre configurado). */
+export function nombreDesdeEmail(email: string): string {
+  const local = (email || '').split('@')[0] || 'Asesor';
+  return local.split(/[._-]+/).filter(Boolean)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ') || 'Asesor';
+}
+
+/** Lee la sesión del CRM desde la cookie de una petición a la API. */
+export async function sesionDeRequest(req: Request): Promise<SesionCRM | null> {
+  const cookies = req.headers.get('cookie') || '';
+  const par = cookies.split(';').map((c) => c.trim()).find((c) => c.startsWith(`${COOKIE_SESION}=`));
+  return leerSesion(par ? decodeURIComponent(par.slice(COOKIE_SESION.length + 1)) : null);
+}
+
+/** Asesor que hace la acción (nombre y correo de la sesión). */
+export async function asesorDeRequest(req: Request): Promise<{ email: string; nombre: string } | null> {
+  const s = await sesionDeRequest(req);
+  if (!s) return null;
+  return { email: s.email, nombre: s.nombre || nombreDesdeEmail(s.email) };
 }
 
 // SESSION_SECRET si existe; si no, la service key de Supabase (secreta y ya
@@ -52,11 +74,12 @@ async function llave(): Promise<CryptoKey> {
 }
 
 /** Crea el valor de la cookie para un usuario ya verificado. */
-export async function crearSesion(usuario: { id: string; email: string }): Promise<string> {
+export async function crearSesion(usuario: { id: string; email: string; nombre?: string }): Promise<string> {
   if (!secreto()) throw new Error('Falta SESSION_SECRET o SUPABASE_SERVICE_KEY para firmar la sesión');
   const datos: SesionCRM = {
     sub: usuario.id,
     email: usuario.email,
+    nombre: usuario.nombre || nombreDesdeEmail(usuario.email),
     exp: Math.floor(Date.now() / 1000) + DURACION_SESION_S,
   };
   const carga = aBase64Url(new TextEncoder().encode(JSON.stringify(datos)));

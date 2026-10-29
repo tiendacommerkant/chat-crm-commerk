@@ -1,6 +1,8 @@
 // PATCH /api/conversaciones/[id]/bot-toggle — Activar/desactivar bot para una conversación
+// Apagar el bot = el asesor toma la conversación; encenderlo = vuelve a Sofi.
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase';
+import { asesorDeRequest } from '@/lib/sesion';
+import { tomarConversacion, devolverAlBot } from '@/lib/atencion';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,16 +14,15 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ success: false, error: 'bot_activo debe ser boolean' }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin
-      .from('conversaciones')
-      .update({ bot_activo, updated_at: new Date().toISOString() })
-      .eq('id', params.id)
-      .select('id, bot_activo')
-      .single();
+    if (bot_activo) {
+      await devolverAlBot(params.id);
+    } else {
+      const asesor = await asesorDeRequest(req);
+      if (!asesor) return NextResponse.json({ success: false, error: 'No autorizado' }, { status: 401 });
+      await tomarConversacion(params.id, asesor);
+    }
 
-    if (error) throw error;
-
-    return NextResponse.json({ success: true, bot_activo: data.bot_activo });
+    return NextResponse.json({ success: true, bot_activo });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }

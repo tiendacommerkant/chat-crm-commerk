@@ -9,6 +9,7 @@ import type { CartItem } from './bot-logic';
 import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { registrarUsoClaude } from './costos';
+import { registrarEvento } from './eventos';
 import { matchProductoDistintivo } from './matching';
 import { asegurarPreguntaCantidad, quitarUltimaPregunta } from './sofi-texto';
 import {
@@ -495,7 +496,10 @@ RESPONDE SOLO JSON:
     };
 
   } catch (error: any) {
-    console.error('[Sofi] Error:', error?.message);
+    // Queda en el panel "Estado del sistema" (ej. saldo de la IA agotado)
+    await registrarEvento('error', 'sofi', (error?.message || 'Error desconocido').slice(0, 300), {
+      status: error?.status ?? null,
+    });
     return {
       texto: 'Disculpa, tuve un problema. ¿Me repites qué necesitas? 😊',
       metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },

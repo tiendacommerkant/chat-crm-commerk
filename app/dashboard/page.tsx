@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Card } from '@/components/ui/card';
+import EstadoSistema from '@/components/EstadoSistema';
 import type { MetricasDashboard } from '@/types';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -263,11 +264,10 @@ export default function DashboardPage() {
             {new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </p>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-commerk-green/10 text-commerk-green text-sm font-medium">
-          <span className="w-2 h-2 bg-commerk-green rounded-full animate-pulse" />
-          Sistema activo
-        </div>
       </div>
+
+      {/* Revisión en vivo de WhatsApp, IA, Shopify, Wompi y base de datos */}
+      <EstadoSistema />
 
       {/* Métricas principales */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">

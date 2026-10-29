@@ -15,6 +15,8 @@ import { enviarMensajeWhatsApp, enviarImagenWhatsApp, formatearNumeroWhatsApp, m
 import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
+import { pasarAPendiente, devolverAlBot } from '@/lib/atencion';
+import { registrarEvento } from '@/lib/eventos';
 import type { BotContext } from '@/types';
 
 // El flujo hace IA + varias consultas + envío por WhatsApp. Sin esto, Vercel
@@ -142,14 +144,16 @@ export async function POST(req: Request) {
           // Si el agente tomó control, solo guardar el mensaje — no responder con bot
           const { data: convData } = await supabaseAdmin
             .from('conversaciones')
-            .select('bot_activo')
+            .select('*')
             .eq('id', conversacion.id)
             .single();
           let botActivo = convData?.bot_activo !== false; // default true si columna no existe aún
+          // Un asesor la tomó en el CRM: él responde, el bot no se la quita
+          const atendidaPorAsesor = convData?.estado_atencion === 'en_atencion';
 
           // RED DE SEGURIDAD: si el bot está apagado esperando a un asesor y nadie
           // ha respondido en 30 min, lo reactivamos para no dejar al cliente hablando solo.
-          if (!botActivo) {
+          if (!botActivo && !atendidaPorAsesor) {
             const { data: ultimoAgente } = await supabaseAdmin
               .from('mensajes')
               .select('created_at')
@@ -172,12 +176,11 @@ export async function POST(req: Request) {
             if (refIso) {
               const minutosSinAtencion = (Date.now() - new Date(refIso).getTime()) / 60000;
               if (minutosSinAtencion > 30) {
-                await supabaseAdmin
-                  .from('conversaciones')
-                  .update({ bot_activo: true, updated_at: new Date().toISOString() })
-                  .eq('id', conversacion.id);
+                await devolverAlBot(conversacion.id);
                 botActivo = true;
-                console.warn(`[WA] Bot reactivado tras ${Math.round(minutosSinAtencion)} min sin respuesta de un asesor (conv ${conversacion.id})`);
+                await registrarEvento('aviso', 'atencion',
+                  `Conversación sin atender ${Math.round(minutosSinAtencion)} min: el bot volvió a responder`,
+                  { conversacion_id: conversacion.id });
               }
             }
           }
@@ -424,7 +427,9 @@ export async function POST(req: Request) {
             const pideHumano = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien)\b/i.test(texto);
             // La derivación mayorista ya avisó a la sede: ahí sí se pasa el chat siempre
             const derivacionMayorista = respuesta.metadata?.derivacion === 'mayorista';
-            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano && !derivacionMayorista;
+            // Problema con el pago: el bot no puede resolverlo, se pasa siempre
+            const problemaPago = respuesta.metadata?.motivo_transferencia === 'pago';
+            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano && !derivacionMayorista && !problemaPago;
 
             await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
               ...respuesta.metadata,
@@ -434,11 +439,11 @@ export async function POST(req: Request) {
             await enviarMensajeWhatsApp(phone, respuesta.texto);
 
             if (!flujoActivo) {
-              // Desactivar bot para que el agente tome el control
-              await supabaseAdmin
-                .from('conversaciones')
-                .update({ bot_activo: false, updated_at: new Date().toISOString() })
-                .eq('id', conversacion.id);
+              // El bot se apaga y la conversación entra a "Pendientes" del CRM
+              const motivo = derivacionMayorista ? 'mayorista'
+                : pideHumano ? 'cliente_pidio_asesor'
+                : (respuesta.metadata?.motivo_transferencia as string) || 'sofi';
+              await pasarAPendiente(conversacion.id, motivo);
 
               // Etiqueta visible en el CRM para que el equipo vea que es un lead mayorista
               // (no pisa una etiqueta que ya tenga, ej. "Compró").
@@ -477,8 +482,8 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ success: false }, { status: 400 });
-  } catch (error) {
-    console.error('WhatsApp webhook error:', error);
+  } catch (error: any) {
+    await registrarEvento('error', 'whatsapp', `Error procesando un mensaje: ${error?.message || error}`);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
