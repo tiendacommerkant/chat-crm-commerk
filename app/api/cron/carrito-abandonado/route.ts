@@ -2,10 +2,11 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { enviarCarritoAbandonado } from '@/lib/whatsapp-templates';
 import { formatearPrecioCOP } from '@/lib/shopify';
+import { mismoSecreto } from '@/lib/sesion';
 
 export async function GET(req: Request) {
-  const authHeader = req.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET || '';
+  if (!secret || !mismoSecreto(req.headers.get('authorization') || '', `Bearer ${secret}`)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

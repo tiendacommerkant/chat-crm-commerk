@@ -48,7 +48,10 @@ export default function ProductosPage() {
       const res = await fetch('/api/shopify/sync');
       const json = await res.json();
       if (json.success) {
-        setResultSync(`✅ ${json.sincronizados} productos sincronizados desde Shopify`);
+        const desactivados = json.desactivados?.length
+          ? ` · ${json.desactivados.length} desactivados (ya no están activos en Shopify)`
+          : '';
+        setResultSync(`✅ ${json.sincronizados} productos sincronizados desde Shopify${desactivados}`);
         cargarProductos();
       } else {
         setResultSync(`❌ Error: ${json.error || json.message}`);

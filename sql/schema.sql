@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS productos (
 );
 
 -- ─── POLÍTICAS RLS (Row Level Security) ────────────────────────────
--- Permitir lectura pública para el dashboard (anon key del navegador)
+-- Solo leen los usuarios del CRM (app_metadata.crm_acceso = true, que solo
+-- asigna el servidor). Nunca USING (true): la anon key es pública.
+-- Ver migracion_2026_10_seguridad_rls.sql
 
 ALTER TABLE clientes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversaciones ENABLE ROW LEVEL SECURITY;
@@ -68,11 +70,11 @@ ALTER TABLE mensajes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ventas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE productos ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "dashboard_read_clientes"      ON clientes      FOR SELECT USING (true);
-CREATE POLICY "dashboard_read_conversaciones" ON conversaciones FOR SELECT USING (true);
-CREATE POLICY "dashboard_read_mensajes"      ON mensajes      FOR SELECT USING (true);
-CREATE POLICY "dashboard_read_ventas"        ON ventas        FOR SELECT USING (true);
-CREATE POLICY "dashboard_read_productos"     ON productos     FOR SELECT USING (true);
+CREATE POLICY crm_lectura ON clientes       FOR SELECT TO authenticated USING (coalesce((auth.jwt() -> 'app_metadata' ->> 'crm_acceso')::boolean, false));
+CREATE POLICY crm_lectura ON conversaciones FOR SELECT TO authenticated USING (coalesce((auth.jwt() -> 'app_metadata' ->> 'crm_acceso')::boolean, false));
+CREATE POLICY crm_lectura ON mensajes       FOR SELECT TO authenticated USING (coalesce((auth.jwt() -> 'app_metadata' ->> 'crm_acceso')::boolean, false));
+CREATE POLICY crm_lectura ON ventas         FOR SELECT TO authenticated USING (coalesce((auth.jwt() -> 'app_metadata' ->> 'crm_acceso')::boolean, false));
+CREATE POLICY crm_lectura ON productos      FOR SELECT TO authenticated USING (coalesce((auth.jwt() -> 'app_metadata' ->> 'crm_acceso')::boolean, false));
 
 -- ─── PEDIDOS SINCRONIZADOS DESDE SHOPIFY ───────────────────────────
 CREATE TABLE IF NOT EXISTS pedidos_shopify (
@@ -134,6 +136,6 @@ ALTER TABLE pedidos_shopify ENABLE ROW LEVEL SECURITY;
 ALTER TABLE carritos_abandonados ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notificaciones_wa ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "dashboard_read_pedidos"    ON pedidos_shopify    FOR SELECT USING (true);
-CREATE POLICY "dashboard_read_carritos"   ON carritos_abandonados FOR SELECT USING (true);
-CREATE POLICY "dashboard_read_notifs"     ON notificaciones_wa  FOR SELECT USING (true);
+CREATE POLICY crm_lectura ON pedidos_shopify      FOR SELECT TO authenticated USING (coalesce((auth.jwt() -> 'app_metadata' ->> 'crm_acceso')::boolean, false));
+CREATE POLICY crm_lectura ON carritos_abandonados FOR SELECT TO authenticated USING (coalesce((auth.jwt() -> 'app_metadata' ->> 'crm_acceso')::boolean, false));
+-- notificaciones_wa: solo el servidor (sin políticas)

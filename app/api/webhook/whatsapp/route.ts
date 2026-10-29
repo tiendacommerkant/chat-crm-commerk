@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import crypto from 'crypto';
 import {
   buscarOCrearCliente,
   obtenerConversacionActiva,
@@ -21,9 +22,31 @@ import type { BotContext } from '@/types';
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
+/**
+ * Meta firma cada evento con el App Secret (X-Hub-Signature-256). Sin
+ * verificarla, cualquiera podría inventar mensajes de clientes y hacer que el
+ * bot responda o cree pedidos. Se exige en cuanto WHATSAPP_APP_SECRET existe.
+ */
+function firmaMetaValida(cuerpo: string, firma: string | null): boolean {
+  const appSecret = process.env.WHATSAPP_APP_SECRET || '';
+  if (!appSecret) {
+    console.warn('[WA] WHATSAPP_APP_SECRET no configurado: no se está verificando que los eventos vengan de Meta');
+    return true;
+  }
+  if (!firma?.startsWith('sha256=')) return false;
+  const esperada = Buffer.from('sha256=' + crypto.createHmac('sha256', appSecret).update(cuerpo, 'utf8').digest('hex'));
+  const recibida = Buffer.from(firma);
+  return esperada.length === recibida.length && crypto.timingSafeEqual(esperada, recibida);
+}
+
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const cuerpo = await req.text();
+    if (!firmaMetaValida(cuerpo, req.headers.get('x-hub-signature-256'))) {
+      console.error('[WA] Evento con firma inválida, rechazado');
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+    }
+    const body = JSON.parse(cuerpo);
 
     if (body.object === 'whatsapp_business_account') {
       for (const entry of body.entry) {

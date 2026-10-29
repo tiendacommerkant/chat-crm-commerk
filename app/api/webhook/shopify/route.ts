@@ -8,6 +8,7 @@
 //   checkouts/create   → registrar carrito en progreso
 //   checkouts/update   → actualizar carrito
 //   products/update    → sync inventario
+//   products/delete    → desactivar producto
 // ============================================
 
 import { NextResponse } from 'next/server';
@@ -27,9 +28,15 @@ const ABANDONO_MINUTOS = 45;
 
 // ─── Verificación HMAC ────────────────────────────────────────────────────────
 function verificarHmac(body: string, hmac: string | null, secret: string): boolean {
-  if (!secret || !hmac) return !secret; // sin secret → solo dev
-  const hash = crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64');
-  return hash === hmac;
+  // Sin secreto no hay forma de saber si el evento viene de Shopify: se rechaza
+  if (!secret) {
+    console.error('[Shopify webhook] SHOPIFY_WEBHOOK_SECRET no configurado — rechazando webhook por seguridad');
+    return false;
+  }
+  if (!hmac) return false;
+  const hash = Buffer.from(crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64'));
+  const recibido = Buffer.from(hmac);
+  return hash.length === recibido.length && crypto.timingSafeEqual(hash, recibido);
 }
 
 // ─── Handler orders/paid ─────────────────────────────────────────────────────
@@ -236,6 +243,16 @@ async function handleProductUpdate(payload: any) {
   await supabaseAdmin.from('productos').upsert(mapeado, { onConflict: 'shopify_id' });
 }
 
+// ─── Handler products/delete ─────────────────────────────────────────────────
+// Un producto borrado en Shopify no puede seguir ofreciéndose en el bot
+async function handleProductDelete(payload: any) {
+  if (!payload.id) return;
+  await supabaseAdmin
+    .from('productos')
+    .update({ activo: false, updated_at: new Date().toISOString() })
+    .eq('shopify_id', String(payload.id));
+}
+
 // ─── POST ─────────────────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   let topic = 'unknown';
@@ -271,6 +288,9 @@ export async function POST(req: Request) {
         case 'products/update':
         case 'products/create':
           await handleProductUpdate(payload);
+          break;
+        case 'products/delete':
+          await handleProductDelete(payload);
           break;
         default:
           console.log(`Shopify webhook topic no manejado: ${topic}`);

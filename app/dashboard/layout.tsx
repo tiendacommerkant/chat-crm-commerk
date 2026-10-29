@@ -89,8 +89,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   // Verificar sesión activa y obtener email del usuario
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) {
+        // Sin esto, la cookie del servidor seguiría viva y /login devolvería al dashboard
+        await fetch('/api/auth/sesion', { method: 'DELETE' }).catch(() => {});
         router.replace('/login');
       } else {
         setUserEmail(session.user.email ?? null);
@@ -108,8 +110,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, []);
 
   async function handleLogout() {
+    await fetch('/api/auth/sesion', { method: 'DELETE' }).catch(() => {});
     await supabase.auth.signOut();
-    document.cookie = 'commerk_auth=; path=/; max-age=0';
     router.replace('/login');
   }
 

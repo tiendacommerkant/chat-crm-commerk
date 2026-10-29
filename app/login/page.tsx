@@ -26,8 +26,19 @@ export default function LoginPage() {
       }
 
       if (data.session) {
-        // Cookie simple para que el middleware pueda redirigir
-        document.cookie = 'commerk_auth=1; path=/; max-age=' + 60 * 60 * 24 * 7;
+        // El servidor verifica el token y deja la cookie de sesión firmada
+        const res = await fetch('/api/auth/sesion', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_token: data.session.access_token }),
+        });
+        if (!res.ok) {
+          await supabase.auth.signOut();
+          setError(res.status === 403
+            ? 'Este usuario no tiene acceso al CRM. Pide acceso al administrador.'
+            : 'No se pudo iniciar sesión. Intenta de nuevo.');
+          return;
+        }
         router.replace('/dashboard');
       }
     } catch {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { enviarRecordatorioPago } from '@/lib/whatsapp-templates';
 import { formatearPrecioCOP } from '@/lib/shopify';
+import { mismoSecreto } from '@/lib/sesion';
 
 // Puede recorrer muchos pedidos y enviar varias plantillas por corrida.
 export const maxDuration = 60;
@@ -96,8 +97,8 @@ async function procesarRecordatorios() {
 }
 
 export async function GET(req: Request) {
-  const authHeader = req.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET || '';
+  if (!secret || !mismoSecreto(req.headers.get('authorization') || '', `Bearer ${secret}`)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   const resultado = await procesarRecordatorios();

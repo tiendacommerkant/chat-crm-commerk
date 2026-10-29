@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { mismoSecreto } from '@/lib/sesion';
 
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-admin-secret');
-  if (secret !== process.env.ADMIN_SECRET) {
+  // Borra TODOS los datos: además de la sesión (middleware) exige ADMIN_SECRET configurado
+  const adminSecret = process.env.ADMIN_SECRET || '';
+  if (!adminSecret || !mismoSecreto(req.headers.get('x-admin-secret') || '', adminSecret)) {
     return NextResponse.json({ error: 'No autorizado' }, { status: 401 });
   }
 

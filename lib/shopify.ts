@@ -40,6 +40,33 @@ export async function obtenerProductosShopify(limite: number = 250): Promise<Sho
 }
 
 /**
+ * Todos los productos activos, recorriendo todas las páginas y sin caché.
+ * A diferencia de obtenerProductosShopify, lanza error si Shopify falla: la
+ * sincronización usa esta lista para desactivar lo que falta, y una lista
+ * incompleta apagaría productos que sí se venden.
+ */
+export async function obtenerProductosActivosShopify(): Promise<ShopifyProduct[]> {
+  const productos: ShopifyProduct[] = [];
+  let url: string | null = `${SHOPIFY_API_URL}/products.json?limit=250&status=active`;
+
+  for (let pagina = 0; url && pagina < 40; pagina++) {
+    const response: Response = await fetch(url, {
+      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`Error de Shopify: ${response.status}`);
+    const data = await response.json();
+    productos.push(...(data.products || []));
+    // Paginación por cursor: <...page_info=...>; rel="next"
+    const siguiente = (response.headers.get('link') || '').match(/<([^>]+)>;\s*rel="next"/);
+    url = siguiente ? siguiente[1] : null;
+  }
+  if (url) throw new Error('Shopify devolvió demasiadas páginas de productos');
+
+  return productos;
+}
+
+/**
  * Obtener un producto específico por ID
  */
 export async function obtenerProductoShopify(productoId: string): Promise<ShopifyProduct | null> {
@@ -245,6 +272,7 @@ export async function registrarWebhooksShopify(baseUrl: string): Promise<{ topic
     'checkouts/create',
     'checkouts/update',
     'products/update',
+    'products/delete',
   ];
   const address = `${baseUrl}/api/webhook/shopify`;
 
