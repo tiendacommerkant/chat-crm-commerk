@@ -2,7 +2,7 @@
 // DELETE /api/auth/sesion — Cierra la sesión
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
-import { COOKIE_SESION, DURACION_SESION_S, crearSesion } from '@/lib/sesion';
+import { COOKIE_SESION, DURACION_SESION_S, crearSesion, rolDeUsuario } from '@/lib/sesion';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +29,8 @@ export async function POST(req: Request) {
 
     const res = NextResponse.json({ success: true });
     const nombre = (usuario.user_metadata?.nombre as string | undefined) || undefined;
-    res.cookies.set(COOKIE_SESION, await crearSesion({ id: usuario.id, email: usuario.email || '', nombre }), {
+    const rol = rolDeUsuario(usuario.app_metadata);
+    res.cookies.set(COOKIE_SESION, await crearSesion({ id: usuario.id, email: usuario.email || '', nombre, rol }), {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',

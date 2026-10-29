@@ -19,8 +19,11 @@ export interface SesionCRM {
   sub: string;     // id del usuario en Supabase Auth
   email: string;
   nombre?: string; // cómo aparece el asesor en el chat
+  rol?: RolCRM;     // admin gestiona el equipo; asesor atiende
   exp: number;     // segundos epoch
 }
+
+export type RolCRM = 'admin' | 'asesor';
 
 /** "mateo.arbelaez@commerk.com.co" → "Mateo Arbelaez" (si no tiene nombre configurado). */
 export function nombreDesdeEmail(email: string): string {
@@ -37,10 +40,19 @@ export async function sesionDeRequest(req: Request): Promise<SesionCRM | null> {
 }
 
 /** Asesor que hace la acción (nombre y correo de la sesión). */
-export async function asesorDeRequest(req: Request): Promise<{ email: string; nombre: string } | null> {
+export async function asesorDeRequest(req: Request): Promise<{ email: string; nombre: string; rol: RolCRM } | null> {
   const s = await sesionDeRequest(req);
   if (!s) return null;
-  return { email: s.email, nombre: s.nombre || nombreDesdeEmail(s.email) };
+  // Sesiones abiertas antes de los roles: solo existían las cuentas de la dirección
+  return { email: s.email, nombre: s.nombre || nombreDesdeEmail(s.email), rol: s.rol || 'admin' };
+}
+
+/**
+ * Rol de una cuenta del CRM. Las cuentas anteriores a los roles (sin rol
+ * guardado) son las de la dirección de Commerk: quedan como administradoras.
+ */
+export function rolDeUsuario(appMetadata: Record<string, any> | undefined | null): RolCRM {
+  return appMetadata?.rol === 'asesor' ? 'asesor' : 'admin';
 }
 
 // SESSION_SECRET si existe; si no, la service key de Supabase (secreta y ya
@@ -74,12 +86,13 @@ async function llave(): Promise<CryptoKey> {
 }
 
 /** Crea el valor de la cookie para un usuario ya verificado. */
-export async function crearSesion(usuario: { id: string; email: string; nombre?: string }): Promise<string> {
+export async function crearSesion(usuario: { id: string; email: string; nombre?: string; rol?: RolCRM }): Promise<string> {
   if (!secreto()) throw new Error('Falta SESSION_SECRET o SUPABASE_SERVICE_KEY para firmar la sesión');
   const datos: SesionCRM = {
     sub: usuario.id,
     email: usuario.email,
     nombre: usuario.nombre || nombreDesdeEmail(usuario.email),
+    rol: usuario.rol || 'asesor',
     exp: Math.floor(Date.now() / 1000) + DURACION_SESION_S,
   };
   const carga = aBase64Url(new TextEncoder().encode(JSON.stringify(datos)));
