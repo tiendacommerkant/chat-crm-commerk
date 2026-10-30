@@ -45,7 +45,11 @@ export async function POST(req: Request) {
   try {
     const cuerpo = await req.text();
     if (!firmaMetaValida(cuerpo, req.headers.get('x-hub-signature-256'))) {
-      console.error('[WA] Evento con firma inválida, rechazado');
+      // Si llegan muchos con firma de Meta pero inválida, la clave en Vercel está mal
+      await registrarEvento('error', 'whatsapp',
+        req.headers.get('x-hub-signature-256')
+          ? 'Mensaje rechazado: la firma no coincide (revisa WHATSAPP_APP_SECRET en Vercel)'
+          : 'Evento sin firma de Meta rechazado');
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
     const body = JSON.parse(cuerpo);
