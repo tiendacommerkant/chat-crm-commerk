@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "vitest run && next build",
+    "build": "tsc --noEmit && vitest run && next build",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",

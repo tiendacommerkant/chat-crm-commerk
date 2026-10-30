@@ -96,7 +96,7 @@ describe('Encuesta de satisfacción', () => {
   });
 
   it('si es mala, pregunta qué mejorar y guarda el comentario', async () => {
-    const historial = encuesta();
+    const historial: any[] = encuesta();
     const r1 = await procesarMensajeBot('😕 Mala', contexto({ historial }));
     expect(r1.metadata?.awaiting).toBe('encuesta_comentario');
     historial.push(cliente('😕 Mala'), bot(r1.texto, r1.metadata));
