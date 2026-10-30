@@ -20,7 +20,6 @@ import {
   notificarPedidoConfirmado,
   notificarPedidoCancelado,
   notificarPedidoEnviado,
-  notificarCarritoAbandonado,
 } from '@/lib/notificaciones';
 import type { ShopifyOrder, ShopifyCheckout } from '@/types';
 import { guardarCheckout } from '@/lib/carritos';
@@ -179,20 +178,10 @@ async function handleOrderFulfilled(order: ShopifyOrder) {
 }
 
 // ─── Handler checkouts/create + checkouts/update ─────────────────────────────
+// Solo guarda: el recordatorio lo envía /api/cron/recuperar-carritos con
+// todas las reglas (horario, plantilla, un mensaje por semana…)
 async function handleCheckout(checkout: ShopifyCheckout) {
-  const carrito = await guardarCheckout(checkout);
-  // Auto-notificar si está abandonado y tiene teléfono
-  if (carrito && carrito.estado === 'abandonado' && carrito.telefono && !carrito.notificado) {
-    await notificarCarritoAbandonado({
-      id: carrito.id,
-      shopify_checkout_id: carrito.checkoutId,
-      nombre: carrito.nombre,
-      telefono: carrito.telefono,
-      total: carrito.total,
-      url_checkout: carrito.url,
-      items: carrito.items.map((i) => ({ title: i.title, quantity: i.quantity })),
-    });
-  }
+  await guardarCheckout(checkout);
 }
 
 // ─── Handler products/update ─────────────────────────────────────────────────

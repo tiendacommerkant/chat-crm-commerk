@@ -85,11 +85,16 @@ export default function DashboardPage() {
   useEffect(() => {
     async function cargarDatos() {
       try {
-        const hoy = new Date().toISOString().split('T')[0];
+        // Medianoche local (Colombia): con la fecha UTC, después de las 7 p. m. "hoy" ya era mañana
+        const inicioHoy = new Date();
+        inicioHoy.setHours(0, 0, 0, 0);
+        const hoy = inicioHoy.toISOString();
+        const hace30dias = new Date(Date.now() - 30 * 86_400_000).toISOString();
         const inicioSemana = new Date();
         inicioSemana.setDate(inicioSemana.getDate() - 7);
         const inicioMes = new Date();
         inicioMes.setDate(1);
+        inicioMes.setHours(0, 0, 0, 0);
         const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
         const hace7dias = new Date();
         hace7dias.setDate(hace7dias.getDate() - 6);
@@ -99,11 +104,11 @@ export default function DashboardPage() {
           { data: ventasHoy },
           { data: ventasSemana },
           { data: ventasMes },
-          { data: clientesNuevos },
-          { data: convActivas },
+          { count: clientesNuevos },
+          { count: convActivas },
           { data: pedidos },
-          { data: enCheckoutData },
-          { data: abandonados },
+          { count: enCheckoutData },
+          { count: abandonados },
           { data: ventas },
           { data: clientes },
           { data: pedidosHoy },
@@ -112,18 +117,18 @@ export default function DashboardPage() {
           { data: ventas7d },
           { data: pedidos7d },
         ] = await Promise.all([
-          supabase.from('ventas').select('total').gte('created_at', `${hoy}T00:00:00`).eq('estado', 'pagado'),
+          supabase.from('ventas').select('total').gte('created_at', hoy).eq('estado', 'pagado'),
           supabase.from('ventas').select('total').gte('created_at', inicioSemana.toISOString()).eq('estado', 'pagado'),
           supabase.from('ventas').select('total').gte('created_at', inicioMes.toISOString()).eq('estado', 'pagado'),
-          supabase.from('clientes').select('id').gte('created_at', `${hoy}T00:00:00`),
-          supabase.from('conversaciones').select('id').eq('estado', 'activa'),
+          supabase.from('clientes').select('id', { count: 'exact', head: true }).gte('created_at', hoy),
+          supabase.from('conversaciones').select('id', { count: 'exact', head: true }).eq('estado', 'activa'),
           supabase.from('pedidos_shopify').select('*, cliente:clientes(nombre, telefono)').order('shopify_created_at', { ascending: false }).limit(5),
-          supabase.from('carritos_abandonados').select('id').eq('estado', 'en_progreso').gte('shopify_updated_at', hace30min),
-          supabase.from('carritos_abandonados').select('id').in('estado', ['abandonado', 'notificado']),
+          supabase.from('carritos_abandonados').select('id', { count: 'exact', head: true }).eq('estado', 'en_progreso').gte('shopify_updated_at', hace30min),
+          supabase.from('carritos_abandonados').select('id', { count: 'exact', head: true }).in('estado', ['abandonado', 'notificado']).gte('shopify_updated_at', hace30dias),
           supabase.from('ventas').select('*, cliente:clientes(nombre, telefono)').order('created_at', { ascending: false }).limit(5),
           supabase.from('clientes').select('*').order('created_at', { ascending: false }).limit(5),
           // Pedidos Shopify pagados hoy
-          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', `${hoy}T00:00:00`).eq('estado_financiero', 'paid'),
+          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', hoy).eq('estado_financiero', 'paid'),
           // Pedidos Shopify pagados esta semana
           supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioSemana.toISOString()).eq('estado_financiero', 'paid'),
           // Pedidos Shopify pagados este mes
@@ -157,15 +162,15 @@ export default function DashboardPage() {
           ingresosHoy,
           ingresosSemana,
           ingresosMes: ingresosMesTotal,
-          clientesNuevos: clientesNuevos?.length || 0,
-          conversacionesActivas: convActivas?.length || 0,
+          clientesNuevos: clientesNuevos || 0,
+          conversacionesActivas: convActivas || 0,
           tasaConversion: 0,
           ticketPromedio: ventasMesTotal ? Math.round(ingresosMesTotal / ventasMesTotal) : 0,
         });
 
         setPedidosShopify(pedidos || []);
-        setEnCheckout(enCheckoutData?.length || 0);
-        setCarritosAbandonados(abandonados?.length || 0);
+        setEnCheckout(enCheckoutData || 0);
+        setCarritosAbandonados(abandonados || 0);
         setUltimasVentas(ventas || []);
         setUltimosClientes(clientes || []);
 
@@ -186,14 +191,17 @@ export default function DashboardPage() {
         setActividadReciente(actFeed.slice(0, 6));
 
         // ── Gráfico: ingresos por día (últimos 7 días) ────────────────
+        // Día local (Colombia): agrupar por la fecha UTC pasaba al día siguiente lo vendido después de las 7 p. m.
+        const diaLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const diaDe = (iso?: string) => (iso ? diaLocal(new Date(iso)) : '');
         const dias7 = Array.from({ length: 7 }, (_, i) => {
           const d = new Date();
           d.setDate(d.getDate() - (6 - i));
-          return d.toISOString().split('T')[0];
+          return diaLocal(d);
         });
         const chartDias = dias7.map((dia) => {
-          const waVentas = (ventas7d || []).filter((v: any) => (v.created_at || '').startsWith(dia));
-          const shVentas = (pedidos7d || []).filter((p: any) => (p.shopify_created_at || '').startsWith(dia));
+          const waVentas = (ventas7d || []).filter((v: any) => diaDe(v.created_at) === dia);
+          const shVentas = (pedidos7d || []).filter((p: any) => diaDe(p.shopify_created_at) === dia);
           const ingresos = waVentas.reduce((s: number, v: any) => s + (v.total || 0), 0)
             + shVentas.reduce((s: number, p: any) => s + (p.total || 0), 0);
           const label = new Date(dia + 'T12:00:00').toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric' });
@@ -362,7 +370,7 @@ export default function DashboardPage() {
               </svg>
             </div>
             <div>
-              <p className="text-xs text-slate-500">Carritos abandonados</p>
+              <p className="text-xs text-slate-500">Carritos abandonados · 30 días</p>
               <p className="text-lg font-bold text-amber-600">{carritosAbandonados}</p>
             </div>
           </Card>

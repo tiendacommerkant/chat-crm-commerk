@@ -1,6 +1,7 @@
 // GET /api/cron/diario — Tarea de cada mañana (Vercel Cron, 10:00 a. m. Colombia)
 //   1. Sincroniza el catálogo con Shopify (precios, existencias, productos inactivos)
-//   2. Trae de Shopify los carritos abandonados del último día
+//   2. Trae de Shopify los carritos abandonados de los últimos 2 días y
+//      recuerda los del último día (respaldo de la tarea de cada 10 minutos)
 //   3. Envía los recordatorios de links de pago sin pagar (uno por cliente)
 // Cada paso es independiente: si uno falla, los demás siguen y queda el error
 // en el panel "Estado del sistema".
@@ -8,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { mismoSecreto } from '@/lib/sesion';
 import { sincronizarCatalogo } from '@/lib/catalogo';
 import { sincronizarCarritosShopify } from '@/lib/carritos';
+import { procesarCarritosPendientes } from '@/lib/recuperacion';
 import { recordarCarritosAbandonados } from '@/lib/recordatorios';
 import { registrarEvento } from '@/lib/eventos';
 
@@ -30,7 +32,10 @@ export async function GET(req: Request) {
   }
 
   const catalogo = await paso('Catálogo', sincronizarCatalogo);
-  const carritos = await paso('Carritos de Shopify', () => sincronizarCarritosShopify(24));
+  const carritos = await paso('Carritos de Shopify', async () => ({
+    sincronizados: await sincronizarCarritosShopify(48),
+    recuperacion: await procesarCarritosPendientes(),
+  }));
   const recordatorios = await paso('Recordatorios de carrito', recordarCarritosAbandonados);
 
   const c = catalogo.resultado;

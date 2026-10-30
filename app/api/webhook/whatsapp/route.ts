@@ -85,6 +85,17 @@ export async function POST(req: Request) {
                   .update({ metadata: { ...m.metadata, estado_wa: estado, ...(errorWa && { error_wa: errorWa }) } })
                   .eq('id', m.id);
               }
+              // Notificaciones automáticas (carritos, pedidos): "enviado" solo
+              // dice que Meta lo recibió; aquí queda si llegó o por qué no.
+              const ESTADO_NOTIFICACION: Record<string, string> = { delivered: 'entregado', read: 'leido', failed: 'fallido' };
+              if (ESTADO_NOTIFICACION[estado]) {
+                let q = supabaseAdmin.from('notificaciones_wa')
+                  .update({ estado: ESTADO_NOTIFICACION[estado], ...(errorWa && { error: errorWa }) })
+                  .eq('whatsapp_message_id', waMsgId);
+                // Un "entregado" que llega tarde no pisa un "leído"
+                if (estado === 'delivered') q = q.neq('estado', 'leido');
+                await q;
+              }
             }
             continue;
           }

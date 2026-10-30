@@ -1,7 +1,9 @@
 // POST /api/carritos/[id]/recover → Envía WhatsApp de recuperación manual
+// Mismas reglas que el envío automático, salvo el horario y el límite semanal:
+// aquí decide la persona del equipo.
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
-import { notificarCarritoAbandonado } from '@/lib/notificaciones';
+import { recuperarCarrito } from '@/lib/recuperacion';
 
 export async function POST(_req: Request, { params }: { params: { id: string } }) {
   try {
@@ -23,17 +25,8 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ success: false, error: 'Este carrito ya fue convertido en pedido' }, { status: 400 });
     }
 
-    const resultado = await notificarCarritoAbandonado({
-      id: carrito.id,
-      shopify_checkout_id: carrito.shopify_checkout_id,
-      nombre: carrito.nombre,
-      telefono: carrito.telefono,
-      total: carrito.total,
-      url_checkout: carrito.url_checkout,
-      items: carrito.items || [],
-    });
-
-    return NextResponse.json({ success: resultado.success, error: resultado.error });
+    const resultado = await recuperarCarrito(carrito, { manual: true });
+    return NextResponse.json({ success: resultado.enviado, via: resultado.via, error: resultado.motivo });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }

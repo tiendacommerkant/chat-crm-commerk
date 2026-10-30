@@ -33,6 +33,7 @@ import { evaluarCobertura } from './cobertura';
 import { parsearCalificacion } from './encuesta';
 import { asegurarOportunidad } from './oportunidades';
 import { esPedidoDeBaja } from './difusiones';
+import { recordatorioPendiente, respuestaRecordatorioCarrito } from './bot/carrito-tienda';
 import {
   esSaludo,
   esIntencionCompra,
@@ -127,6 +128,21 @@ export async function procesarMensajeBot(
   const pendingTotal: number = ultimoBot?.metadata?.pending_total || 0;
   const pendingSubtotal: number = ultimoBot?.metadata?.pending_subtotal || 0;
   const pendingCostoEnvio: number = ultimoBot?.metadata?.pending_costo_envio || 0;
+
+  // ── RESPUESTA AL RECORDATORIO DE CARRITO DE LA TIENDA ONLINE ─────
+  // Antes de las políticas: solo le devolvemos el link de su propio carrito
+  // (o su baja de publicidad), sin pedirle datos.
+  if (recordatorioPendiente(context)) {
+    if (esPedidoDeBaja(textoLower)) {
+      await supabaseAdmin.from('clientes').update({ no_publicidad: true }).eq('id', context.cliente.id);
+      return {
+        texto: 'Listo ✅ No te enviaremos más mensajes promocionales. Si necesitas algo, escríbenos cuando quieras: aquí seguimos para ayudarte. 😊',
+        metadata: { ...(context.estado?.datos || {}) },
+      };
+    }
+    const r = respuestaRecordatorioCarrito(texto, context);
+    if (r) return r;
+  }
 
   // ── POLÍTICAS: cliente nuevo debe aceptar antes de interactuar ─────
   if (!context.cliente.politicas_aceptadas) {

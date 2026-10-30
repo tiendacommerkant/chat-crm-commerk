@@ -19,7 +19,7 @@ export const ABANDONO_MINUTOS = 45;
 export interface CarritoGuardado {
   id: string;
   checkoutId: string;
-  estado: 'abandonado' | 'en_progreso';
+  estado: 'abandonado' | 'en_progreso' | 'notificado' | 'convertido';
   telefono: string | null;
   nombre: string | null;
   total: number;
@@ -63,6 +63,12 @@ export async function guardarCheckout(checkout: ShopifyCheckout): Promise<Carrit
   const estado = !isNaN(minutosInactivo) && minutosInactivo >= ABANDONO_MINUTOS ? 'abandonado' : 'en_progreso';
   const total = parseFloat(checkout.total_price || '0');
 
+  // Un carrito ya recordado o convertido conserva su estado: la sincronización
+  // de cada minuto lo devolvía a "abandonado".
+  const { data: previo } = await supabaseAdmin
+    .from('carritos_abandonados').select('estado').eq('shopify_checkout_id', checkoutId).maybeSingle();
+  const estadoFinal = ['notificado', 'convertido'].includes((previo as any)?.estado) ? (previo as any).estado : estado;
+
   const { data, error } = await supabaseAdmin.from('carritos_abandonados').upsert({
     shopify_checkout_id: checkoutId,
     shopify_token: checkout.token || null,
@@ -72,7 +78,7 @@ export async function guardarCheckout(checkout: ShopifyCheckout): Promise<Carrit
     total,
     items,
     url_checkout: checkout.abandoned_checkout_url || null,
-    estado,
+    estado: estadoFinal,
     shopify_created_at: checkout.created_at || null,
     shopify_updated_at: checkout.updated_at || null,
     updated_at: new Date().toISOString(),
@@ -86,7 +92,7 @@ export async function guardarCheckout(checkout: ShopifyCheckout): Promise<Carrit
   return {
     id: data.id,
     checkoutId,
-    estado,
+    estado: estadoFinal,
     telefono: telefonoFormateado,
     nombre,
     total,
