@@ -92,9 +92,15 @@ export async function GET() {
       const ultimo = data?.[0]?.created_at;
       if (!ultimo) return { ok: false, nivel: 'aviso', detalle: 'Aún no hay carritos registrados' };
       const dias = Math.floor((Date.now() - new Date(ultimo).getTime()) / 86400e3);
+      // ¿Shopify manda los avisos de checkout o solo entran por la sincronización?
+      const { data: avisos } = await supabaseAdmin.from('configuracion').select('valor').eq('clave', 'shopify_avisos').maybeSingle();
+      const ultimoAviso = ['checkouts/create', 'checkouts/update'].map((t) => (avisos as any)?.valor?.[t]).filter(Boolean).sort().pop();
+      const viaAviso = ultimoAviso
+        ? ` · último aviso de checkout de Shopify ${new Date(ultimoAviso).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}`
+        : ' · llegan por la sincronización cada 10 min (Shopify no ha enviado avisos de checkout)';
       return dias > 3
-        ? { ok: false, nivel: 'aviso', detalle: `El último carrito registrado es de hace ${dias} días` }
-        : { ok: true, nivel: 'ok', detalle: `Último carrito registrado hace ${dias === 0 ? 'menos de un día' : `${dias} día(s)`}` };
+        ? { ok: false, nivel: 'aviso', detalle: `El último carrito registrado es de hace ${dias} días${viaAviso}` }
+        : { ok: true, nivel: 'ok', detalle: `Último carrito registrado hace ${dias === 0 ? 'menos de un día' : `${dias} día(s)`}${viaAviso}` };
     }),
   ]);
 

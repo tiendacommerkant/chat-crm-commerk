@@ -222,3 +222,42 @@ describe('Campaña programada de carritos de varios días', () => {
     expect(guardada()).toMatchObject({ estado: 'en_curso' });
   });
 });
+
+describe('Notificaciones de pedidos de la tienda', async () => {
+  const { notificarPedidoConfirmado, notificarPedidoEnviado } = await import('@/lib/notificaciones');
+  const pedido = {
+    shopify_order_id: '555', shopify_order_number: '1045', nombre_cliente: 'Laura Gómez', telefono: '573001112233',
+    total: 110720, items: [{ title: 'Ron Viejo de Caldas 750 ml', quantity: 2, price: '55360' }],
+  };
+
+  it('comprador que no ha escrito al bot: va la plantilla de utilidad', async () => {
+    await notificarPedidoConfirmado(pedido);
+    expect(sim.texto).not.toHaveBeenCalled();
+    const [, plantilla, , comp] = sim.plantilla.mock.calls[0] as any[];
+    expect(plantilla).toBe('pedido_tienda_recibido');
+    expect(comp[0].parameters.map((p: any) => p.text)).toEqual(['Laura', '1045', 'Ron Viejo de Caldas 750 ml x2', expect.stringContaining('110')]);
+  });
+
+  it('cliente que escribió hoy: va el texto completo', async () => {
+    sim.datos.clientes = { id: 'cliente-1' };
+    sim.datos.conversaciones = [{ id: 'conv-1' }];
+    sim.datos.mensajes = { id: 'm1' };
+    await notificarPedidoConfirmado(pedido);
+    expect(sim.plantilla).not.toHaveBeenCalled();
+    expect((sim.texto.mock.calls[0] as any[])[1]).toContain('#1045');
+  });
+
+  it('pedido para recoger en tienda: no se avisa "despachado"', async () => {
+    const r = await notificarPedidoEnviado({ ...pedido, con_envio: false });
+    expect(r.success).toBe(false);
+    expect(sim.plantilla).not.toHaveBeenCalled();
+    expect(sim.texto).not.toHaveBeenCalled();
+  });
+
+  it('pedido con envío y guía: plantilla con la guía', async () => {
+    await notificarPedidoEnviado({ ...pedido, con_envio: true, tracking_company: 'Servientrega', tracking_number: '2049876543' });
+    const [, plantilla, , comp] = sim.plantilla.mock.calls[0] as any[];
+    expect(plantilla).toBe('pedido_tienda_despachado');
+    expect(comp[0].parameters[2].text).toBe('Guía Servientrega 2049876543');
+  });
+});

@@ -29,6 +29,8 @@ export const CATEGORIA_PLANTILLA: Record<string, 'marketing' | 'utility'> = {
   confirmacion_pago:   'utility',
   pedido_en_camino:    'utility',
   pedido_recoger_sede: 'utility',
+  pedido_tienda_recibido:   'utility',
+  pedido_tienda_despachado: 'utility',
 };
 
 export const USD_A_COP = parseFloat(process.env.USD_COP || '4000');

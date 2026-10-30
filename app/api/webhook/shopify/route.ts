@@ -23,6 +23,19 @@ import {
 } from '@/lib/notificaciones';
 import type { ShopifyOrder, ShopifyCheckout } from '@/types';
 import { guardarCheckout } from '@/lib/carritos';
+import { registrarEvento } from '@/lib/eventos';
+
+// Hora del último aviso recibido por tema: los checkouts registrados en
+// Shopify no dejaban filas y no había forma de saber si llegaban.
+async function registrarAviso(topic: string) {
+  const { data } = await supabaseAdmin.from('configuracion').select('valor').eq('clave', 'shopify_avisos').maybeSingle();
+  await supabaseAdmin.from('configuracion').upsert({
+    clave: 'shopify_avisos',
+    valor: { ...((data as any)?.valor || {}), [topic]: new Date().toISOString() },
+    actualizado_por: 'shopify',
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'clave' });
+}
 
 
 // ─── Verificación HMAC ────────────────────────────────────────────────────────
@@ -166,7 +179,11 @@ async function handleOrderFulfilled(order: ShopifyOrder) {
 
   if (telefonoFormateado) {
     const fulfillment = (order as any).fulfillments?.[0];
+    // Envío real (Estándar, Local Delivery…); sin método de envío o de recogida, no
+    const envio = (order as any).shipping_lines?.[0];
+    const conEnvio = !!envio && !/recog|pickup|retiro|tienda/i.test(`${envio.title || ''} ${envio.code || ''}`);
     await notificarPedidoEnviado({
+      con_envio: conEnvio,
       shopify_order_id: order.id.toString(),
       shopify_order_number: order.order_number.toString(),
       nombre_cliente: nombreCliente,
@@ -211,8 +228,10 @@ export async function POST(req: Request) {
     const secret = process.env.SHOPIFY_WEBHOOK_SECRET || '';
 
     if (!verificarHmac(body, hmac, secret)) {
+      await registrarEvento('aviso', 'shopify-webhook', `Aviso de Shopify rechazado (firma inválida): ${topic || 'sin tema'}`);
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    await registrarAviso(topic).catch(() => {});
 
     const payload = JSON.parse(body);
 
@@ -246,6 +265,7 @@ export async function POST(req: Request) {
     } catch (handlerError: any) {
       // Log detallado para diagnóstico pero siempre 200 para evitar reintentos
       console.error(`[Shopify webhook] Error en handler "${topic}":`, handlerError?.message, handlerError?.stack);
+      await registrarEvento('error', 'shopify-webhook', `Error procesando ${topic}: ${handlerError?.message || handlerError}`);
     }
 
     return NextResponse.json({ success: true, topic }, { status: 200 });
