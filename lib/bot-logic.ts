@@ -31,6 +31,7 @@ import { matchProductoDistintivo } from './matching';
 import { esIdUsuarioWhatsApp, contactoVisible } from './whatsapp-id';
 import { evaluarCobertura } from './cobertura';
 import { parsearCalificacion } from './encuesta';
+import { asegurarOportunidad } from './oportunidades';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -1087,6 +1088,14 @@ async function respuestaEmpresarial(
   textoSofi = ''
 ): Promise<BotResponse> {
   await etiquetarEmpresarial(context);
+  // Entra al embudo de ventas empresariales apenas se detecta
+  await asegurarOportunidad({
+    conversacionId: context.conversacion.id,
+    clienteId: context.cliente.id,
+    contacto: context.cliente.nombre,
+    telefono: context.cliente.telefono,
+    necesidad: texto,
+  });
 
   // Ya escribió el correo en este mismo mensaje: se registra de una vez
   const correo = extraerCorreo(texto);
@@ -1144,6 +1153,14 @@ async function registrarLeadEmpresarial(
   // queda además en el conteo del panel como "Ventas Empresariales".
   await etiquetarEmpresarial(context);
   await guardarLead(SEDE_EMPRESARIAL, '', context, resumen);
+  await asegurarOportunidad({
+    conversacionId: context.conversacion.id,
+    clienteId: context.cliente.id,
+    contacto: context.cliente.nombre,
+    telefono: context.cliente.telefono,
+    correo,
+    necesidad: resumen,
+  });
 
   return {
     texto:

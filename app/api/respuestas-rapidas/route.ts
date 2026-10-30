@@ -5,6 +5,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { asesorDeRequest } from '@/lib/sesion';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,6 +49,7 @@ export async function POST(req: Request) {
     .select('id, atajo, contenido, orden')
     .single();
   if (error) return NextResponse.json({ success: false, error: MIGRACION_PENDIENTE }, { status: 503 });
+  await auditarRequest(req, 'respuesta_rapida.crear', 'respuesta_rapida', data?.id ?? null, { atajo });
   return NextResponse.json({ success: true, respuesta: data });
 }
 
@@ -64,6 +66,7 @@ export async function PATCH(req: Request) {
     .from('respuestas_rapidas').update(cambios).eq('id', body.id)
     .select('id, atajo, contenido, orden').single();
   if (error) return NextResponse.json({ success: false, error: MIGRACION_PENDIENTE }, { status: 503 });
+  await auditarRequest(req, 'respuesta_rapida.editar', 'respuesta_rapida', body.id);
   return NextResponse.json({ success: true, respuesta: data });
 }
 
@@ -72,5 +75,6 @@ export async function DELETE(req: Request) {
   if (!id) return NextResponse.json({ success: false, error: 'Falta el id' }, { status: 400 });
   const { error } = await supabaseAdmin.from('respuestas_rapidas').delete().eq('id', id);
   if (error) return NextResponse.json({ success: false, error: MIGRACION_PENDIENTE }, { status: 503 });
+  await auditarRequest(req, 'respuesta_rapida.borrar', 'respuesta_rapida', id);
   return NextResponse.json({ success: true });
 }

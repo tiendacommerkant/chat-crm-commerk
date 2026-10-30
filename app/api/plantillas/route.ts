@@ -1,6 +1,7 @@
 // GET  /api/plantillas          → lista plantillas de Meta WhatsApp
 // POST /api/plantillas          → crea una nueva plantilla
 import { NextResponse } from 'next/server';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +37,7 @@ export async function POST(req: Request) {
     });
     const data = await res.json();
     if (!res.ok) return NextResponse.json({ success: false, error: data.error?.message }, { status: res.status });
+    await auditarRequest(req, 'plantilla.crear', 'plantilla', data?.id ?? null, { nombre: name });
     return NextResponse.json({ success: true, plantilla: data });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });

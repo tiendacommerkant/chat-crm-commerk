@@ -20,7 +20,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     const cliente = (conv as any).cliente || {};
     const telefono: string | null = cliente.telefono || null;
 
-    const [ultimoUser, pedidosTodos, ventas, carritos, previas] = await Promise.all([
+    const [ultimoUser, pedidosTodos, ventas, carritos, previas, oportunidad] = await Promise.all([
       supabaseAdmin.from('mensajes').select('created_at').eq('conversacion_id', params.id).eq('tipo', 'user')
         .order('created_at', { ascending: false }).limit(1).maybeSingle(),
       telefono
@@ -36,6 +36,8 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
             .eq('telefono', telefono).order('shopify_updated_at', { ascending: false }).limit(3)
         : Promise.resolve({ data: [] as any[] }),
       supabaseAdmin.from('conversaciones').select('id', { count: 'exact', head: true }).eq('cliente_id', cliente.id),
+      supabaseAdmin.from('oportunidades').select('id, etapa, empresa, valor_estimado, unidades')
+        .eq('conversacion_id', params.id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
     ]);
 
     const pedidos = (pedidosTodos as any).data || [];
@@ -65,6 +67,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       pedidos: pedidos.slice(0, 5),
       ventas_bot: (ventas as any).data || [],
       carritos: (carritos as any).data || [],
+      oportunidad: (oportunidad as any).error ? null : (oportunidad as any).data || null,
       ventana: {
         ultimo_mensaje_cliente: ultimo || null,
         abierta: cierra ? cierra > Date.now() : false,

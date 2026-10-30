@@ -6,6 +6,7 @@ import { NextResponse } from 'next/server';
 import { asesorDeRequest } from '@/lib/sesion';
 import { tomarConversacion, asignarConversacion, devolverAlBot } from '@/lib/atencion';
 import { enviarEncuestaSiCorresponde } from '@/lib/encuesta';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,15 +19,18 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     if (accion === 'tomar') {
       await tomarConversacion(params.id, asesor);
+      await auditarRequest(req, 'conversacion.tomar', 'conversacion', params.id);
     } else if (accion === 'asignar') {
       if (!email || typeof email !== 'string') {
         return NextResponse.json({ success: false, error: 'Falta el asesor' }, { status: 400 });
       }
       await asignarConversacion(params.id, { email, nombre: typeof nombre === 'string' && nombre ? nombre : email });
+      await auditarRequest(req, 'conversacion.asignar', 'conversacion', params.id, { a: email });
     } else if (accion === 'devolver_bot') {
       await devolverAlBot(params.id);
       // Caso resuelto por un asesor: se le pregunta al cliente cómo le fue
       const encuesta = await enviarEncuestaSiCorresponde(params.id).catch(() => false);
+      await auditarRequest(req, 'conversacion.resolver', 'conversacion', params.id, { encuesta });
       return NextResponse.json({ success: true, encuesta });
     } else {
       return NextResponse.json({ success: false, error: 'Acción no válida' }, { status: 400 });

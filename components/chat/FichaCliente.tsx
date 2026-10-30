@@ -11,6 +11,7 @@ export type Ficha = {
   pedidos: any[];
   ventas_bot: any[];
   carritos: any[];
+  oportunidad?: { id: string; etapa: string; empresa: string | null; valor_estimado: number | null; unidades: number | null } | null;
   ventana: { ultimo_mensaje_cliente: string | null; abierta: boolean; cierra_en: string | null };
 };
 
@@ -19,6 +20,7 @@ export type Usuario = { email: string; nombre: string };
 const cop = (n: number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(n || 0);
 const fecha = (iso?: string | null) => iso ? new Date(iso).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', timeZone: TZ }) : '—';
 
+const ETAPA: Record<string, string> = { nueva: 'Nueva', contactada: 'Contactada', cotizada: 'Cotizada', ganada: 'Ganada', perdida: 'Perdida' };
 const ESTADO_PEDIDO: Record<string, string> = { paid: 'Pagado', pending: 'Pendiente', refunded: 'Reembolsado', partially_refunded: 'Reembolso parcial', voided: 'Anulado' };
 const ESTADO_VENTA: Record<string, { label: string; cls: string }> = {
   pagado: { label: 'Pagado', cls: 'bg-emerald-50 text-emerald-700' },
@@ -121,6 +123,17 @@ export function FichaCliente(props: {
           </p>
         </div>
       </Seccion>
+
+      {f.oportunidad && (
+        <Seccion titulo="Embudo empresarial" extra={<a href="/dashboard/embudo" className="text-[10px] font-semibold text-commerk-navy hover:underline">Ver embudo</a>}>
+          <div className="rounded-xl bg-sky-50 border border-sky-100 px-3 py-2">
+            <p className="text-xs font-bold text-sky-800">🏢 {f.oportunidad.empresa || 'Oportunidad empresarial'} · {ETAPA[f.oportunidad.etapa] || f.oportunidad.etapa}</p>
+            <p className="text-[11px] text-sky-700/80">
+              {[f.oportunidad.unidades && `${f.oportunidad.unidades} unidades`, f.oportunidad.valor_estimado && cop(Number(f.oportunidad.valor_estimado))].filter(Boolean).join(' · ') || 'Sin valor estimado todavía'}
+            </p>
+          </div>
+        </Seccion>
+      )}
 
       <Seccion titulo="Resumen">
         <div className="grid grid-cols-2 gap-2">

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { mismoSecreto } from '@/lib/sesion';
+import { auditarRequest } from '@/lib/auditoria';
 
 export async function POST(req: NextRequest) {
   // Borra TODOS los datos: además de la sesión (middleware) exige ADMIN_SECRET configurado
@@ -15,6 +16,7 @@ export async function POST(req: NextRequest) {
   const { error: e4 } = await supabaseAdmin.from('clientes').delete().neq('id', '00000000-0000-0000-0000-000000000000');
 
   const errores = [e1, e2, e3, e4].filter(Boolean).map((e) => e?.message);
+  await auditarRequest(req, 'datos.borrar_todo', null, null, { errores });
 
   return NextResponse.json({
     ok: errores.length === 0,

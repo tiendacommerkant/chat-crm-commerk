@@ -1,6 +1,7 @@
 // PUT    /api/plantillas/[id]  → actualiza componentes (Meta envía a revisión)
 // DELETE /api/plantillas/[id]  → elimina la plantilla
 import { NextResponse } from 'next/server';
+import { auditarRequest } from '@/lib/auditoria';
 
 const GRAPH_URL = 'https://graph.facebook.com/v25.0';
 const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
@@ -22,7 +23,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   try {
     const res = await fetch(
       `${GRAPH_URL}/${WABA_ID}/message_templates?hsm_id=${params.id}`,
@@ -30,6 +31,7 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     );
     const data = await res.json();
     if (!res.ok) return NextResponse.json({ success: false, error: data.error?.message }, { status: res.status });
+    await auditarRequest(req, 'plantilla.borrar', 'plantilla', params.id);
     return NextResponse.json({ success: true });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });

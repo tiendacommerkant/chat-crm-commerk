@@ -9,6 +9,7 @@ import { enviarPlantillaWhatsApp } from '@/lib/whatsapp';
 import { registrarEnvioPlantilla } from '@/lib/costos';
 import { asesorDeRequest } from '@/lib/sesion';
 import { obtenerDestino, registrarMensajeAsesor, traducirErrorWhatsApp } from '@/lib/chat-asesor';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,6 +53,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       whatsapp_message_id: envio.messageId,
     }, asesor);
 
+    await auditarRequest(req, 'mensaje.plantilla', 'conversacion', params.id, { plantilla: nombre });
     return NextResponse.json({ success: true, mensaje });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

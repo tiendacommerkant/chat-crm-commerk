@@ -4,6 +4,7 @@ import { NextResponse } from 'next/server';
 import { ARCHIVOS_PERMITIDOS, subirArchivoWhatsApp, enviarArchivoWhatsApp } from '@/lib/whatsapp';
 import { asesorDeRequest } from '@/lib/sesion';
 import { obtenerDestino, registrarMensajeAsesor, traducirErrorWhatsApp } from '@/lib/chat-asesor';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -59,6 +60,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       whatsapp_message_id: envio.messageId,
     }, asesor);
 
+    await auditarRequest(req, 'mensaje.adjunto', 'conversacion', params.id, { archivo: nombreArchivo });
     return NextResponse.json({ success: true, mensaje });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

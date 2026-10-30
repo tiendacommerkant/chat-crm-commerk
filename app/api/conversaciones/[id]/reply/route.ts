@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { enviarMensajeWhatsApp } from '@/lib/whatsapp';
 import { asesorDeRequest } from '@/lib/sesion';
 import { obtenerDestino, registrarMensajeAsesor, traducirErrorWhatsApp } from '@/lib/chat-asesor';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       whatsapp_message_id: resultado.messageId,
     }, asesor);
 
+    await auditarRequest(req, 'mensaje.texto', 'conversacion', params.id);
     return NextResponse.json({ success: true, mensaje: nuevoMensaje });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

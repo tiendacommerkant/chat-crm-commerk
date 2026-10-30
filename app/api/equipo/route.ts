@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { asesorDeRequest, nombreDesdeEmail, rolDeUsuario, type RolCRM } from '@/lib/sesion';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,6 +60,7 @@ export async function POST(req: Request) {
     const yaExiste = /already|registered|exists/i.test(e.message);
     return NextResponse.json({ success: false, error: yaExiste ? 'Ya existe una cuenta con ese correo' : e.message }, { status: 400 });
   }
+  await auditarRequest(req, 'equipo.crear', 'usuario', data.user?.id ?? null, { email, rol });
   return NextResponse.json({ success: true, id: data.user?.id });
 }
 
@@ -86,5 +88,6 @@ export async function PATCH(req: Request) {
 
   const { error: e2 } = await supabaseAdmin.auth.admin.updateUserById(body.id, { app_metadata, user_metadata });
   if (e2) return NextResponse.json({ success: false, error: e2.message }, { status: 500 });
+  await auditarRequest(req, 'equipo.editar', 'usuario', body.id, { email: u.email, nombre: body.nombre, rol: body.rol, acceso: body.acceso });
   return NextResponse.json({ success: true });
 }

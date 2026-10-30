@@ -7,6 +7,7 @@ import {
   leerConfiguracion, limpiarCacheConfiguracion, normalizarHorario,
   describirHorario, dentroDeHorario, proximaApertura, avisoFueraDeHorario,
 } from '@/lib/horario';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -60,5 +61,6 @@ export async function PUT(req: Request) {
   const { error } = await supabaseAdmin.from('configuracion').upsert(filas, { onConflict: 'clave' });
   if (error) return NextResponse.json({ success: false, error: MIGRACION }, { status: 503 });
   limpiarCacheConfiguracion();
+  await auditarRequest(req, 'configuracion.editar', 'configuracion', null, { claves: filas.map((f) => f.clave) });
   return NextResponse.json({ success: true });
 }

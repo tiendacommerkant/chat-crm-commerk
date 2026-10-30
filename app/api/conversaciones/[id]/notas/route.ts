@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { asesorDeRequest } from '@/lib/sesion';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,5 +35,6 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     .select()
     .single();
   if (error) return NextResponse.json({ success: false, error: MIGRACION_PENDIENTE }, { status: 503 });
+  await auditarRequest(req, 'nota.crear', 'conversacion', params.id);
   return NextResponse.json({ success: true, nota: data });
 }

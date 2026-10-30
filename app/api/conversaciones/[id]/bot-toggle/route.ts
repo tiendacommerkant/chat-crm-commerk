@@ -3,6 +3,7 @@
 import { NextResponse } from 'next/server';
 import { asesorDeRequest } from '@/lib/sesion';
 import { tomarConversacion, devolverAlBot } from '@/lib/atencion';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       await tomarConversacion(params.id, asesor);
     }
 
+    await auditarRequest(req, 'conversacion.bot', 'conversacion', params.id, { bot_activo });
     return NextResponse.json({ success: true, bot_activo });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

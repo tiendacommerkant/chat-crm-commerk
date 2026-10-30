@@ -171,3 +171,17 @@ describe('Recordatorio automático de carrito', () => {
     expect(marcado?.args[1]).toHaveLength(5);
   });
 });
+
+describe('Embudo empresarial', async () => {
+  const { unidadesMencionadas } = await import('@/lib/oportunidades');
+  it.each([['necesito 200 kits para mis empleados', 200], ['unas 50 botellas', 50], ['regalos para 35 colaboradores', 35]])(
+    '"%s" → %s unidades', (t, n) => expect(unidadesMencionadas(String(t))).toBe(n));
+  it('sin cantidad no inventa', () => expect(unidadesMencionadas('quiero regalos para mi empresa')).toBeNull());
+
+  it('una empresa detectada por el bot entra al embudo con sus unidades', async () => {
+    sim.sofi.mockResolvedValueOnce({ texto: 'Con gusto', accion: 'iniciar_empresarial', metadata: { awaiting: '' } });
+    await procesarMensajeBot('Somos una empresa y necesitamos 200 kits para nuestros clientes', contexto());
+    const insert = sim.registro.find((x) => x.tabla === 'oportunidades' && x.op === 'insert');
+    expect(insert?.args[0]).toMatchObject({ conversacion_id: 'conv-1', cliente_id: 'cliente-1', unidades: 200 });
+  });
+});

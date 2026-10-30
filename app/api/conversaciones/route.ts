@@ -6,6 +6,7 @@ import { enviarMensajeWhatsApp } from '@/lib/whatsapp';
 import { asesorDeRequest } from '@/lib/sesion';
 import { tomarConversacion } from '@/lib/atencion';
 import { traducirErrorWhatsApp } from '@/lib/chat-asesor';
+import { auditarRequest } from '@/lib/auditoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -207,6 +208,7 @@ export async function POST(req: Request) {
 
     // Quien inicia la conversación la atiende
     if (asesor) await tomarConversacion(conversacionId, asesor);
+    await auditarRequest(req, 'conversacion.nueva', 'conversacion', conversacionId, { cliente_id });
 
     return NextResponse.json({
       success: true,
