@@ -26,6 +26,7 @@ async function paso<T>(nombre: string, fn: () => Promise<T>): Promise<{ ok: bool
 }
 
 export async function GET(req: Request) {
+  const inicio = Date.now();
   const secret = process.env.CRON_SECRET || '';
   if (!secret || !mismoSecreto(req.headers.get('authorization') || '', `Bearer ${secret}`)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -34,7 +35,8 @@ export async function GET(req: Request) {
   const catalogo = await paso('Catálogo', sincronizarCatalogo);
   const carritos = await paso('Carritos de Shopify', async () => ({
     sincronizados: await sincronizarCarritosShopify(48),
-    recuperacion: await procesarCarritosPendientes(),
+    // La función tiene 60 s: lo que no alcance lo sigue la siguiente revisión
+    recuperacion: await procesarCarritosPendientes(inicio + 50_000),
   }));
   const recordatorios = await paso('Recordatorios de carrito', recordarCarritosAbandonados);
 

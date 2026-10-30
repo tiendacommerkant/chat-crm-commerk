@@ -185,6 +185,8 @@ export default function CarritosPage() {
         </div>
       )}
 
+      <CampanaCarritos onAviso={(msg, ok) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 4000); }} />
+
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <Card className="p-4">
@@ -335,6 +337,79 @@ export default function CarritosPage() {
 }
 
 // ─── Webhook Registrar ────────────────────────────────────────────────────────
+// Campaña única para recordar carritos de varios días atrás (lib/recuperacion.ts)
+function CampanaCarritos({ onAviso }: { onAviso: (msg: string, ok: boolean) => void }) {
+  const [info, setInfo] = useState<{ campana: any; personas: number | null; personas_30_dias: number | null } | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+
+  const cargar = useCallback(() => {
+    fetch('/api/carritos/campana').then((r) => r.json()).then((j) => { if (j.success) setInfo(j); }).catch(() => {});
+  }, []);
+  useEffect(() => { cargar(); const t = setInterval(cargar, 60_000); return () => clearInterval(t); }, [cargar]);
+
+  const accion = async (metodo: 'POST' | 'DELETE', cuerpo?: any) => {
+    setOcupado(true);
+    try {
+      const j = await fetch('/api/carritos/campana', {
+        method: metodo, headers: { 'Content-Type': 'application/json' }, body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+      }).then((r) => r.json());
+      onAviso(j.success ? (metodo === 'POST' ? '✅ Campaña programada' : '✅ Campaña cancelada') : `❌ ${j.error}`, !!j.success);
+      cargar();
+    } finally {
+      setOcupado(false);
+    }
+  };
+
+  if (!info) return null;
+  const c = info.campana;
+  const fecha = (iso: string) => new Date(iso).toLocaleString('es-CO', { weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' });
+
+  if (c && ['pendiente', 'en_curso'].includes(c.estado)) {
+    const yaInicio = new Date(c.inicia).getTime() <= Date.now();
+    return (
+      <Card className="p-4 border-l-4 border-l-commerk-gold flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="flex-1">
+          <p className="text-sm font-bold text-commerk-navy">
+            📣 Campaña de recordatorios {c.estado === 'en_curso' ? 'en curso' : yaInicio ? 'lista para salir' : 'programada'}
+          </p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Carritos desde el {new Date(c.carritos_desde).toLocaleDateString('es-CO', { day: 'numeric', month: 'long' })}
+            {' · '}{info.personas ?? 0} persona(s) por recordar
+            {c.enviados ? ` · ${c.enviados} enviado(s)` : ''}
+            {!yaInicio ? ` · sale el ${fecha(c.inicia)}` : ' · sale de 8 a. m. a 8 p. m. en las próximas revisiones'}
+          </p>
+          <p className="text-[11px] text-slate-400 mt-1">Un mensaje por persona con la plantilla aprobada. No se le escribe a quien pidió no recibir publicidad, ya compró o está con un asesor.</p>
+        </div>
+        <button onClick={() => confirm('¿Cancelar la campaña? Los que ya recibieron el mensaje no se ven afectados.') && accion('DELETE')}
+          disabled={ocupado} className="px-3 py-2 rounded-xl border border-red-200 text-red-600 text-xs font-semibold hover:bg-red-50 disabled:opacity-60">
+          Cancelar campaña
+        </button>
+      </Card>
+    );
+  }
+
+  const ultima = c && ['terminada', 'cancelada'].includes(c.estado) && c.terminada
+    ? `Última campaña ${c.estado === 'cancelada' ? 'cancelada' : 'terminada'} el ${fecha(c.terminada)}: ${c.enviados || 0} enviado(s), ${c.omitidos || 0} omitido(s).`
+    : null;
+  if (!info.personas_30_dias && !ultima) return null;
+  return (
+    <Card className="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="flex-1">
+        {!!info.personas_30_dias && (
+          <p className="text-sm font-semibold text-commerk-navy">{info.personas_30_dias} persona(s) dejaron un carrito en los últimos 30 días y no han recibido recordatorio</p>
+        )}
+        {ultima && <p className="text-xs text-slate-500 mt-0.5">{ultima}</p>}
+      </div>
+      {!!info.personas_30_dias && (
+        <button onClick={() => confirm(`Se enviará un recordatorio por WhatsApp a ${info.personas_30_dias} persona(s), de 8 a. m. a 8 p. m. ¿Continuar?`) && accion('POST', { dias: 30 })}
+          disabled={ocupado} className="px-4 py-2 rounded-xl bg-commerk-navy text-white text-xs font-semibold hover:bg-commerk-navy/90 disabled:opacity-60">
+          Recordar carritos de los últimos 30 días
+        </button>
+      )}
+    </Card>
+  );
+}
+
 function WebhookRegistrar() {
   const [estado, setEstado] = useState<'idle' | 'loading' | 'done'>('idle');
   const [resultado, setResultado] = useState<any>(null);

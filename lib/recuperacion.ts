@@ -223,14 +223,99 @@ export async function recuperarCarrito(carrito: CarritoFila, { manual = false } 
   return { enviado: true, via: ventanaAbierta ? 'texto' : 'plantilla' };
 }
 
+// ─── Campaña única: recordar carritos de varios días atrás ──────────────────
+// Se programa en configuracion.campana_carritos. La corre la primera revisión
+// que llegue después de la hora fijada (tarea de 10 min, tarea diaria o CRM
+// abierto) y, si se le acaba el tiempo, sigue en la siguiente. Un mensaje por
+// persona (su carrito más reciente) y las mismas reglas del envío automático.
+
+export const CLAVE_CAMPANA = 'campana_carritos';
+
+export interface CampanaCarritos {
+  carritos_desde: string; // carritos actualizados desde esta fecha
+  inicia: string; // no se envía nada antes de esta hora
+  estado: 'pendiente' | 'en_curso' | 'terminada' | 'cancelada';
+  enviados?: number;
+  omitidos?: number;
+  terminada?: string;
+}
+
+export async function leerCampanaCarritos(): Promise<CampanaCarritos | null> {
+  const { data } = await supabaseAdmin.from('configuracion').select('valor').eq('clave', CLAVE_CAMPANA).maybeSingle();
+  return ((data as any)?.valor as CampanaCarritos) || null;
+}
+
+async function guardarCampana(campana: CampanaCarritos) {
+  await supabaseAdmin.from('configuracion').upsert({
+    clave: CLAVE_CAMPANA, valor: campana, actualizado_por: 'sistema', updated_at: new Date().toISOString(),
+  }, { onConflict: 'clave' });
+}
+
+export async function avanzarCampanaCarritos(hasta: number): Promise<{ enviados: number; omitidos: number; terminada: boolean } | null> {
+  const campana = await leerCampanaCarritos();
+  if (!campana || !['pendiente', 'en_curso'].includes(campana.estado)) return null;
+  if (Date.now() < new Date(campana.inicia).getTime() || !horaDeEnviar()) return null;
+
+  const { data: carritos, error } = await supabaseAdmin
+    .from('carritos_abandonados')
+    .select('*')
+    .eq('estado', 'abandonado')
+    .eq('notificado_whatsapp', false)
+    .not('telefono', 'is', null)
+    .gte('shopify_updated_at', campana.carritos_desde)
+    .lt('shopify_updated_at', new Date(Date.now() - ABANDONO_MINUTOS * 60_000).toISOString())
+    .order('shopify_updated_at', { ascending: false })
+    .limit(500);
+  if (error) throw error;
+
+  let enviados = 0;
+  let omitidos = 0;
+  let pendientes = 0;
+  const vistos = new Set<string>();
+  for (const carrito of (carritos || []) as CarritoFila[]) {
+    const telefono = celularColombiano(carrito.telefono || null) || carrito.telefono || carrito.id;
+    if (vistos.has(telefono)) {
+      // Carrito más viejo de alguien que ya recibe el del más reciente
+      await supabaseAdmin.from('carritos_abandonados').update({ notificado_whatsapp: true }).eq('id', carrito.id);
+      continue;
+    }
+    if (Date.now() > hasta) { pendientes++; continue; }
+    vistos.add(telefono);
+    try {
+      const r = await recuperarCarrito(carrito);
+      if (r.enviado) enviados++;
+      else omitidos++;
+    } catch (e: any) {
+      omitidos++;
+      await registrarEvento('error', 'carritos', `Campaña de carritos ${carrito.shopify_checkout_id}: ${e?.message || e}`);
+    }
+  }
+
+  const terminada = pendientes === 0;
+  const total = { enviados: (campana.enviados || 0) + enviados, omitidos: (campana.omitidos || 0) + omitidos };
+  await guardarCampana({
+    ...campana,
+    ...total,
+    estado: terminada ? 'terminada' : 'en_curso',
+    ...(terminada && { terminada: new Date().toISOString() }),
+  });
+  if (terminada) {
+    await registrarEvento('info', 'carritos', `Campaña de carritos terminada: ${total.enviados} recordatorio(s) enviado(s), ${total.omitidos} omitido(s)`);
+  }
+  return { enviados, omitidos, terminada };
+}
+
 /**
  * Trae los carritos nuevos de Shopify y recuerda los abandonados del último
- * día. La llaman la tarea programada (cada 10 min), la tarea diaria y el CRM abierto.
+ * día (y avanza la campaña programada, si hay). La llaman la tarea programada
+ * (cada 10 min), la tarea diaria y el CRM abierto. `hasta`: límite de tiempo
+ * para no pasarse de los 60 s de la función.
  */
-export async function procesarCarritosPendientes(): Promise<{
+export async function procesarCarritosPendientes(hasta = Date.now() + 45_000): Promise<{
   sincronizacion: { revisados: number; guardados: number };
   enviados: number;
   omitidos: number;
+  campana?: { enviados: number; omitidos: number; terminada: boolean } | null;
   motivo?: string;
 }> {
   const sincronizacion = await sincronizarCarritosShopify(24);
@@ -273,5 +358,6 @@ export async function procesarCarritosPendientes(): Promise<{
   if (enviados || omitidos) {
     await registrarEvento('info', 'carritos', `Carritos de la tienda: ${enviados} recordatorio(s) enviado(s), ${omitidos} omitido(s)`);
   }
-  return { sincronizacion, enviados, omitidos };
+  const campana = await avanzarCampanaCarritos(hasta);
+  return { sincronizacion, enviados, omitidos, campana };
 }

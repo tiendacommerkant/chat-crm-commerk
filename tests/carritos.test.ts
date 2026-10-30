@@ -27,7 +27,7 @@ vi.mock('@/lib/whatsapp', async (original) => ({
   enviarPlantillaWhatsApp: sim.plantilla,
 }));
 
-import { horaDeEnviar, resumenCarrito, recuperarCarrito } from '@/lib/recuperacion';
+import { horaDeEnviar, resumenCarrito, recuperarCarrito, avanzarCampanaCarritos } from '@/lib/recuperacion';
 import { clasificarRespuestaCarrito } from '@/lib/bot/carrito-tienda';
 import { procesarMensajeBot } from '@/lib/bot-logic';
 import { contexto, bot } from './apoyo/simulador';
@@ -178,5 +178,47 @@ describe('Respuesta del cliente al recordatorio', () => {
     const r = await procesarMensajeBot('no me manden más mensajes', contexto({ politicas: false, sede: null, historial: [recordatorio()] }));
     expect(r.texto).toMatch(/no te enviaremos más/i);
     expect(sim.registro.some((x) => x.tabla === 'clientes' && x.op === 'update' && x.args[0]?.no_publicidad === true)).toBe(true);
+  });
+});
+
+describe('Campaña programada de carritos de varios días', () => {
+  const campana = (inicia: string) => ({ valor: { carritos_desde: '2026-09-29T15:00:00Z', inicia, estado: 'pendiente' } });
+  const carritos = [
+    { ...carrito, id: 'c1', shopify_checkout_id: '1', shopify_updated_at: '2026-10-28T15:00:00Z' },
+    { ...carrito, id: 'c2', shopify_checkout_id: '2', shopify_updated_at: '2026-10-20T15:00:00Z' }, // misma persona, más viejo
+    { ...carrito, id: 'c3', shopify_checkout_id: '3', telefono: '573104445566', nombre: 'Pedro', shopify_updated_at: '2026-10-15T15:00:00Z' },
+  ];
+  const guardada = () => sim.registro.filter((r) => r.tabla === 'configuracion' && r.op === 'upsert').at(-1)?.args[0]?.valor;
+
+  it('no sale antes de la hora programada', async () => {
+    sim.datos.configuracion = campana('2026-10-30T13:00:00Z');
+    sim.datos.carritos_abandonados = carritos;
+    expect(await avanzarCampanaCarritos(Date.now() + 40_000)).toBeNull();
+    expect(sim.plantilla).not.toHaveBeenCalled();
+  });
+
+  it('un mensaje por persona (su carrito más reciente) y queda terminada', async () => {
+    sim.datos.configuracion = campana('2026-10-29T13:00:00Z');
+    sim.datos.carritos_abandonados = carritos;
+    const r = await avanzarCampanaCarritos(Date.now() + 40_000);
+    expect(r).toEqual({ enviados: 2, omitidos: 0, terminada: true });
+    expect(sim.plantilla.mock.calls.map((c: any[]) => c[0])).toEqual(['573001112233', '573104445566']);
+    expect(guardada()).toMatchObject({ estado: 'terminada', enviados: 2 });
+  });
+
+  it('de noche espera a la mañana', async () => {
+    vi.setSystemTime(new Date('2026-10-30T03:00:00Z')); // 10 p. m.
+    sim.datos.configuracion = campana('2026-10-29T13:00:00Z');
+    sim.datos.carritos_abandonados = carritos;
+    expect(await avanzarCampanaCarritos(Date.now() + 40_000)).toBeNull();
+    expect(sim.plantilla).not.toHaveBeenCalled();
+  });
+
+  it('si se acaba el tiempo, sigue en la próxima revisión', async () => {
+    sim.datos.configuracion = campana('2026-10-29T13:00:00Z');
+    sim.datos.carritos_abandonados = carritos;
+    const r = await avanzarCampanaCarritos(Date.now() - 1);
+    expect(r?.terminada).toBe(false);
+    expect(guardada()).toMatchObject({ estado: 'en_curso' });
   });
 });
