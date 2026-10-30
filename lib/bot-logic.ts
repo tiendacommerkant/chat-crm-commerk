@@ -32,6 +32,7 @@ import { esIdUsuarioWhatsApp, contactoVisible } from './whatsapp-id';
 import { evaluarCobertura } from './cobertura';
 import { parsearCalificacion } from './encuesta';
 import { asegurarOportunidad } from './oportunidades';
+import { esPedidoDeBaja } from './difusiones';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -189,6 +190,15 @@ export async function procesarMensajeBot(
     const r = await responderEncuesta(texto, awaiting, context, ultimoBot?.metadata || {}, pendingCart);
     if (r) return r;
     awaiting = ''; // no era una respuesta a la encuesta: se atiende normal
+  }
+
+  // ── BAJA DE PUBLICIDAD: queda fuera de todas las difusiones ───────
+  if (esPedidoDeBaja(textoLower)) {
+    await supabaseAdmin.from('clientes').update({ no_publicidad: true }).eq('id', context.cliente.id);
+    return {
+      texto: 'Listo ✅ No te enviaremos más mensajes promocionales. Si necesitas algo, escríbenos cuando quieras: aquí seguimos para ayudarte. 😊',
+      metadata: { awaiting: '', pending_cart: pendingCart },
+    };
   }
 
   // ── CLIENTE MOLESTO: una persona lo atiende de inmediato ──────────

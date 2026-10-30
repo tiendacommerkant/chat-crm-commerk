@@ -185,3 +185,25 @@ describe('Embudo empresarial', async () => {
     expect(insert?.args[0]).toMatchObject({ conversacion_id: 'conv-1', cliente_id: 'cliente-1', unidades: 200 });
   });
 });
+
+describe('Difusiones', async () => {
+  const { prepararParametros, costoEstimado, esPedidoDeBaja } = await import('@/lib/difusiones');
+  it('pone el primer nombre de cada cliente', () => {
+    expect(prepararParametros(['{nombre}', 'Black Weekend'], 'Laura Gómez')).toEqual(['Laura', 'Black Weekend']);
+    expect(prepararParametros(['Hola {nombre}'], null)).toEqual(['Hola cliente']);
+  });
+  it('estima el costo según la categoría', () => {
+    expect(costoEstimado(100, 'MARKETING')).toBeGreaterThan(costoEstimado(100, 'UTILITY'));
+    expect(costoEstimado(0, 'MARKETING')).toBe(0);
+  });
+  it.each(['no quiero recibir más mensajes', 'dejen de escribirme', 'darme de baja', 'baja', 'no me envíen más'])(
+    '"%s" es una baja', (t) => expect(esPedidoDeBaja(t)).toBe(true));
+  it.each(['quiero recibir el pedido', 'baja el precio?', 'no quiero ese'])('"%s" no es una baja', (t) => expect(esPedidoDeBaja(t)).toBe(false));
+
+  it('el bot marca la baja y lo confirma, aun a mitad de una compra', async () => {
+    const r = await procesarMensajeBot('no quiero recibir más mensajes', contexto({ historial: [bot('¿Cuántas?', { awaiting: 'cantidad', pending_product_id: 'x' })] }));
+    const update = sim.registro.find((x) => x.tabla === 'clientes' && x.op === 'update');
+    expect(update?.args[0]).toEqual({ no_publicidad: true });
+    expect(r.texto).toMatch(/No te enviaremos más mensajes promocionales/);
+  });
+});
