@@ -56,6 +56,14 @@ WHERE l.sede = 'Ventas Empresariales'
   AND NOT EXISTS (SELECT 1 FROM oportunidades o WHERE o.conversacion_id = l.conversacion_id)
 ORDER BY l.conversacion_id, l.created_at DESC;
 
+-- Y las conversaciones marcadas "Empresa" que aún no dejaron correo
+INSERT INTO oportunidades (conversacion_id, cliente_id, contacto, telefono, created_at)
+SELECT c.id, c.cliente_id, cl.nombre, cl.telefono, c.created_at
+FROM conversaciones c
+JOIN clientes cl ON cl.id = c.cliente_id
+WHERE c.etiqueta = 'empresarial'
+  AND NOT EXISTS (SELECT 1 FROM oportunidades o WHERE o.conversacion_id = c.id);
+
 -- ─── Difusiones (mensajes masivos con plantilla aprobada) ───────────
 CREATE TABLE IF NOT EXISTS difusiones (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
