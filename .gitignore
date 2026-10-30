@@ -26,3 +26,6 @@ yarn-error.log*
 # TypeScript
 *.tsbuildinfo
 next-env.d.ts
+
+# Scripts SQL con claves reales (copias locales listas para correr)
+*.local.sql
