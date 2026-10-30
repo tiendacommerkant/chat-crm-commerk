@@ -49,11 +49,12 @@ const ALIAS_SEDES: Record<string, string[]> = {
 /**
  * Extrae el número de una respuesta tipo "elige una opción" tolerando la
  * puntuación con la que la gente suele responder listas en WhatsApp: "3.",
- * "3)", "(3)", "opción 3", " 3 ". Limitado a 1-2 dígitos para no confundir
- * con un número de teléfono u otro dato largo. Devuelve null si no aplica.
+ * "3)", "(3)", "opción 3", "la 3", "#3", " 3 ". Limitado a 1-2 dígitos para
+ * no confundir con un número de teléfono u otro dato largo. Devuelve null si
+ * no aplica.
  */
 export function extraerNumeroOpcion(texto: string): string | null {
-  const m = texto.trim().match(/^[(\[]?\s*(\d{1,2})\s*[).\]]?$/);
+  const m = texto.trim().match(/^(?:(?:la|el)\s+)?(?:opci[oó]n|n[uú]mero|#)?\s*[(\[]?\s*(\d{1,2})\s*[).\]]?$/i);
   return m ? m[1] : null;
 }
 
