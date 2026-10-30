@@ -67,6 +67,7 @@ export const ACCIONES: Record<string, string> = {
   'difusion.cancelar': 'Canceló una difusión',
   'catalogo.sincronizar': 'Sincronizó el catálogo',
   'carritos.campana': 'Programó una campaña de carritos',
+  'lead.actualizar': 'Actualizó un lead mayorista',
   'carritos.campana_cancelar': 'Canceló la campaña de carritos',
   'plantilla.crear': 'Creó una plantilla de WhatsApp',
   'plantilla.borrar': 'Borró una plantilla de WhatsApp',

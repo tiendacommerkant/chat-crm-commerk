@@ -1,9 +1,10 @@
 // POST   /api/auth/sesion — Cambia el token de Supabase por la cookie de sesión del CRM
+// GET    /api/auth/sesion — Quién está conectado (correo, nombre, rol y sede)
 // DELETE /api/auth/sesion — Cierra la sesión
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { auditar } from '@/lib/auditoria';
-import { COOKIE_SESION, DURACION_SESION_S, crearSesion, rolDeUsuario } from '@/lib/sesion';
+import { COOKIE_SESION, DURACION_SESION_S, crearSesion, rolDeUsuario, asesorDeRequest } from '@/lib/sesion';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,7 +33,8 @@ export async function POST(req: Request) {
     await auditar({ email: usuario.email || '', nombre: (usuario.user_metadata?.nombre as string) || usuario.email || '' }, 'sesion.ingreso', 'usuario', usuario.id);
     const nombre = (usuario.user_metadata?.nombre as string | undefined) || undefined;
     const rol = rolDeUsuario(usuario.app_metadata);
-    res.cookies.set(COOKIE_SESION, await crearSesion({ id: usuario.id, email: usuario.email || '', nombre, rol }), {
+    const sede = rol === 'sede' ? String(usuario.app_metadata?.sede || '') || undefined : undefined;
+    res.cookies.set(COOKIE_SESION, await crearSesion({ id: usuario.id, email: usuario.email || '', nombre, rol, sede }), {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -44,6 +46,12 @@ export async function POST(req: Request) {
     console.error('[Sesión] Error creando sesión:', error?.message);
     return NextResponse.json({ success: false, error: 'No se pudo iniciar sesión' }, { status: 500 });
   }
+}
+
+export async function GET(req: Request) {
+  const yo = await asesorDeRequest(req);
+  if (!yo) return NextResponse.json({ success: false, error: 'Sin sesión' }, { status: 401 });
+  return NextResponse.json({ success: true, yo });
 }
 
 export async function DELETE() {

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { COOKIE_SESION, leerSesion, mismoSecreto } from '@/lib/sesion';
+import { COOKIE_SESION, RUTAS_SEDE, leerSesion, mismoSecreto, rutaPermitidaParaSede } from '@/lib/sesion';
 
 // Rutas de la API que llaman servicios externos (Meta, Wompi, Shopify): cada
 // una verifica su propia firma. El resto de la API exige sesión del CRM.
@@ -24,7 +24,15 @@ export async function middleware(request: NextRequest) {
     if (!sesion) {
       return NextResponse.json({ success: false, error: 'No autorizado' }, { status: 401 });
     }
+    if (sesion.rol === 'sede' && !rutaPermitidaParaSede(pathname)) {
+      return NextResponse.json({ success: false, error: 'Tu cuenta de sede no tiene acceso a esta información' }, { status: 403 });
+    }
     return NextResponse.next();
+  }
+
+  // Una cuenta de sede solo ve sus leads mayoristas
+  if (sesion?.rol === 'sede' && pathname.startsWith('/dashboard') && !rutaPermitidaParaSede(pathname)) {
+    return NextResponse.redirect(new URL(RUTAS_SEDE.pantalla, request.url));
   }
 
   // Proteger todas las rutas del dashboard

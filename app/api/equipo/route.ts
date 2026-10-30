@@ -1,10 +1,12 @@
 // GET   /api/equipo — Cuentas del CRM (solo administradores)
-// POST  /api/equipo — Crea un asesor { email, nombre, password, rol }
-// PATCH /api/equipo — Edita { id, nombre?, rol?, acceso? }
+// POST  /api/equipo — Crea una cuenta { email, nombre, password, rol, sede? }
+// PATCH /api/equipo — Edita { id, nombre?, rol?, sede?, acceso? }
+// Rol "sede": la cuenta de una tienda, que solo ve sus leads mayoristas.
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { asesorDeRequest, nombreDesdeEmail, rolDeUsuario, type RolCRM } from '@/lib/sesion';
 import { auditarRequest } from '@/lib/auditoria';
+import { SEDES_FISICAS } from '@/lib/sedes';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +17,9 @@ async function soloAdmin(req: Request) {
   return { yo };
 }
 
-const rolValido = (r: unknown): RolCRM | null => (r === 'admin' || r === 'asesor' ? r : null);
+const rolValido = (r: unknown): RolCRM | null => (r === 'admin' || r === 'asesor' || r === 'sede' ? r : null);
+const NOMBRES_SEDES = Object.values(SEDES_FISICAS).map((s) => s.nombre);
+const sedeValida = (s: unknown): string | null => (typeof s === 'string' && NOMBRES_SEDES.includes(s) ? s : null);
 
 export async function GET(req: Request) {
   const { error } = await soloAdmin(req);
@@ -29,12 +33,13 @@ export async function GET(req: Request) {
       email: u.email!,
       nombre: (u.user_metadata?.nombre as string) || nombreDesdeEmail(u.email!),
       rol: rolDeUsuario(u.app_metadata),
+      sede: (u.app_metadata?.sede as string) || null,
       acceso: u.app_metadata?.crm_acceso === true,
       ultimo_ingreso: u.last_sign_in_at || null,
       creado: u.created_at,
     }))
     .sort((a, b) => Number(b.acceso) - Number(a.acceso) || a.nombre.localeCompare(b.nombre));
-  return NextResponse.json({ success: true, equipo });
+  return NextResponse.json({ success: true, equipo, sedes: NOMBRES_SEDES });
 }
 
 export async function POST(req: Request) {
@@ -45,8 +50,10 @@ export async function POST(req: Request) {
   const nombre = String(body.nombre || '').trim();
   const password = String(body.password || '');
   const rol = rolValido(body.rol) || 'asesor';
+  const sede = rol === 'sede' ? sedeValida(body.sede) : null;
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return NextResponse.json({ success: false, error: 'Correo no válido' }, { status: 400 });
-  if (!nombre) return NextResponse.json({ success: false, error: 'Escribe el nombre del asesor' }, { status: 400 });
+  if (!nombre) return NextResponse.json({ success: false, error: 'Escribe el nombre de la persona' }, { status: 400 });
+  if (rol === 'sede' && !sede) return NextResponse.json({ success: false, error: 'Elige la sede de esta cuenta' }, { status: 400 });
   if (password.length < 10) return NextResponse.json({ success: false, error: 'La contraseña debe tener al menos 10 caracteres' }, { status: 400 });
 
   const { data, error: e } = await supabaseAdmin.auth.admin.createUser({
@@ -54,13 +61,13 @@ export async function POST(req: Request) {
     password,
     email_confirm: true,
     user_metadata: { nombre },
-    app_metadata: { crm_acceso: true, rol },
+    app_metadata: { crm_acceso: true, rol, ...(sede && { sede }) },
   });
   if (e) {
     const yaExiste = /already|registered|exists/i.test(e.message);
     return NextResponse.json({ success: false, error: yaExiste ? 'Ya existe una cuenta con ese correo' : e.message }, { status: 400 });
   }
-  await auditarRequest(req, 'equipo.crear', 'usuario', data.user?.id ?? null, { email, rol });
+  await auditarRequest(req, 'equipo.crear', 'usuario', data.user?.id ?? null, { email, rol, ...(sede && { sede }) });
   return NextResponse.json({ success: true, id: data.user?.id });
 }
 
@@ -75,7 +82,7 @@ export async function PATCH(req: Request) {
   const u = actual.user;
 
   // Nadie se quita a sí mismo el acceso ni el rol de administrador
-  if (u.email === yo!.email && (body.acceso === false || body.rol === 'asesor')) {
+  if (u.email === yo!.email && (body.acceso === false || (body.rol && body.rol !== 'admin'))) {
     return NextResponse.json({ success: false, error: 'No puedes quitarte tu propio acceso ni tu rol de administrador' }, { status: 400 });
   }
 
@@ -83,11 +90,20 @@ export async function PATCH(req: Request) {
   if (body.acceso !== undefined) app_metadata.crm_acceso = body.acceso === true;
   const rol = rolValido(body.rol);
   if (rol) app_metadata.rol = rol;
+  // La sede solo aplica al rol sede: al cambiar a otro rol se borra
+  const rolFinal = rolDeUsuario(app_metadata);
+  if (rolFinal === 'sede') {
+    const sede = body.sede !== undefined ? sedeValida(body.sede) : sedeValida(app_metadata.sede);
+    if (!sede) return NextResponse.json({ success: false, error: 'Elige la sede de esta cuenta' }, { status: 400 });
+    app_metadata.sede = sede;
+  } else {
+    delete app_metadata.sede;
+  }
   const user_metadata: Record<string, any> = { ...u.user_metadata };
   if (typeof body.nombre === 'string' && body.nombre.trim()) user_metadata.nombre = body.nombre.trim();
 
   const { error: e2 } = await supabaseAdmin.auth.admin.updateUserById(body.id, { app_metadata, user_metadata });
   if (e2) return NextResponse.json({ success: false, error: e2.message }, { status: 500 });
-  await auditarRequest(req, 'equipo.editar', 'usuario', body.id, { email: u.email, nombre: body.nombre, rol: body.rol, acceso: body.acceso });
+  await auditarRequest(req, 'equipo.editar', 'usuario', body.id, { email: u.email, nombre: body.nombre, rol: body.rol, sede: body.sede, acceso: body.acceso });
   return NextResponse.json({ success: true });
 }

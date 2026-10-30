@@ -3,7 +3,7 @@
 // Equipo: cuentas del CRM, nombres, roles y acceso (solo administradores)
 import { useCallback, useEffect, useState } from 'react';
 
-type Cuenta = { id: string; email: string; nombre: string; rol: 'admin' | 'asesor'; acceso: boolean; ultimo_ingreso: string | null; creado: string };
+type Cuenta = { id: string; email: string; nombre: string; rol: 'admin' | 'asesor' | 'sede'; sede: string | null; acceso: boolean; ultimo_ingreso: string | null; creado: string };
 
 const fecha = (iso: string | null) => iso
   ? new Date(iso).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'America/Bogota' })
@@ -11,19 +11,20 @@ const fecha = (iso: string | null) => iso
 
 export default function EquipoPage() {
   const [equipo, setEquipo] = useState<Cuenta[]>([]);
+  const [sedes, setSedes] = useState<string[]>([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [editando, setEditando] = useState<string | null>(null);
   const [nombreEdit, setNombreEdit] = useState('');
   const [nuevo, setNuevo] = useState(false);
-  const [form, setForm] = useState({ email: '', nombre: '', password: '', rol: 'asesor' });
+  const [form, setForm] = useState({ email: '', nombre: '', password: '', rol: 'asesor', sede: '' });
   const [guardando, setGuardando] = useState(false);
   const [mensaje, setMensaje] = useState('');
 
   const cargar = useCallback(async () => {
     setCargando(true);
     const j = await fetch('/api/equipo').then((r) => r.json()).catch(() => null);
-    if (j?.success) { setEquipo(j.equipo); setError(''); } else setError(j?.error || 'No se pudo cargar el equipo');
+    if (j?.success) { setEquipo(j.equipo); setSedes(j.sedes || []); setError(''); } else setError(j?.error || 'No se pudo cargar el equipo');
     setCargando(false);
   }, []);
   useEffect(() => { cargar(); }, [cargar]);
@@ -46,7 +47,7 @@ export default function EquipoPage() {
     if (!j?.success) { setMensaje(j?.error || 'No se pudo crear la cuenta'); return; }
     setMensaje(`Cuenta creada. Comparte con ${form.nombre} su correo y la contraseña temporal por un canal privado.`);
     setNuevo(false);
-    setForm({ email: '', nombre: '', password: '', rol: 'asesor' });
+    setForm({ email: '', nombre: '', password: '', rol: 'asesor', sede: '' });
     cargar();
   };
 
@@ -65,7 +66,7 @@ export default function EquipoPage() {
         </div>
         {!error && (
           <button onClick={() => { setNuevo(true); generarClave(); }} className="px-4 py-2 rounded-xl bg-commerk-navy text-white text-sm font-semibold hover:bg-commerk-navy/90">
-            + Agregar asesor
+            + Agregar cuenta
           </button>
         )}
       </div>
@@ -104,11 +105,24 @@ export default function EquipoPage() {
                     )}
                   </td>
                   <td className="px-5 py-3">
-                    <select value={c.rol} onChange={(e) => actualizar(c.id, { rol: e.target.value })} disabled={!c.acceso}
-                      className="px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white">
-                      <option value="admin">Administrador</option>
-                      <option value="asesor">Asesor</option>
-                    </select>
+                    <div className="flex flex-wrap gap-1.5">
+                      <select value={c.rol} disabled={!c.acceso}
+                        onChange={(e) => e.target.value === 'sede'
+                          ? actualizar(c.id, { rol: 'sede', sede: c.sede || sedes[0] })
+                          : actualizar(c.id, { rol: e.target.value })}
+                        className="px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white">
+                        <option value="admin">Administrador</option>
+                        <option value="asesor">Asesor</option>
+                        <option value="sede">Sede</option>
+                      </select>
+                      {c.rol === 'sede' && (
+                        <select value={c.sede || ''} disabled={!c.acceso} onChange={(e) => actualizar(c.id, { sede: e.target.value })}
+                          className="px-2 py-1 border border-slate-200 rounded-lg text-xs bg-white">
+                          {!c.sede && <option value="">Elegir sede…</option>}
+                          {sedes.map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      )}
+                    </div>
                   </td>
                   <td className="px-5 py-3 text-xs text-slate-500">{fecha(c.ultimo_ingreso)}</td>
                   <td className="px-5 py-3 text-right">
@@ -122,7 +136,7 @@ export default function EquipoPage() {
             </tbody>
           </table>
           <p className="px-5 py-3 text-[11px] text-slate-400 border-t border-slate-100">
-            Administrador: gestiona el equipo y todo el CRM. Asesor: atiende conversaciones. Quitar el acceso no borra la cuenta ni su historial.
+            Administrador: gestiona el equipo y todo el CRM. Asesor: atiende conversaciones. Sede: la cuenta de una tienda, solo ve y gestiona sus leads mayoristas (sigue recibiendo el aviso por WhatsApp). Quitar el acceso no borra la cuenta ni su historial.
           </p>
         </div>
       )}
@@ -130,10 +144,10 @@ export default function EquipoPage() {
       {nuevo && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setNuevo(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-3" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-bold text-commerk-navy">Agregar asesor</h3>
+            <h3 className="font-bold text-commerk-navy">Agregar cuenta</h3>
             {(['nombre', 'email'] as const).map((k) => (
               <div key={k}>
-                <label className="text-xs font-semibold text-slate-500">{k === 'nombre' ? 'Nombre (así aparece en el chat)' : 'Correo'}</label>
+                <label className="text-xs font-semibold text-slate-500">{k === 'nombre' ? (form.rol === 'sede' ? 'Nombre (ej. Tienda CC Tesoro)' : 'Nombre (así aparece en el chat)') : 'Correo'}</label>
                 <input value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} type={k === 'email' ? 'email' : 'text'}
                   className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-commerk-navy/40" />
               </div>
@@ -151,11 +165,21 @@ export default function EquipoPage() {
               <select value={form.rol} onChange={(e) => setForm({ ...form, rol: e.target.value })} className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white">
                 <option value="asesor">Asesor</option>
                 <option value="admin">Administrador</option>
+                <option value="sede">Sede (solo sus leads mayoristas)</option>
               </select>
             </div>
+            {form.rol === 'sede' && (
+              <div>
+                <label className="text-xs font-semibold text-slate-500">Sede</label>
+                <select value={form.sede} onChange={(e) => setForm({ ...form, sede: e.target.value })} className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white">
+                  <option value="">Elegir sede…</option>
+                  {sedes.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            )}
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setNuevo(false)} className="px-4 py-2 rounded-xl border border-slate-200 text-sm text-slate-600">Cancelar</button>
-              <button onClick={crear} disabled={guardando || !form.email || !form.nombre || form.password.length < 10}
+              <button onClick={crear} disabled={guardando || !form.email || !form.nombre || form.password.length < 10 || (form.rol === 'sede' && !form.sede)}
                 className="px-4 py-2 rounded-xl bg-commerk-navy text-white text-sm font-semibold disabled:opacity-40">
                 {guardando ? 'Creando…' : 'Crear cuenta'}
               </button>

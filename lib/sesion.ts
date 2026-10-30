@@ -19,11 +19,21 @@ export interface SesionCRM {
   sub: string;     // id del usuario en Supabase Auth
   email: string;
   nombre?: string; // cómo aparece el asesor en el chat
-  rol?: RolCRM;     // admin gestiona el equipo; asesor atiende
+  rol?: RolCRM;     // admin gestiona el equipo; asesor atiende; sede ve sus leads
+  sede?: string;   // solo rol sede: la tienda cuyos leads mayoristas ve
   exp: number;     // segundos epoch
 }
 
-export type RolCRM = 'admin' | 'asesor';
+export type RolCRM = 'admin' | 'asesor' | 'sede';
+
+// Una cuenta de sede solo entra a sus leads mayoristas: el middleware la
+// saca de cualquier otra pantalla o ruta de la API.
+export const RUTAS_SEDE = { pantalla: '/dashboard/mayoristas', api: ['/api/mayoristas', '/api/auth/sesion'] };
+
+export function rutaPermitidaParaSede(pathname: string): boolean {
+  if (pathname.startsWith('/api/')) return RUTAS_SEDE.api.some((r) => pathname === r || pathname.startsWith(`${r}/`));
+  return pathname === RUTAS_SEDE.pantalla || pathname.startsWith(`${RUTAS_SEDE.pantalla}/`);
+}
 
 /** "mateo.arbelaez@commerk.com.co" → "Mateo Arbelaez" (si no tiene nombre configurado). */
 export function nombreDesdeEmail(email: string): string {
@@ -40,11 +50,11 @@ export async function sesionDeRequest(req: Request): Promise<SesionCRM | null> {
 }
 
 /** Asesor que hace la acción (nombre y correo de la sesión). */
-export async function asesorDeRequest(req: Request): Promise<{ email: string; nombre: string; rol: RolCRM } | null> {
+export async function asesorDeRequest(req: Request): Promise<{ email: string; nombre: string; rol: RolCRM; sede?: string } | null> {
   const s = await sesionDeRequest(req);
   if (!s) return null;
   // Sesiones abiertas antes de los roles: solo existían las cuentas de la dirección
-  return { email: s.email, nombre: s.nombre || nombreDesdeEmail(s.email), rol: s.rol || 'admin' };
+  return { email: s.email, nombre: s.nombre || nombreDesdeEmail(s.email), rol: s.rol || 'admin', ...(s.sede && { sede: s.sede }) };
 }
 
 /**
@@ -52,7 +62,9 @@ export async function asesorDeRequest(req: Request): Promise<{ email: string; no
  * guardado) son las de la dirección de Commerk: quedan como administradoras.
  */
 export function rolDeUsuario(appMetadata: Record<string, any> | undefined | null): RolCRM {
-  return appMetadata?.rol === 'asesor' ? 'asesor' : 'admin';
+  if (appMetadata?.rol === 'asesor') return 'asesor';
+  if (appMetadata?.rol === 'sede') return 'sede';
+  return 'admin';
 }
 
 // SESSION_SECRET si existe; si no, la service key de Supabase (secreta y ya
@@ -86,13 +98,14 @@ async function llave(): Promise<CryptoKey> {
 }
 
 /** Crea el valor de la cookie para un usuario ya verificado. */
-export async function crearSesion(usuario: { id: string; email: string; nombre?: string; rol?: RolCRM }): Promise<string> {
+export async function crearSesion(usuario: { id: string; email: string; nombre?: string; rol?: RolCRM; sede?: string }): Promise<string> {
   if (!secreto()) throw new Error('Falta SESSION_SECRET o SUPABASE_SERVICE_KEY para firmar la sesión');
   const datos: SesionCRM = {
     sub: usuario.id,
     email: usuario.email,
     nombre: usuario.nombre || nombreDesdeEmail(usuario.email),
     rol: usuario.rol || 'asesor',
+    ...(usuario.rol === 'sede' && usuario.sede && { sede: usuario.sede }),
     exp: Math.floor(Date.now() / 1000) + DURACION_SESION_S,
   };
   const carga = aBase64Url(new TextEncoder().encode(JSON.stringify(datos)));

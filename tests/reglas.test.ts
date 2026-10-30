@@ -18,7 +18,7 @@ import { celularColombiano } from '@/lib/carritos';
 import { resolverVariante, variantesDe } from '@/lib/variantes';
 import { extraerNumeroOpcion, encontrarSede, sedeDeRegistroPorNumero } from '@/lib/sedes';
 import { evaluarCobertura } from '@/lib/cobertura';
-import { crearSesion, leerSesion, mismoSecreto, nombreDesdeEmail, rolDeUsuario } from '@/lib/sesion';
+import { crearSesion, leerSesion, mismoSecreto, nombreDesdeEmail, rolDeUsuario, rutaPermitidaParaSede } from '@/lib/sesion';
 import { esIdUsuarioWhatsApp } from '@/lib/whatsapp-id';
 import { producto } from './apoyo/simulador';
 
@@ -108,6 +108,24 @@ describe('Sesión del CRM', () => {
     expect(rolDeUsuario({ crm_acceso: true, rol: 'asesor' })).toBe('asesor');
   });
   it('nombre legible desde el correo', () => expect(nombreDesdeEmail('mateo.arbelaez@commerk.com.co')).toBe('Mateo Arbelaez'));
+});
+
+describe('Cuentas de sede (solo sus leads mayoristas)', () => {
+  it('el rol sede se reconoce', () => expect(rolDeUsuario({ crm_acceso: true, rol: 'sede', sede: 'CC Tesoro' })).toBe('sede'));
+  it('la sesión lleva su sede firmada', async () => {
+    const s = await leerSesion(await crearSesion({ id: 'u2', email: 'tesoro@commerk.com.co', rol: 'sede', sede: 'CC Tesoro' }));
+    expect(s?.rol).toBe('sede');
+    expect(s?.sede).toBe('CC Tesoro');
+  });
+  it('un asesor no lleva sede en la sesión', async () => {
+    const s = await leerSesion(await crearSesion({ id: 'u3', email: 'a@b.co', rol: 'asesor', sede: 'CC Tesoro' }));
+    expect(s?.sede).toBeUndefined();
+  });
+  it.each(['/dashboard/mayoristas', '/api/mayoristas', '/api/auth/sesion'])('puede abrir %s', (r) => expect(rutaPermitidaParaSede(r)).toBe(true));
+  it.each([
+    '/dashboard', '/dashboard/conversaciones', '/dashboard/clientes', '/dashboard/equipo',
+    '/api/conversaciones', '/api/clientes', '/api/equipo', '/api/usuarios', '/api/mayoristas-otra', '/dashboard/mayoristasx',
+  ])('no puede abrir %s', (r) => expect(rutaPermitidaParaSede(r)).toBe(false));
 });
 
 describe('Clientes con nombre de usuario de WhatsApp', () => {

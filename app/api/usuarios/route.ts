@@ -11,7 +11,8 @@ export async function GET(req: Request) {
     const { data, error } = await supabaseAdmin.auth.admin.listUsers({ perPage: 200 });
     if (error) throw error;
     const usuarios = (data?.users || [])
-      .filter((u) => u.app_metadata?.crm_acceso === true && u.email)
+      // Las cuentas de sede no atienden conversaciones: no se les asignan
+      .filter((u) => u.app_metadata?.crm_acceso === true && u.email && u.app_metadata?.rol !== 'sede')
       .map((u) => ({
         email: u.email!,
         nombre: (u.user_metadata?.nombre as string) || nombreDesdeEmail(u.email!),

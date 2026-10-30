@@ -35,6 +35,15 @@ const navItems = [
     ),
   },
   {
+    href: '/dashboard/mayoristas',
+    label: 'Leads mayoristas',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9l1.5-5h15L21 9M3 9h18M3 9v11h18V9M9 20v-6h6v6" />
+      </svg>
+    ),
+  },
+  {
     href: '/dashboard/clientes',
     label: 'Clientes',
     icon: (
@@ -140,17 +149,26 @@ const navItems = [
 const SECCIONES_MENU: { titulo: string | null; rutas: string[] }[] = [
   { titulo: null, rutas: ['/dashboard'] },
   { titulo: 'Atención', rutas: ['/dashboard/conversaciones', '/dashboard/tablero', '/dashboard/clientes'] },
-  { titulo: 'Ventas', rutas: ['/dashboard/embudo', '/dashboard/ventas', '/dashboard/pedidos', '/dashboard/carritos', '/dashboard/difusiones'] },
+  { titulo: 'Ventas', rutas: ['/dashboard/embudo', '/dashboard/mayoristas', '/dashboard/ventas', '/dashboard/pedidos', '/dashboard/carritos', '/dashboard/difusiones'] },
   { titulo: 'Tienda', rutas: ['/dashboard/productos', '/dashboard/plantillas'] },
   { titulo: 'Administración', rutas: ['/dashboard/equipo', '/dashboard/actividad', '/dashboard/configuracion'] },
 ];
 const SOLO_ADMIN = new Set(['/dashboard/difusiones', '/dashboard/equipo', '/dashboard/actividad', '/dashboard/configuracion']);
+// Una cuenta de sede solo ve sus leads mayoristas (el middleware bloquea lo demás)
+const MENU_SEDE = new Set(['/dashboard/mayoristas']);
+
+function puedeVer(rol: 'admin' | 'asesor' | 'sede' | null, href: string): boolean {
+  if (rol === 'sede') return MENU_SEDE.has(href);
+  if (rol === 'asesor') return !SOLO_ADMIN.has(href);
+  return rol === 'admin';
+}
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [rol, setRol] = useState<'admin' | 'asesor' | null>(null);
+  const [rol, setRol] = useState<'admin' | 'asesor' | 'sede' | null>(null);
+  const [sede, setSede] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   // En celular el menú es un panel que se abre con el botón de la barra superior
   const [menuAbierto, setMenuAbierto] = useState(false);
@@ -169,8 +187,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     });
   }, [router]);
 
+  // Rol y sede salen de la sesión firmada del servidor
   useEffect(() => {
-    fetch('/api/usuarios').then((r) => r.json()).then((j) => { if (j?.yo?.rol) setRol(j.yo.rol); }).catch(() => {});
+    fetch('/api/auth/sesion').then((r) => r.json()).then((j) => {
+      if (j?.yo?.rol) { setRol(j.yo.rol); setSede(j.yo.sede || null); }
+    }).catch(() => {});
   }, []);
 
   useEffect(() => { setMenuAbierto(false); }, [pathname]);
@@ -182,13 +203,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => window.removeEventListener('keydown', cerrar);
   }, [menuAbierto]);
 
-  // Cron: verificar y enviar recuperaciones de carritos cada 60s
-  useEffect(() => {
-    const run = () => fetch('/api/cron/recuperar-carritos', { method: 'POST' }).catch(() => {});
-    run();
-    const interval = setInterval(run, 60_000);
-    return () => clearInterval(interval);
-  }, []);
+  // La recuperación de carritos ya no corre desde el navegador: la llama
+  // Supabase cada 10 minutos (sql/migracion_2026_10_carritos_24h.sql).
 
   async function handleLogout() {
     await fetch('/api/auth/sesion', { method: 'DELETE' }).catch(() => {});
@@ -240,7 +256,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           {SECCIONES_MENU.map((seccion) => {
             const items = seccion.rutas
               .map((ruta) => navItems.find((n) => n.href === ruta))
-              .filter((n): n is typeof navItems[number] => !!n && (rol !== 'asesor' || !SOLO_ADMIN.has(n.href)));
+              .filter((n): n is typeof navItems[number] => !!n && puedeVer(rol, n.href));
             if (!items.length) return null;
             return (
               <div key={seccion.titulo || 'inicio'} className="mb-2">
@@ -281,7 +297,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-xs text-slate-200 truncate">{userEmail}</p>
-              <p className="text-[10px] text-slate-500">{rol === 'asesor' ? 'Asesor' : rol === 'admin' ? 'Administrador' : ''}</p>
+              <p className="text-[10px] text-slate-500 truncate">{rol === 'sede' ? `Sede · ${sede || 'sin asignar'}` : rol === 'asesor' ? 'Asesor' : rol === 'admin' ? 'Administrador' : ''}</p>
             </div>
             <button
               onClick={handleLogout}
