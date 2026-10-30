@@ -261,3 +261,30 @@ describe('Notificaciones de pedidos de la tienda', async () => {
     expect(comp[0].parameters[2].text).toBe('Guía Servientrega 2049876543');
   });
 });
+
+describe('Sincronización de carritos sin escrituras de más', async () => {
+  const { guardarCheckout } = await import('@/lib/carritos');
+  const checkout = {
+    id: 9001, token: 'tok', email: 'ana@correo.co', total_price: '110720', line_items: [],
+    created_at: '2026-10-28T15:00:00Z', updated_at: '2026-10-28T15:30:00Z', abandoned_checkout_url: carrito.url_checkout,
+  } as any;
+  const escrituras = () => sim.registro.filter((r) => r.tabla === 'carritos_abandonados' && r.op === 'upsert');
+
+  it('un carrito que no cambió no se reescribe (la página no recarga por nada)', async () => {
+    sim.datos.carritos_abandonados = { id: 'c1', estado: 'abandonado', shopify_updated_at: '2026-10-28T15:30:00+00:00', notificado_whatsapp: false };
+    expect(await guardarCheckout(checkout)).toMatchObject({ id: 'c1', estado: 'abandonado' });
+    expect(escrituras()).toHaveLength(0);
+  });
+
+  it('un carrito con actividad nueva sí se guarda', async () => {
+    sim.datos.carritos_abandonados = { id: 'c1', estado: 'abandonado', shopify_updated_at: '2026-10-27T10:00:00+00:00', notificado_whatsapp: false };
+    await guardarCheckout(checkout);
+    expect(escrituras()).toHaveLength(1);
+  });
+
+  it('un carrito ya notificado no vuelve a "abandonado"', async () => {
+    sim.datos.carritos_abandonados = { id: 'c1', estado: 'notificado', shopify_updated_at: '2026-10-27T10:00:00+00:00', notificado_whatsapp: true };
+    await guardarCheckout(checkout);
+    expect(escrituras()[0].args[0].estado).toBe('notificado');
+  });
+});

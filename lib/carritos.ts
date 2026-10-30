@@ -66,8 +66,21 @@ export async function guardarCheckout(checkout: ShopifyCheckout): Promise<Carrit
   // Un carrito ya recordado o convertido conserva su estado: la sincronización
   // de cada minuto lo devolvía a "abandonado".
   const { data: previo } = await supabaseAdmin
-    .from('carritos_abandonados').select('estado').eq('shopify_checkout_id', checkoutId).maybeSingle();
-  const estadoFinal = ['notificado', 'convertido'].includes((previo as any)?.estado) ? (previo as any).estado : estado;
+    .from('carritos_abandonados').select('id, estado, shopify_updated_at, notificado_whatsapp')
+    .eq('shopify_checkout_id', checkoutId).maybeSingle();
+  const p = previo as any;
+  const estadoFinal = ['notificado', 'convertido'].includes(p?.estado) ? p.estado : estado;
+
+  // Sin cambios en Shopify ni de estado: no se reescribe. Cada escritura avisa
+  // en tiempo real a la página Carritos, y sincronizar 250 carritos iguales la
+  // recargaba 250 veces seguidas.
+  if (p && p.estado === estadoFinal && checkout.updated_at && p.shopify_updated_at &&
+      new Date(p.shopify_updated_at).getTime() === new Date(checkout.updated_at).getTime()) {
+    return {
+      id: p.id, checkoutId, estado: estadoFinal, telefono: telefonoFormateado, nombre, total,
+      url: checkout.abandoned_checkout_url || null, items, notificado: !!p.notificado_whatsapp,
+    };
+  }
 
   const { data, error } = await supabaseAdmin.from('carritos_abandonados').upsert({
     shopify_checkout_id: checkoutId,

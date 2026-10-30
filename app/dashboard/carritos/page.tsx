@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { supabase } from '@/lib/supabase';
 import type { CarritoAbandonado } from '@/types';
@@ -50,8 +50,9 @@ export default function CarritosPage() {
   const [syncingOrders, setSyncingOrders] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
 
+  // Solo la primera carga muestra el indicador; las siguientes refrescan en
+  // silencio (antes la tabla se cambiaba por el indicador en cada recarga).
   const cargarCarritos = useCallback(async () => {
-    setCargando(true);
     try {
       const res = await fetch('/api/carritos');
       const json = await res.json();
@@ -63,20 +64,26 @@ export default function CarritosPage() {
 
   useEffect(() => { cargarCarritos(); }, [cargarCarritos]);
 
-  // Supabase Realtime: actualiza instantáneamente cuando llega un webhook de Shopify
+  // Supabase Realtime: una sincronización cambia muchos carritos a la vez;
+  // se espera a que pare la ráfaga y se recarga una sola vez.
+  const espera = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const channel = supabase
       .channel('carritos-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'carritos_abandonados' }, () => {
-        cargarCarritos();
+        if (espera.current) clearTimeout(espera.current);
+        espera.current = setTimeout(cargarCarritos, 1500);
       })
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      if (espera.current) clearTimeout(espera.current);
+      supabase.removeChannel(channel);
+    };
   }, [cargarCarritos]);
 
-  // Auto-refresh cada 15 segundos como fallback
+  // Respaldo por si se pierde la conexión en tiempo real
   useEffect(() => {
-    const interval = setInterval(cargarCarritos, 15000);
+    const interval = setInterval(cargarCarritos, 60000);
     return () => clearInterval(interval);
   }, [cargarCarritos]);
 
