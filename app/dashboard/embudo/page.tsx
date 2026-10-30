@@ -65,7 +65,13 @@ export default function EmbudoPage() {
         <div>
           <h1 className="text-2xl font-bold text-commerk-navy">Embudo de ventas empresariales</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            {abiertas.length} oportunidades abiertas · {cop(valorAbierto)} en juego · {ganadas.length} ganadas en los últimos 60 días por {cop(ganadas.reduce((s, o) => s + Number(o.valor_estimado || 0), 0))}
+            {[
+              `${abiertas.length} oportunidad${abiertas.length === 1 ? '' : 'es'} abierta${abiertas.length === 1 ? '' : 's'}`,
+              valorAbierto > 0 ? `${cop(valorAbierto)} en juego` : null,
+              ganadas.length > 0
+                ? `${ganadas.length} ganada${ganadas.length === 1 ? '' : 's'} en los últimos 60 días por ${cop(ganadas.reduce((s, o) => s + Number(o.valor_estimado || 0), 0))}`
+                : 'ninguna ganada en los últimos 60 días',
+            ].filter(Boolean).join(' · ')}
           </p>
         </div>
         <button onClick={() => setEditando({ etapa: 'nueva' })} className="px-4 py-2 rounded-xl bg-commerk-navy text-white text-sm font-semibold hover:bg-commerk-navy/90">

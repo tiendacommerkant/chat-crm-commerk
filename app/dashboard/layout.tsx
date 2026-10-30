@@ -136,10 +136,21 @@ const navItems = [
   },
 ];
 
+// Orden y secciones del menú; las de administración solo las ve un administrador
+const SECCIONES_MENU: { titulo: string | null; rutas: string[] }[] = [
+  { titulo: null, rutas: ['/dashboard'] },
+  { titulo: 'Atención', rutas: ['/dashboard/conversaciones', '/dashboard/tablero', '/dashboard/clientes'] },
+  { titulo: 'Ventas', rutas: ['/dashboard/embudo', '/dashboard/ventas', '/dashboard/pedidos', '/dashboard/carritos', '/dashboard/difusiones'] },
+  { titulo: 'Tienda', rutas: ['/dashboard/productos', '/dashboard/plantillas'] },
+  { titulo: 'Administración', rutas: ['/dashboard/equipo', '/dashboard/actividad', '/dashboard/configuracion'] },
+];
+const SOLO_ADMIN = new Set(['/dashboard/difusiones', '/dashboard/equipo', '/dashboard/actividad', '/dashboard/configuracion']);
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [rol, setRol] = useState<'admin' | 'asesor' | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
   // Verificar sesión activa y obtener email del usuario
@@ -155,6 +166,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       }
     });
   }, [router]);
+
+  useEffect(() => {
+    fetch('/api/usuarios').then((r) => r.json()).then((j) => { if (j?.yo?.rol) setRol(j.yo.rol); }).catch(() => {});
+  }, []);
 
   // Cron: verificar y enviar recuperaciones de carritos cada 60s
   useEffect(() => {
@@ -184,10 +199,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex h-screen bg-slate-50 font-sans overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-64 bg-commerk-navy text-white flex flex-col shrink-0">
+      <aside className="w-64 h-screen bg-commerk-navy text-white flex flex-col shrink-0">
 
         {/* Logo real */}
-        <div className="px-6 py-5 border-b border-white/10">
+        <div className="px-6 py-4 border-b border-white/10 shrink-0">
           <div className="relative w-36 h-10">
             <Image
               src="/logos_logo_blanco.png"
@@ -200,60 +215,69 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <p className="text-xs text-slate-500 mt-1.5 pl-0.5">CRM & Chatbot</p>
         </div>
 
-        {/* Nav */}
-        <nav className="flex-1 p-4 space-y-1">
-          {navItems.map((item) => {
-            const isActive = item.href === '/dashboard'
-              ? pathname === '/dashboard'
-              : pathname.startsWith(item.href);
+        {/* Nav: se desplaza dentro de la barra si no cabe */}
+        <nav className="flex-1 min-h-0 overflow-y-auto px-3 py-3 menu-scroll">
+          {SECCIONES_MENU.map((seccion) => {
+            const items = seccion.rutas
+              .map((ruta) => navItems.find((n) => n.href === ruta))
+              .filter((n): n is typeof navItems[number] => !!n && (rol !== 'asesor' || !SOLO_ADMIN.has(n.href)));
+            if (!items.length) return null;
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${
-                  isActive
-                    ? 'bg-commerk-green text-commerk-navy-dark shadow-sm shadow-commerk-green/30'
-                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                {item.icon}
-                {item.label}
-              </Link>
+              <div key={seccion.titulo || 'inicio'} className="mb-2">
+                {seccion.titulo && (
+                  <p className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{seccion.titulo}</p>
+                )}
+                <div className="space-y-0.5">
+                  {items.map((item) => {
+                    const isActive = item.href === '/dashboard'
+                      ? pathname === '/dashboard'
+                      : pathname.startsWith(item.href);
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-150 ${
+                          isActive
+                            ? 'bg-commerk-green text-commerk-navy-dark shadow-sm shadow-commerk-green/30'
+                            : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                        }`}
+                      >
+                        {item.icon}
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
             );
           })}
         </nav>
 
-        {/* Footer sidebar: usuario + logout */}
-        <div className="p-4 border-t border-white/10 space-y-1">
-          {/* Usuario activo */}
-          {userEmail && (
-            <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-white/5 mb-2">
-              <div className="w-7 h-7 rounded-full bg-commerk-green/20 border border-commerk-green/30 flex items-center justify-center shrink-0">
-                <span className="text-xs font-bold text-commerk-green">
-                  {userEmail[0].toUpperCase()}
-                </span>
-              </div>
-              <p className="text-xs text-slate-300 truncate">{userEmail}</p>
+        {/* Pie: usuario y cerrar sesión, siempre visibles */}
+        <div className="shrink-0 p-3 border-t border-white/10">
+          <div className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl bg-white/5">
+            <div className="w-7 h-7 rounded-full bg-commerk-green/20 border border-commerk-green/30 flex items-center justify-center shrink-0">
+              <span className="text-xs font-bold text-commerk-green">{(userEmail || '?')[0].toUpperCase()}</span>
             </div>
-          )}
-
-          {/* Botón cerrar sesión */}
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            Cerrar sesión
-          </button>
-
-          <p className="text-xs text-slate-600 px-3 pt-1">tiendacommerkant.com.co</p>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-slate-200 truncate">{userEmail}</p>
+              <p className="text-[10px] text-slate-500">{rol === 'asesor' ? 'Asesor' : rol === 'admin' ? 'Administrador' : ''}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              title="Cerrar sesión"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </button>
+          </div>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto min-h-0">
+      <main className="flex-1 h-screen overflow-auto min-h-0">
         {children}
       </main>
     </div>

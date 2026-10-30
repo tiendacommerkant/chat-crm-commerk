@@ -87,7 +87,7 @@ export function Bandeja(props: {
               }`}>
               {p.label}
               {!!p.contador && (
-                <span className={`ml-1 inline-flex min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold items-center justify-center ${
+                <span className={`absolute -top-1.5 -right-1 inline-flex min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold items-center justify-center ring-2 ring-slate-100 ${
                   p.alerta ? 'bg-red-500 text-white' : 'bg-commerk-navy/10 text-commerk-navy'
                 }`}>{p.contador > 99 ? '99+' : p.contador}</span>
               )}

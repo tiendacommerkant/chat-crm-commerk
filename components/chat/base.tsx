@@ -41,8 +41,13 @@ export type Mensaje = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 export function iniciales(nombre?: string) {
-  if (!nombre) return '?';
-  return nombre.split(' ').slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+  if (!nombre?.trim()) return '?';
+  // Por caracteres completos: w[0] partía los emojis por la mitad y salía "�"
+  const palabras = nombre.trim().split(/\s+/);
+  const letras = palabras.map((w) => Array.from(w).find((c) => /\p{L}|\p{N}/u.test(c)) || '').filter(Boolean);
+  if (letras.length) return letras.slice(0, 2).join('').toUpperCase();
+  // Nombre hecho solo de emojis ("🥰"): se muestra el primero
+  return Array.from(palabras[0])[0] || '?';
 }
 
 export const TZ = 'America/Bogota';

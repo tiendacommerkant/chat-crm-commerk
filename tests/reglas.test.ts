@@ -114,3 +114,10 @@ describe('Clientes con nombre de usuario de WhatsApp', () => {
   it('reconoce el ID de usuario', () => expect(esIdUsuarioWhatsApp('CO.13491208655302741918')).toBe(true));
   it('un número no es ID de usuario', () => expect(esIdUsuarioWhatsApp('573001234567')).toBe(false));
 });
+
+describe('Iniciales de los clientes en el chat', async () => {
+  const { iniciales } = await import('@/components/chat/base');
+  it.each([['Laura Gómez', 'LG'], ['Angy Michelle✨', 'AM'], ['  𝓓𝓪𝓷𝓲𝓮𝓵𝓪 𝓔𝓼𝓽𝓻𝓪𝓭𝓪', '𝓓𝓔'], ['🥰', '🥰'], ['', '?'], ['TIENDA COMMERK TESORO', 'TC']])(
+    '"%s" → %s', (n, esperado) => expect(iniciales(n)).toBe(esperado));
+  it('nunca parte un emoji por la mitad', () => expect(iniciales('🥰 Laura')).toBe('L'));
+});
