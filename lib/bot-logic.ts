@@ -30,6 +30,7 @@ import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_REGISTRO, sedeD
 import { matchProductoDistintivo } from './matching';
 import { esIdUsuarioWhatsApp, contactoVisible } from './whatsapp-id';
 import { evaluarCobertura } from './cobertura';
+import { parsearCalificacion } from './encuesta';
 
 const USE_AI = !!process.env.ANTHROPIC_API_KEY;
 
@@ -180,6 +181,23 @@ export async function procesarMensajeBot(
         metadata: { awaiting: 'sede' },
       };
     }
+  }
+
+  // ── ENCUESTA DE SATISFACCIÓN (la envía el CRM al resolver un caso) ──
+  if (awaiting === 'encuesta' || awaiting === 'encuesta_comentario') {
+    const r = await responderEncuesta(texto, awaiting, context, ultimoBot?.metadata || {}, pendingCart);
+    if (r) return r;
+    awaiting = ''; // no era una respuesta a la encuesta: se atiende normal
+  }
+
+  // ── CLIENTE MOLESTO: una persona lo atiende de inmediato ──────────
+  // Insistir con el bot a alguien frustrado empeora la experiencia.
+  if (esFrustracion(textoLower, context)) {
+    return {
+      texto: 'Lamento mucho la experiencia 🙏 Te paso ya mismo con una persona de nuestro equipo para ayudarte.',
+      accion: 'transferir_a_asesor',
+      metadata: { awaiting: '', pending_cart: pendingCart, motivo_transferencia: 'frustracion' },
+    };
   }
 
   // ── CANCELAR siempre disponible ───────────────────────────────────
@@ -1271,6 +1289,63 @@ function esIntencionPago(t: string) {
   // porque esas palabras son respuestas de confirmación en la máquina de estados.
   return /(^pagar$|^pago$|^finalizar$|^proceder$|^checkout$|proceder con el pago|quiero pagar|finalizar (la |mi )?compra|finalizar (el |mi )?pedido|realizar (el |mi )?pago|completar (la |mi )?compra|completar (el |mi )?pedido|ir a pagar|procesar (el |mi )?pago|quiero proceder|listo para pagar|dame el total|quiero el total)/i.test(t.trim());
 }
+/**
+ * Cliente molesto con la atención del bot: lo dice claramente o repite el
+ * mismo mensaje por tercera vez (el bot no le está entendiendo).
+ */
+export function esFrustracion(t: string, context?: BotContext): boolean {
+  const molesto = /(no me (est[aá]s )?entiende(s)?|no entiendes( nada)?|no me est[aá]s ayudando|eres un (bot|robot)|p[eé]sim[oa] (servicio|atenci[oó]n)|mal[ií]sim[oa] (servicio|atenci[oó]n)|qu[eé] mal(a)? (servicio|atenci[oó]n)|terrible (servicio|atenci[oó]n)|llevo (un )?(rato|horas|mucho tiempo|toda la (ma[ñn]ana|tarde)) esperando|nadie (me )?(responde|contesta|atiende)|est[uú]pid|in[uú]til|me tienen (cansad|aburrid)|qu[eé] fastidio|no sirves|esto no sirve)/i;
+  if (molesto.test(t)) return true;
+  if (!context || t.trim().length < 4) return false;
+  const anteriores = context.mensajes_previos.filter((m) => m.tipo === 'user').slice(-2).map((m) => (m.contenido || '').trim().toLowerCase());
+  return anteriores.length === 2 && anteriores.every((m) => m === t.trim());
+}
+
+/**
+ * Respuesta del cliente a la encuesta de satisfacción. Devuelve null si el
+ * mensaje no responde la encuesta (ej. hace otra pregunta), para atenderlo normal.
+ */
+async function responderEncuesta(
+  texto: string,
+  paso: string,
+  context: BotContext,
+  metaEncuesta: Record<string, any>,
+  cart: CartItem[]
+): Promise<BotResponse | null> {
+  if (paso === 'encuesta_comentario') {
+    // Una pregunta o una nueva compra no es un comentario: se atiende normal
+    if (/\?\s*$/.test(texto) || esIntencionCompra(texto.toLowerCase()) || texto.trim().length < 3) return null;
+    await supabaseAdmin.from('encuestas').update({ comentario: texto.slice(0, 1000) })
+      .eq('conversacion_id', context.conversacion.id).is('comentario', null);
+    return {
+      texto: 'Gracias por contarnos 🙏 Se lo compartimos al equipo para mejorar. Aquí sigo si necesitas algo más. 😊',
+      metadata: { awaiting: '', pending_cart: cart },
+    };
+  }
+
+  const calificacion = parsearCalificacion(texto);
+  if (!calificacion) return null;
+  await supabaseAdmin.from('encuestas').insert({
+    conversacion_id: context.conversacion.id,
+    cliente_id: context.cliente.id,
+    asesor: metaEncuesta.encuesta_asesor || null,
+    asesor_nombre: metaEncuesta.encuesta_asesor_nombre || null,
+    calificacion,
+  });
+  if (calificacion === 1) {
+    return {
+      texto: 'Lamentamos que no haya sido una buena experiencia 😔 ¿Qué podemos mejorar? Tu comentario nos ayuda mucho.',
+      metadata: { awaiting: 'encuesta_comentario', pending_cart: cart },
+    };
+  }
+  return {
+    texto: calificacion === 3
+      ? '¡Qué alegría! 🎉 Gracias por calificarnos. Aquí estamos cuando nos necesites.'
+      : '¡Gracias por calificarnos! 🙌 Aquí estamos cuando nos necesites.',
+    metadata: { awaiting: '', pending_cart: cart },
+  };
+}
+
 /** El cliente no logra pagar con el link o pide otro medio de pago. */
 export function esProblemaDePago(t: string): boolean {
   return /(contra ?entrega|pagar? al recibir|pago al recibir|cuando (me )?llegue|en efectivo|efectivo|transferencia|consignaci[oó]n|consignar|bancolombia|dat[aá]fono|otro medio|otra forma de pago|otro m[eé]todo|no me (da|deja|sirve|funciona|abre|carga|aparece|sale)|no (pude|puedo|logro|alcanc[eé] a) pagar|no (me )?(pas[oó]|entr[oó]) el pago|rechaz|fall[oó] el pago|error (en|con|al) (el )?pago|me sale error)/i.test(t);

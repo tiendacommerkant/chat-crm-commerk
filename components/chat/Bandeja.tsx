@@ -11,6 +11,7 @@ export const MOTIVOS: Record<string, string> = {
   pago: 'Ayuda con el pago',
   sofi: 'Sofi no pudo resolver',
   manual: 'Tomada por un asesor',
+  frustracion: 'Cliente molesto',
 };
 
 /** Minutos de espera → texto y color según urgencia. */

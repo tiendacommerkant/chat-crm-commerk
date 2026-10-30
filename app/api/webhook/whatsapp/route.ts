@@ -16,6 +16,7 @@ import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
 import { pasarAPendiente, devolverAlBot } from '@/lib/atencion';
+import { obtenerHorario, avisoFueraDeHorario } from '@/lib/horario';
 import { registrarEvento } from '@/lib/eventos';
 import type { BotContext } from '@/types';
 
@@ -431,16 +432,21 @@ export async function POST(req: Request) {
             const pideHumano = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien)\b/i.test(texto);
             // La derivación mayorista ya avisó a la sede: ahí sí se pasa el chat siempre
             const derivacionMayorista = respuesta.metadata?.derivacion === 'mayorista';
-            // Problema con el pago: el bot no puede resolverlo, se pasa siempre
-            const problemaPago = respuesta.metadata?.motivo_transferencia === 'pago';
-            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano && !derivacionMayorista && !problemaPago;
+            // Problema con el pago o cliente molesto: el bot no puede resolverlo, se pasa siempre
+            const transferenciaObligatoria = ['pago', 'frustracion'].includes(respuesta.metadata?.motivo_transferencia);
+            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano && !derivacionMayorista && !transferenciaObligatoria;
 
-            await guardarMensaje(conversacion.id, 'bot', respuesta.texto, {
+            // Fuera del horario del equipo se le dice al cliente cuándo le escriben
+            const aviso = flujoActivo ? '' : avisoFueraDeHorario(await obtenerHorario());
+            const textoTransferencia = aviso ? `${respuesta.texto}\n\n${aviso}` : respuesta.texto;
+
+            await guardarMensaje(conversacion.id, 'bot', textoTransferencia, {
               ...respuesta.metadata,
               tipo_wa: 'text',
               transferido_a_asesor: true,
+              fuera_de_horario: !!aviso,
             });
-            await enviarMensajeWhatsApp(phone, respuesta.texto);
+            await enviarMensajeWhatsApp(phone, textoTransferencia);
 
             if (!flujoActivo) {
               // El bot se apaga y la conversación entra a "Pendientes" del CRM

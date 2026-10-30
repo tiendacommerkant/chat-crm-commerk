@@ -5,6 +5,7 @@
 import { NextResponse } from 'next/server';
 import { asesorDeRequest } from '@/lib/sesion';
 import { tomarConversacion, asignarConversacion, devolverAlBot } from '@/lib/atencion';
+import { enviarEncuestaSiCorresponde } from '@/lib/encuesta';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +25,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       await asignarConversacion(params.id, { email, nombre: typeof nombre === 'string' && nombre ? nombre : email });
     } else if (accion === 'devolver_bot') {
       await devolverAlBot(params.id);
+      // Caso resuelto por un asesor: se le pregunta al cliente cómo le fue
+      const encuesta = await enviarEncuestaSiCorresponde(params.id).catch(() => false);
+      return NextResponse.json({ success: true, encuesta });
     } else {
       return NextResponse.json({ success: false, error: 'Acción no válida' }, { status: 400 });
     }

@@ -217,6 +217,7 @@ function ChatCenter() {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     }).then((r) => r.json()).catch(() => null);
     if (!res?.success) setAviso(res?.error || 'No se pudo actualizar la atención');
+    else if (body.accion === 'devolver_bot') setAviso(res.encuesta ? '✅ Caso resuelto. Se le envió al cliente la encuesta de satisfacción.' : '✅ Caso resuelto. Sofi vuelve a atender esta conversación.');
     refrescarTodo();
   };
 

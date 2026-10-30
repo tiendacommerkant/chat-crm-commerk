@@ -13,14 +13,18 @@ export function producto(parteTitulo: string): any {
 
 /**
  * Cliente de Supabase falso: cualquier consulta encadenada responde "sin
- * datos" y queda registrada, para revisar qué intentó guardar el bot.
+ * datos" (o lo que diga `datos` para esa tabla) y queda registrada, para
+ * revisar qué intentó guardar el código.
  */
-export function crearSupabaseFalso(registro: Array<{ tabla: string; op: string; args: any[] }>) {
+export function crearSupabaseFalso(
+  registro: Array<{ tabla: string; op: string; args: any[] }>,
+  datos: Record<string, any> = {}
+) {
   const consulta = (tabla: string): any => {
     const q: any = new Proxy({}, {
       get(_t, prop: string) {
         if (prop === 'then') {
-          return (ok: any, error: any) => Promise.resolve({ data: null, error: null, count: 0 }).then(ok, error);
+          return (ok: any, error: any) => Promise.resolve({ data: datos[tabla] ?? null, error: null, count: 0 }).then(ok, error);
         }
         return (...args: any[]) => {
           registro.push({ tabla, op: prop, args });
