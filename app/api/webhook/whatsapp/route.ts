@@ -18,6 +18,7 @@ import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
 import { pasarAPendiente, devolverAlBot } from '@/lib/atencion';
 import { obtenerHorario, avisoFueraDeHorario } from '@/lib/horario';
 import { registrarEvento } from '@/lib/eventos';
+import { leerEstadoConversacion, guardarEstadoConversacion } from '@/lib/estado';
 import type { BotContext } from '@/types';
 
 // El flujo hace IA + varias consultas + envío por WhatsApp. Sin esto, Vercel
@@ -266,8 +267,10 @@ export async function POST(req: Request) {
           }
 
           const historial = await obtenerHistorialMensajes(conversacion.id, 15);
-          const contexto: BotContext = { cliente, conversacion, mensajes_previos: historial };
+          const estado = await leerEstadoConversacion(conversacion.id);
+          const contexto: BotContext = { cliente, conversacion, mensajes_previos: historial, estado };
           const respuesta = await procesarMensajeBot(texto, contexto);
+          await guardarEstadoConversacion(conversacion.id, respuesta.metadata);
 
           // ── Acción: generar link de pago Wompi ─────────────────────────
           if (respuesta.accion === 'generar_link_pago' && respuesta.metadata) {
@@ -286,6 +289,7 @@ export async function POST(req: Request) {
             if (cart.length === 0) {
               const msgError = `⚠️ No se encontraron productos en el carrito. Por favor intenta de nuevo.`;
               await guardarMensaje(conversacion.id, 'bot', msgError, { tipo_wa: 'text', awaiting: '' });
+              await guardarEstadoConversacion(conversacion.id, { awaiting: '' });
               await enviarMensajeWhatsApp(phone, msgError);
               continue;
             }
@@ -350,12 +354,14 @@ export async function POST(req: Request) {
                 `💳 Puedes pagar con *Nequi, Daviplata, PSE o Tarjeta* — elige tu método dentro del link.\n\n` +
                 `_Link de un solo uso y 100% seguro con Wompi. Una vez confirmado el pago te avisamos aquí y procesamos tu pedido._ ✅`;
 
-              await guardarMensaje(conversacion.id, 'bot', msgLink, {
+              const metaLink = {
                 tipo_wa: 'text',
                 awaiting: 'link_enviado',
                 referencia_pago: referencia,
                 pending_cart: cart,
-              });
+              };
+              await guardarMensaje(conversacion.id, 'bot', msgLink, metaLink);
+              await guardarEstadoConversacion(conversacion.id, metaLink);
               await enviarMensajeWhatsApp(phone, msgLink);
 
             } else {
@@ -364,6 +370,7 @@ export async function POST(req: Request) {
                 `⚠️ Hubo un problema generando el link de pago. Por favor intenta de nuevo o escríbenos directamente.\n\n` +
                 `Error: ${linkResult.error || 'Desconocido'}`;
               await guardarMensaje(conversacion.id, 'bot', msgError, { tipo_wa: 'text', awaiting: '' });
+              await guardarEstadoConversacion(conversacion.id, { awaiting: '' });
               await enviarMensajeWhatsApp(phone, msgError);
             }
 
@@ -428,13 +435,14 @@ export async function POST(req: Request) {
             // respetarlo siempre: en pruebas reales Sofi le prometía "un asesor
             // continúa contigo aquí mismo" y el bot seguía contestando solo. La red
             // de seguridad de 30 min reactiva el bot si nadie atiende.
-            const ultimoBotPrevio = [...historial].reverse().find((m) => m.tipo === 'bot');
+            // Paso en que iba el cliente antes de este mensaje (estado guardado o último mensaje del bot)
+            const awaitingPrevio = estado ? estado.datos?.awaiting : [...historial].reverse().find((m) => m.tipo === 'bot')?.metadata?.awaiting;
             const pideHumano = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien)\b/i.test(texto);
             // La derivación mayorista ya avisó a la sede: ahí sí se pasa el chat siempre
             const derivacionMayorista = respuesta.metadata?.derivacion === 'mayorista';
             // Problema con el pago o cliente molesto: el bot no puede resolverlo, se pasa siempre
             const transferenciaObligatoria = ['pago', 'frustracion'].includes(respuesta.metadata?.motivo_transferencia);
-            const flujoActivo = !!ultimoBotPrevio?.metadata?.awaiting && !pideHumano && !derivacionMayorista && !transferenciaObligatoria;
+            const flujoActivo = !!awaitingPrevio && !pideHumano && !derivacionMayorista && !transferenciaObligatoria;
 
             // Fuera del horario del equipo se le dice al cliente cuándo le escriben
             const aviso = flujoActivo ? '' : avisoFueraDeHorario(await obtenerHorario());

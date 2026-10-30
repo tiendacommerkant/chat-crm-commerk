@@ -9,6 +9,7 @@
 import { supabaseAdmin } from './supabase';
 import { enviarMensajeConBotones } from './whatsapp';
 import { leerConfiguracion } from './horario';
+import { fusionarEstadoConversacion } from './estado';
 
 export const BOTONES_ENCUESTA = [
   { id: 'csat_3', title: '😀 Excelente' },
@@ -67,6 +68,11 @@ export async function enviarEncuestaSiCorresponde(conversacionId: string): Promi
       encuesta_asesor_nombre: asesorNombre || null,
       whatsapp_message_id: envio.messageId,
     },
+  });
+  await fusionarEstadoConversacion(conversacionId, {
+    awaiting: 'encuesta',
+    encuesta_asesor: (agente as any).metadata?.asesor || null,
+    encuesta_asesor_nombre: asesorNombre || null,
   });
   return true;
 }

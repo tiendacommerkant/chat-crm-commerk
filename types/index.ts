@@ -274,6 +274,9 @@ export interface BotContext {
   cliente: Cliente;
   conversacion: Conversacion;
   mensajes_previos: Mensaje[];
+  // Estado guardado de la conversación (tabla estado_conversacion). Si no
+  // viene, el bot lo deduce del último mensaje suyo como antes.
+  estado?: { datos: Record<string, any>; updated_at: string } | null;
 }
 
 export interface BotResponse {

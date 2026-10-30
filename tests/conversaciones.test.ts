@@ -262,3 +262,40 @@ describe('Ventas empresariales', () => {
     expect(sim.registro.some((r) => r.tabla === 'leads_sedes' && r.op === 'insert')).toBe(true);
   });
 });
+
+describe('Estado guardado de la conversación', () => {
+  const carrito = [{ shopify_id: cartaDeOro.shopify_id, titulo: cartaDeOro.titulo, precio: cartaDeOro.precio, cantidad: 1 }];
+  const estadoLink = { datos: { awaiting: 'link_enviado', pending_cart: carrito }, updated_at: new Date(Date.now() - 60_000).toISOString() };
+
+  it('un recordatorio automático después del link ya no borra el paso ni el carrito', async () => {
+    const historial = [
+      bot('Aquí está tu link', { awaiting: 'link_enviado', pending_cart: carrito }),
+      bot('⏰ Recordatorio de pago enviado automáticamente', { tipo_wa: 'template', awaiting: '' }),
+    ];
+    const r = await procesarMensajeBot('ya pagué', { ...contexto({ historial }), estado: estadoLink });
+    expect(r.metadata?.awaiting).toBe('link_enviado');
+    expect(r.metadata?.pending_cart).toHaveLength(1);
+  });
+
+  it('el mensaje de un asesor no hace que el bot olvide el carrito', async () => {
+    const historial = [
+      bot('¿Algo más?', { awaiting: 'carrito', pending_cart: carrito }),
+      bot('Hola, soy Mateo del equipo', { enviado_por: 'agente' }),
+    ];
+    const estado = { datos: { awaiting: 'carrito', pending_cart: carrito }, updated_at: new Date(Date.now() - 60_000).toISOString() };
+    const r = await procesarMensajeBot('no, eso es todo', { ...contexto({ historial }), estado });
+    expect(r.metadata?.awaiting).toBe('tipo_entrega');
+    expect(r.metadata?.pending_cart).toHaveLength(1);
+  });
+
+  it('sin estado guardado sigue leyendo el último mensaje del bot (como antes)', async () => {
+    const r = await procesarMensajeBot('ya pagué', contexto({ historial: [bot('Link', { awaiting: 'link_enviado', pending_cart: carrito })] }));
+    expect(r.metadata?.awaiting).toBe('link_enviado');
+  });
+
+  it('un paso de compra guardado hace más de 6 horas ya no atrapa al cliente', async () => {
+    const viejo = { datos: { awaiting: 'cantidad', pending_product_id: cartaDeOro.shopify_id }, updated_at: new Date(Date.now() - 8 * 3_600_000).toISOString() };
+    await procesarMensajeBot('hola', { ...contexto(), estado: viejo });
+    expect(sim.sofi).toHaveBeenCalled();
+  });
+});
