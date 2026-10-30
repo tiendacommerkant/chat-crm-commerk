@@ -152,6 +152,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [rol, setRol] = useState<'admin' | 'asesor' | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  // En celular el menú es un panel que se abre con el botón de la barra superior
+  const [menuAbierto, setMenuAbierto] = useState(false);
 
   // Verificar sesión activa y obtener email del usuario
   useEffect(() => {
@@ -170,6 +172,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     fetch('/api/usuarios').then((r) => r.json()).then((j) => { if (j?.yo?.rol) setRol(j.yo.rol); }).catch(() => {});
   }, []);
+
+  useEffect(() => { setMenuAbierto(false); }, [pathname]);
+
+  useEffect(() => {
+    if (!menuAbierto) return;
+    const cerrar = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuAbierto(false); };
+    window.addEventListener('keydown', cerrar);
+    return () => window.removeEventListener('keydown', cerrar);
+  }, [menuAbierto]);
 
   // Cron: verificar y enviar recuperaciones de carritos cada 60s
   useEffect(() => {
@@ -197,9 +208,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 font-sans overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-64 h-screen bg-commerk-navy text-white flex flex-col shrink-0">
+    <div className="flex h-[100dvh] bg-slate-50 font-sans overflow-hidden">
+      {/* Fondo oscuro detrás del menú abierto en celular */}
+      {menuAbierto && (
+        <div className="md:hidden fixed inset-0 z-30 bg-commerk-navy-dark/60" onClick={() => setMenuAbierto(false)} aria-hidden />
+      )}
+
+      {/* Sidebar: fija en computador, panel deslizable en celular */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-64 h-[100dvh] bg-commerk-navy text-white flex flex-col shrink-0 transition-transform duration-200 md:static md:translate-x-0 ${
+          menuAbierto ? 'translate-x-0 shadow-2xl' : '-translate-x-full'
+        }`}
+      >
 
         {/* Logo real */}
         <div className="px-6 py-4 border-b border-white/10 shrink-0">
@@ -276,10 +296,31 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 h-screen overflow-auto min-h-0">
-        {children}
-      </main>
+      <div className="flex-1 min-w-0 flex flex-col h-[100dvh]">
+        {/* Barra superior solo en celular */}
+        <header className="md:hidden shrink-0 flex items-center gap-3 px-3 h-14 bg-commerk-navy text-white">
+          <button
+            onClick={() => setMenuAbierto(true)}
+            className="p-2 -ml-1 rounded-lg hover:bg-white/10"
+            aria-label="Abrir menú"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <div className="relative w-24 h-7">
+            <Image src="/logos_logo_blanco.png" alt="Commerk" fill className="object-contain object-left" />
+          </div>
+          <span className="ml-auto text-sm font-medium text-slate-300 truncate">
+            {navItems.find((n) => (n.href === '/dashboard' ? pathname === '/dashboard' : pathname.startsWith(n.href)))?.label}
+          </span>
+        </header>
+
+        {/* Main content */}
+        <main className="flex-1 overflow-auto min-h-0">
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

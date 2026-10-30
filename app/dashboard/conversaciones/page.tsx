@@ -64,6 +64,8 @@ function ChatCenter() {
   const [ficha, setFicha] = useState<Ficha | null>(null);
   const [cargandoFicha, setCargandoFicha] = useState(false);
   const [mostrarFicha, setMostrarFicha] = useState(true);
+  // Ficha como panel encima del chat en pantallas angostas (no se guarda como preferencia)
+  const [fichaMovil, setFichaMovil] = useState(false);
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [yo, setYo] = useState<Usuario | null>(null);
   const [respuestas, setRespuestas] = useState<RespuestaRapida[]>([]);
@@ -162,6 +164,7 @@ function ChatCenter() {
     setActiva(c);
     setMensajes([]); setNotas([]); setFicha(null); setAviso('');
     setMostrarEtiquetas(false);
+    setFichaMovil(false);
     setNoLeidos((prev) => ({ ...prev, [c.id]: 0 }));
   }, []);
 
@@ -252,7 +255,10 @@ function ChatCenter() {
     }
   };
 
-  const toggleFicha = () => { const v = !mostrarFicha; setMostrarFicha(v); guardarPreferencia('crm_ficha', v ? '1' : '0'); };
+  const toggleFicha = () => {
+    if (!window.matchMedia('(min-width: 1280px)').matches) { setFichaMovil((v) => !v); return; }
+    const v = !mostrarFicha; setMostrarFicha(v); guardarPreferencia('crm_ficha', v ? '1' : '0');
+  };
 
   // Mensajes y notas internas en una sola línea de tiempo
   type Item = { k: 'msg'; m: Mensaje } | { k: 'nota'; n: Nota } | { k: 'fecha'; f: string; id: string };
@@ -269,6 +275,8 @@ function ChatCenter() {
 
   const estadoAtencion = activa?.estado_atencion || (activa?.bot_activo === false ? 'en_atencion' : 'bot');
   const esperaActiva = estadoAtencion === 'pendiente' ? tiempoEspera(activa?.pendiente_desde, ahora) : null;
+  const puedeTomar = estadoAtencion !== 'en_atencion' || activa?.asignado_a !== yo?.email;
+  const puedeDevolver = estadoAtencion !== 'bot';
 
   return (
     <div className="flex h-full bg-slate-50 overflow-hidden">
@@ -303,8 +311,8 @@ function ChatCenter() {
               <div className="w-9 h-9 rounded-full bg-commerk-navy/10 flex items-center justify-center text-commerk-navy font-bold text-sm shrink-0">{iniciales(activa.cliente?.nombre)}</div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-slate-800 truncate">{activa.cliente?.nombre || 'Sin nombre'}</p>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-commerk-green">{mostrarContacto(activa.cliente)}</span>
+                <div className="flex items-center gap-2 text-xs min-w-0 overflow-hidden whitespace-nowrap">
+                  <span className="text-commerk-green shrink-0">{mostrarContacto(activa.cliente)}</span>
                   <span className="text-slate-300">·</span>
                   {estadoAtencion === 'pendiente' && <span className="font-semibold text-red-600">Esperando asesor{esperaActiva ? ` · ${esperaActiva.texto}` : ''}{activa.motivo_transferencia ? ` · ${MOTIVOS[activa.motivo_transferencia] || ''}` : ''}</span>}
                   {estadoAtencion === 'en_atencion' && <span className="font-semibold text-amber-700">👤 {activa.asignado_a === yo?.email ? 'La atiendes tú' : activa.asignado_nombre || 'Asesor'}</span>}
@@ -313,13 +321,13 @@ function ChatCenter() {
               </div>
 
               <div className="flex items-center gap-1.5">
-                {(estadoAtencion !== 'en_atencion' || activa.asignado_a !== yo?.email) && (
+                {puedeTomar && (
                   <button onClick={() => accionAtencion({ accion: 'tomar' })}
                     className="hidden sm:inline-flex px-3 py-1.5 rounded-xl bg-commerk-navy text-white text-xs font-semibold hover:bg-commerk-navy/90">
                     Tomar conversación
                   </button>
                 )}
-                {estadoAtencion !== 'bot' && (
+                {puedeDevolver && (
                   <button onClick={() => accionAtencion({ accion: 'devolver_bot' })}
                     className="hidden sm:inline-flex px-3 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100"
                     title="El caso quedó resuelto: Sofi vuelve a responder">
@@ -353,6 +361,23 @@ function ChatCenter() {
               </div>
             </div>
 
+            {(puedeTomar || puedeDevolver) && (
+              <div className="sm:hidden bg-white border-b border-slate-100 px-3 py-2 flex gap-2 shrink-0">
+                {puedeTomar && (
+                  <button onClick={() => accionAtencion({ accion: 'tomar' })}
+                    className="flex-1 py-2 rounded-xl bg-commerk-navy text-white text-xs font-semibold">
+                    Tomar conversación
+                  </button>
+                )}
+                {puedeDevolver && (
+                  <button onClick={() => accionAtencion({ accion: 'devolver_bot' })}
+                    className="flex-1 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-semibold">
+                    ✓ Resuelto · a Sofi
+                  </button>
+                )}
+              </div>
+            )}
+
             {aviso && (
               <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-2 text-xs text-amber-800">
                 <span>⚠️</span><span className="flex-1">{aviso}</span>
@@ -361,7 +386,7 @@ function ChatCenter() {
             )}
 
             {/* Mensajes y notas */}
-            <div className="flex-1 overflow-y-auto px-5 py-4" style={{ background: 'linear-gradient(135deg, #f8fafc 25%, #f1f5f9 100%)' }}>
+            <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4" style={{ background: 'linear-gradient(135deg, #f8fafc 25%, #f1f5f9 100%)' }}>
               {cargandoMsgs && mensajes.length === 0 ? (
                 <div className="flex justify-center items-center h-32"><div className="w-6 h-6 border-2 border-commerk-navy/20 border-t-commerk-navy rounded-full animate-spin" /></div>
               ) : linea.length === 0 ? (
@@ -409,6 +434,24 @@ function ChatCenter() {
                 onCerrar={toggleFicha}
               />
             </aside>
+          )}
+
+          {fichaMovil && (
+            <div className="xl:hidden fixed inset-0 z-40 flex justify-end bg-commerk-navy-dark/50" onClick={() => setFichaMovil(false)}>
+              <aside className="w-full max-w-sm h-full bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <FichaCliente
+                  ficha={ficha}
+                  cargando={cargandoFicha}
+                  usuarios={usuarios}
+                  yo={yo}
+                  ahora={ahora}
+                  onTomar={() => accionAtencion({ accion: 'tomar' })}
+                  onDevolverBot={() => accionAtencion({ accion: 'devolver_bot' })}
+                  onAsignar={(u) => accionAtencion({ accion: 'asignar', email: u.email, nombre: u.nombre })}
+                  onCerrar={() => setFichaMovil(false)}
+                />
+              </aside>
+            </div>
           )}
         </div>
       ) : (
