@@ -266,6 +266,11 @@ export async function POST(req: Request) {
             metadata.interactive_id = reply?.id || '';
             metadata.interactive_title = reply?.title || '';
 
+          } else if (msgType === 'button') {
+            // Botón de respuesta rápida de una plantilla: llega con su texto
+            texto = message.button?.text || '';
+            metadata.button_payload = message.button?.payload || '';
+
           } else if (msgType === 'sticker') {
             texto = '🎭 Sticker';
             metadata.media_id = message.sticker?.id;
@@ -280,8 +285,8 @@ export async function POST(req: Request) {
           // Si el agente tomó control manual, no responder con bot
           if (!botActivo) continue;
 
-          // Solo responder con bot si es texto o respuesta interactiva
-          if (msgType !== 'text' && msgType !== 'interactive') {
+          // Solo responder con bot si es texto, respuesta interactiva o botón de plantilla
+          if (msgType !== 'text' && msgType !== 'interactive' && msgType !== 'button') {
             const msgAcuse = '¡Hola! Recibimos tu mensaje. ¿En qué te podemos ayudar? 😊\n\nCuéntame qué producto buscas o qué necesitas.';
             await guardarMensaje(conversacion.id, 'bot', msgAcuse, { tipo_wa: 'text' });
             await enviarMensajeWhatsApp(phone, msgAcuse);

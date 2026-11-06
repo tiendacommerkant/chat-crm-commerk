@@ -72,6 +72,12 @@ export function esFrustracion(t: string, context?: BotContext): boolean {
     ahora - new Date(m.created_at).getTime() < VENTANA_REPETICION_MS);
 }
 
+/** Botón "Avísame por WhatsApp" de La Hora Roja en la tienda (Black Week). */
+export function esAvisoHoraRoja(t: string): boolean {
+  const s = quitarAcentos(t.toLowerCase());
+  return /hora roja/.test(s) && /(avisa|avisen|aviso|avisame|recuerda|notifica)/.test(s);
+}
+
 export function esConsultaEnvio(t: string) {
   return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
 }

@@ -2,15 +2,36 @@
 // Trae de Shopify los carritos del último día y recuerda los abandonados por
 // WhatsApp (reglas en lib/recuperacion.ts). La llaman la tarea programada de
 // Supabase cada 10 minutos (Bearer CRON_SECRET) y el CRM abierto cada minuto.
+//
+// De paso pone en el bot el precio vigente en Colombia (lib/precios-mercado.ts):
+// así cambia a los pocos minutos de que el lanzamiento de Black Friday encienda
+// o apague el catálogo de oferta.
 import { NextResponse } from 'next/server';
 import { procesarCarritosPendientes } from '@/lib/recuperacion';
+import { actualizarPreciosMercado } from '@/lib/precios-mercado';
+import { registrarEvento } from '@/lib/eventos';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
+async function revisarPrecios() {
+  try {
+    const r = await actualizarPreciosMercado();
+    if (r.actualizados.length) {
+      await registrarEvento('info', 'catalogo', `Precios del bot actualizados al precio vigente en Colombia: ${r.actualizados.length} producto(s)`, { productos: r.actualizados.slice(0, 30) });
+    }
+    return { revisados: r.revisados, actualizados: r.actualizados.length };
+  } catch (e: any) {
+    await registrarEvento('aviso', 'catalogo', `No se pudieron revisar los precios de Colombia: ${e.message}`);
+    return { error: e.message };
+  }
+}
+
 export async function POST() {
   try {
-    return NextResponse.json({ success: true, ...(await procesarCarritosPendientes()) });
+    // Los precios van aparte: si fallan, los carritos se procesan igual
+    const [carritos, precios] = await Promise.all([procesarCarritosPendientes(), revisarPrecios()]);
+    return NextResponse.json({ success: true, ...carritos, precios });
   } catch (error: any) {
     console.error('Error en cron recuperar-carritos:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

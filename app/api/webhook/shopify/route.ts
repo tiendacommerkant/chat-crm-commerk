@@ -12,8 +12,9 @@
 // ============================================
 
 import { NextResponse } from 'next/server';
-import crypto from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase';
+import { clavesWebhookShopify, firmaShopifyValida } from '@/lib/firma-shopify';
+import { preciosColombia, conPreciosDeMercado } from '@/lib/precios-mercado';
 import { extraerTelefonoPedido, mapearProductoParaBot } from '@/lib/shopify';
 import { formatearNumeroWhatsApp } from '@/lib/whatsapp';
 import {
@@ -37,19 +38,6 @@ async function registrarAviso(topic: string) {
   }, { onConflict: 'clave' });
 }
 
-
-// ─── Verificación HMAC ────────────────────────────────────────────────────────
-function verificarHmac(body: string, hmac: string | null, secret: string): boolean {
-  // Sin secreto no hay forma de saber si el evento viene de Shopify: se rechaza
-  if (!secret) {
-    console.error('[Shopify webhook] SHOPIFY_WEBHOOK_SECRET no configurado — rechazando webhook por seguridad');
-    return false;
-  }
-  if (!hmac) return false;
-  const hash = Buffer.from(crypto.createHmac('sha256', secret).update(body, 'utf8').digest('base64'));
-  const recibido = Buffer.from(hmac);
-  return hash.length === recibido.length && crypto.timingSafeEqual(hash, recibido);
-}
 
 // ─── Handler orders/paid ─────────────────────────────────────────────────────
 async function handleOrderPaid(order: ShopifyOrder) {
@@ -133,14 +121,32 @@ async function handleOrderPaid(order: ShopifyOrder) {
   // 4. Notificar por WhatsApp SOLO para pedidos del sitio web
   // Los pedidos del bot (tag "bot") ya recibieron notificación en el webhook de Wompi
   if (telefonoFormateado && !esPedidoBot) {
-    await notificarPedidoConfirmado({
+    // La tienda tiene dos suscripciones a orders/paid (la de la app y la del
+    // admin) y llegan casi al mismo tiempo: solo la primera que marque el
+    // pedido como notificado envía el mensaje.
+    const { data: reclamado } = await supabaseAdmin
+      .from('pedidos_shopify')
+      .update({ notificado_whatsapp: true })
+      .eq('shopify_order_id', order.id)
+      .eq('notificado_whatsapp', false)
+      .select('shopify_order_id');
+    if (!reclamado?.length) return;
+
+    const r = await notificarPedidoConfirmado({
       shopify_order_id: order.id.toString(),
       shopify_order_number: order.order_number.toString(),
       nombre_cliente: nombreCliente,
       telefono: telefonoFormateado,
       total: parseFloat(order.total_price),
       items: (order.line_items || []).map((i) => ({ title: i.title, quantity: i.quantity, price: i.price })),
-    }).catch((err) => console.error('[handleOrderPaid] Error WA notification:', err?.message));
+    }).catch((err) => {
+      console.error('[handleOrderPaid] Error WA notification:', err?.message);
+      return { success: false };
+    });
+    // Si no salió, se libera para que un reintento de Shopify lo vuelva a intentar
+    if (!r?.success) {
+      await supabaseAdmin.from('pedidos_shopify').update({ notificado_whatsapp: false }).eq('shopify_order_id', order.id);
+    }
   }
 }
 
@@ -204,7 +210,9 @@ async function handleCheckout(checkout: ShopifyCheckout) {
 // ─── Handler products/update ─────────────────────────────────────────────────
 async function handleProductUpdate(payload: any) {
   if (!payload.id) return;
-  const mapeado = mapearProductoParaBot(payload);
+  // El aviso trae el precio base; en Black Friday el de Colombia es el del catálogo
+  const precios = await preciosColombia([String(payload.id)]).catch(() => null);
+  const mapeado = mapearProductoParaBot(conPreciosDeMercado(payload, precios));
   await supabaseAdmin.from('productos').upsert(mapeado, { onConflict: 'shopify_id' });
 }
 
@@ -225,9 +233,13 @@ export async function POST(req: Request) {
     const body = await req.text();
     const hmac = req.headers.get('x-shopify-hmac-sha256');
     topic = req.headers.get('x-shopify-topic') || '';
-    const secret = process.env.SHOPIFY_WEBHOOK_SECRET || '';
+    const claves = clavesWebhookShopify();
+    if (!claves.length) {
+      // Sin clave no hay forma de saber si el evento viene de Shopify: se rechaza
+      console.error('[Shopify webhook] SHOPIFY_WEBHOOK_SECRET / SHOPIFY_CLIENT_SECRET no configurados — rechazando webhook por seguridad');
+    }
 
-    if (!verificarHmac(body, hmac, secret)) {
+    if (!firmaShopifyValida(body, hmac, claves)) {
       await registrarEvento('aviso', 'shopify-webhook', `Aviso de Shopify rechazado (firma inválida): ${topic || 'sin tema'}`);
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

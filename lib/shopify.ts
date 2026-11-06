@@ -452,7 +452,9 @@ export async function crearPedidoShopify(params: {
  */
 export async function crearPedidoShopifyMultiItem(params: {
   // productoNombre lleva la variante elegida ("Kit Decantador — Carta de Oro")
-  items: Array<{ productoShopifyId: string; cantidad: number; productoNombre?: string }>;
+  // precioUnitario: lo que pagó el cliente; sin él Shopify pone el precio base
+  // de la variante, que en Black Friday no es el del catálogo de oferta
+  items: Array<{ productoShopifyId: string; cantidad: number; productoNombre?: string; precioUnitario?: number | null }>;
   clienteNombre?: string | null;
   clienteTelefono: string;
   clienteEmail?: string | null;
@@ -462,7 +464,7 @@ export async function crearPedidoShopifyMultiItem(params: {
 }): Promise<{ success: boolean; orderId?: number; orderNumber?: number; error?: string }> {
   try {
     // Resolver variant_id de cada producto
-    const lineItems: Array<{ variant_id: number; quantity: number }> = [];
+    const lineItems: Array<{ variant_id: number; quantity: number; price?: string }> = [];
     for (const item of params.items) {
       const producto = await obtenerProductoShopify(item.productoShopifyId);
       if (!producto || !producto.variants?.length) {
@@ -477,7 +479,12 @@ export async function crearPedidoShopifyMultiItem(params: {
       if (producto.variants.length > 1 && !variante) {
         console.error('[Shopify] No se identificó la variante, se usa la primera:', item.productoNombre);
       }
-      lineItems.push({ variant_id: (variante || producto.variants[0]).id, quantity: item.cantidad });
+      const precio = Number(item.precioUnitario);
+      lineItems.push({
+        variant_id: (variante || producto.variants[0]).id,
+        quantity: item.cantidad,
+        ...(precio > 0 && { price: precio.toFixed(2) }),
+      });
     }
 
     if (lineItems.length === 0) {

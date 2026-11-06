@@ -40,6 +40,7 @@ import {
   esIntencionPago,
   esProblemaDePago,
   esFrustracion,
+  esAvisoHoraRoja,
   esConsultaEnvio,
   esConsultaPedido,
   esAgradecimiento,
@@ -142,6 +143,22 @@ export async function procesarMensajeBot(
     }
     const r = respuestaRecordatorioCarrito(texto, context);
     if (r) return r;
+  }
+
+  // ── AVÍSAME DE LA HORA ROJA (botón de la tienda en Black Week) ─────
+  // La conversación queda con la etiqueta "Hora Roja" para enviarle la
+  // plantilla hora_roja_destapada solo a quien la pidió (CRM › Difusiones).
+  // Un cliente nuevo queda etiquetado y sigue a aceptar la política.
+  if (esAvisoHoraRoja(texto)) {
+    await etiquetarHoraRoja(context);
+    if (context.cliente.politicas_aceptadas) {
+      // Pedir el aviso es aceptar ese mensaje, aunque antes hubiera pedido la baja
+      await supabaseAdmin.from('clientes').update({ no_publicidad: false }).eq('id', context.cliente.id);
+      return {
+        texto: '¡Listo! 🔔 Te escribimos por aquí apenas se destape la oferta de La Hora Roja.\n\nMientras tanto, todas las ofertas de Black Week están en tiendacommerkant.com.co 🔥',
+        metadata: { awaiting: '', pending_cart: pendingCart },
+      };
+    }
   }
 
   // ── POLÍTICAS: cliente nuevo debe aceptar antes de interactuar ─────
@@ -1197,6 +1214,18 @@ async function etiquetarEmpresarial(context: BotContext): Promise<void> {
     .eq('id', conv.id)
     .or('etiqueta.is.null,etiqueta.eq.mayorista');
   if (error) console.error('[Empresarial] Error etiquetando conversación:', error.message);
+}
+
+/** Etiqueta "Hora Roja" sin pisar las que puso el equipo o el embudo (empresa, mayorista…). */
+async function etiquetarHoraRoja(context: BotContext): Promise<void> {
+  const conv = context.conversacion as any;
+  if (!conv?.id || conv.etiqueta === 'hora_roja') return;
+  const { error } = await supabaseAdmin
+    .from('conversaciones')
+    .update({ etiqueta: 'hora_roja' })
+    .eq('id', conv.id)
+    .or('etiqueta.is.null,etiqueta.eq.notificado');
+  if (error) console.error('[Hora Roja] Error etiquetando conversación:', error.message);
 }
 
 /**

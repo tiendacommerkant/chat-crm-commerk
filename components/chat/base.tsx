@@ -89,6 +89,7 @@ export const ETIQUETAS: Record<string, { label: string; emoji: string; cls: stri
   perdido:      { label: 'Perdido',      emoji: '❌', cls: 'bg-red-100 text-red-600 border-red-200' },
   mayorista:    { label: 'Mayorista',    emoji: '🏪', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
   empresarial:  { label: 'Empresa',      emoji: '🏢', cls: 'bg-sky-100 text-sky-700 border-sky-200' },
+  hora_roja:    { label: 'Hora Roja',    emoji: '🔔', cls: 'bg-rose-100 text-rose-700 border-rose-200' },
 };
 
 

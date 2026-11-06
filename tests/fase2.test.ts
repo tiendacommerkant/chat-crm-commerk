@@ -244,6 +244,32 @@ describe('Difusiones', async () => {
     '"%s" es una baja', (t) => expect(esPedidoDeBaja(t)).toBe(true));
   it.each(['quiero recibir el pedido', 'baja el precio?', 'no quiero ese'])('"%s" no es una baja', (t) => expect(esPedidoDeBaja(t)).toBe(false));
 
+  it.each(['Avísame cuando se destape la Hora Roja 🔔 (27 de noviembre, 8:00 p. m.)', 'me avisan de la hora roja?', 'AVISAME HORA ROJA'])(
+    '"%s" pide el aviso de La Hora Roja', async (t) => {
+      const { esAvisoHoraRoja } = await import('@/lib/bot/intenciones');
+      expect(esAvisoHoraRoja(t)).toBe(true);
+    });
+  it.each(['quiero el ron de la hora roja', 'avísame cuando llegue mi pedido'])('"%s" no es el aviso', async (t) => {
+    const { esAvisoHoraRoja } = await import('@/lib/bot/intenciones');
+    expect(esAvisoHoraRoja(t)).toBe(false);
+  });
+
+  it('"Avísame" de La Hora Roja: etiqueta la conversación y lo confirma', async () => {
+    const r = await procesarMensajeBot('Avísame cuando se destape la Hora Roja 🔔 (28 de noviembre, 8:00 p. m.)', contexto());
+    const etiqueta = sim.registro.find((x) => x.tabla === 'conversaciones' && x.op === 'update');
+    expect(etiqueta?.args[0]).toEqual({ etiqueta: 'hora_roja' });
+    const cliente = sim.registro.find((x) => x.tabla === 'clientes' && x.op === 'update');
+    expect(cliente?.args[0]).toEqual({ no_publicidad: false });
+    expect(r.texto).toMatch(/apenas se destape/);
+  });
+
+  it('"Avísame" de un cliente nuevo: queda etiquetado y sigue a aceptar la política', async () => {
+    const r = await procesarMensajeBot('Avísame cuando se destape la Hora Roja 🔔', contexto({ politicas: false }));
+    expect(sim.registro.some((x) => x.tabla === 'conversaciones' && x.op === 'update' && x.args[0]?.etiqueta === 'hora_roja')).toBe(true);
+    expect(sim.registro.some((x) => x.tabla === 'clientes' && x.op === 'update' && x.args[0]?.no_publicidad === false)).toBe(false);
+    expect(r.texto).not.toMatch(/apenas se destape/);
+  });
+
   it('el bot marca la baja y lo confirma, aun a mitad de una compra', async () => {
     const r = await procesarMensajeBot('no quiero recibir más mensajes', contexto({ historial: [bot('¿Cuántas?', { awaiting: 'cantidad', pending_product_id: 'x' })] }));
     const update = sim.registro.find((x) => x.tabla === 'clientes' && x.op === 'update');

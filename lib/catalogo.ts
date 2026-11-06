@@ -4,6 +4,8 @@
 
 import { supabaseAdmin } from './supabase';
 import { obtenerProductosActivosShopify, mapearProductoParaBot } from './shopify';
+import { preciosColombia, conPreciosDeMercado } from './precios-mercado';
+import { registrarEvento } from './eventos';
 
 export interface ResultadoSincronizacion {
   sincronizados: number;
@@ -22,7 +24,13 @@ export async function sincronizarCatalogo(): Promise<ResultadoSincronizacion> {
   const productos = await obtenerProductosActivosShopify();
   if (!productos.length) throw new Error('Shopify no devolvió productos activos');
 
-  const mapeados = productos.map(mapearProductoParaBot);
+  // Precio de Colombia (incluye el catálogo de Black Friday cuando está activo).
+  // Si falla, se sincroniza con el precio base y la tarea de cada 10 minutos lo corrige.
+  const precios = await preciosColombia().catch(async (e) => {
+    await registrarEvento('aviso', 'catalogo', `No se pudieron leer los precios de Colombia; se usa el precio base: ${e.message}`);
+    return null;
+  });
+  const mapeados = productos.map((p) => mapearProductoParaBot(conPreciosDeMercado(p, precios)));
   const { data, error } = await supabaseAdmin
     .from('productos')
     .upsert(mapeados, { onConflict: 'shopify_id' })
