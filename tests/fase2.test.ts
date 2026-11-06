@@ -28,6 +28,7 @@ import {
 import { parsearCalificacion } from '@/lib/encuesta';
 import { esFrustracion, procesarMensajeBot } from '@/lib/bot-logic';
 import { recordarCarritosAbandonados } from '@/lib/recordatorios';
+import { asesorInactivo, HORAS_ASESOR_INACTIVO } from '@/lib/atencion';
 import { contexto, bot, cliente } from './apoyo/simulador';
 
 beforeEach(() => {
@@ -124,12 +125,55 @@ describe('Cliente molesto', () => {
     expect(esFrustracion('el de 15 años', ctx)).toBe(true);
   });
 
+  // En producción el webhook guarda el mensaje antes de leer el historial:
+  // el mensaje actual llega también como el último del historial
+  it('con el mensaje actual ya guardado, la segunda vez todavía no es molestia', () => {
+    const ctx = contexto({ historial: [cliente('el de 15 años'), bot('…'), cliente('el de 15 años')] });
+    expect(esFrustracion('el de 15 años', ctx)).toBe(false);
+  });
+
+  it('con el mensaje actual ya guardado, la tercera vez sí es molestia', () => {
+    const ctx = contexto({ historial: [cliente('el de 15 años'), bot('…'), cliente('el de 15 años'), bot('…'), cliente('el de 15 años')] });
+    expect(esFrustracion('el de 15 años', ctx)).toBe(true);
+  });
+
+  it('saludar "Hola" cada vez que vuelve no es molestia', () => {
+    const ctx = contexto({ historial: [cliente('Hola'), bot('…'), cliente('Hola'), bot('…'), cliente('Hola')] });
+    expect(esFrustracion('hola', ctx)).toBe(false);
+  });
+
+  it('repetir lo mismo en días distintos no es molestia', () => {
+    const ctx = contexto({ historial: [cliente('el de 15 años', 72), bot('…', {}, 72), cliente('el de 15 años', 24), bot('…', {}, 24)] });
+    expect(esFrustracion('el de 15 años', ctx)).toBe(false);
+  });
+
   it('pasa a una persona aunque esté a mitad de una compra', async () => {
     const r = await procesarMensajeBot('pésimo servicio, no me entiendes', contexto({
       historial: [bot('¿Cuántas quieres?', { awaiting: 'cantidad', pending_product_id: 'x' })],
     }));
     expect(r.accion).toBe('transferir_a_asesor');
     expect(r.metadata?.motivo_transferencia).toBe('frustracion');
+  });
+});
+
+describe('Chat tomado por un asesor que dejó de escribir', () => {
+  const haceHoras = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+
+  it('si el asesor escribió hace poco, el bot no se mete', () => {
+    expect(asesorInactivo(haceHoras(1), haceHoras(30))).toBe(false);
+  });
+
+  it(`si lleva más de ${HORAS_ASESOR_INACTIVO} h sin escribir, el bot retoma`, () => {
+    expect(asesorInactivo(haceHoras(HORAS_ASESOR_INACTIVO + 1), haceHoras(200))).toBe(true);
+  });
+
+  it('cuenta desde que tomó el chat si todavía no ha escrito', () => {
+    expect(asesorInactivo(null, haceHoras(2))).toBe(false);
+    expect(asesorInactivo(null, haceHoras(HORAS_ASESOR_INACTIVO + 1))).toBe(true);
+  });
+
+  it('si lo volvió a tomar hace poco, manda la hora en que lo tomó aunque su último mensaje sea viejo', () => {
+    expect(asesorInactivo(haceHoras(100), haceHoras(1))).toBe(false);
   });
 });
 

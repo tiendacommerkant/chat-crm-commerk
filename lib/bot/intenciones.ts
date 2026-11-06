@@ -41,16 +41,35 @@ export function esProblemaDePago(t: string): boolean {
   return /(contra ?entrega|pagar? al recibir|pago al recibir|cuando (me )?llegue|en efectivo|efectivo|transferencia|consignaci[oó]n|consignar|bancolombia|dat[aá]fono|otro medio|otra forma de pago|otro m[eé]todo|no me (da|deja|sirve|funciona|abre|carga|aparece|sale)|no (pude|puedo|logro|alcanc[eé] a) pagar|no (me )?(pas[oó]|entr[oó]) el pago|rechaz|fall[oó] el pago|error (en|con|al) (el )?pago|me sale error)/i.test(t);
 }
 
+// Repetir lo mismo solo cuenta como molestia si fue seguido: un "Hola" de hoy
+// y otro de la semana pasada no son un cliente atascado.
+const VENTANA_REPETICION_MS = 15 * 60_000;
+
 /**
  * Cliente molesto con la atención del bot: lo dice claramente o repite el
- * mismo mensaje por tercera vez (el bot no le está entendiendo).
+ * mismo mensaje por tercera vez en pocos minutos (el bot no le está entendiendo).
+ * Los saludos repetidos no cuentan: antes, quien volvía y saludaba con "Hola"
+ * pasaba a un asesor con un "Lamento mucho la experiencia".
  */
 export function esFrustracion(t: string, context?: BotContext): boolean {
   const molesto = /(no me (est[aá]s )?entiende(s)?|no entiendes( nada)?|no me est[aá]s ayudando|eres un (bot|robot)|p[eé]sim[oa] (servicio|atenci[oó]n)|mal[ií]sim[oa] (servicio|atenci[oó]n)|qu[eé] mal(a)? (servicio|atenci[oó]n)|terrible (servicio|atenci[oó]n)|llevo (un )?(rato|horas|mucho tiempo|toda la (ma[ñn]ana|tarde)) esperando|nadie (me )?(responde|contesta|atiende)|est[uú]pid|in[uú]til|me tienen (cansad|aburrid)|qu[eé] fastidio|no sirves|esto no sirve)/i;
   if (molesto.test(t)) return true;
-  if (!context || t.trim().length < 4) return false;
-  const anteriores = context.mensajes_previos.filter((m) => m.tipo === 'user').slice(-2).map((m) => (m.contenido || '').trim().toLowerCase());
-  return anteriores.length === 2 && anteriores.every((m) => m === t.trim());
+  const actual = t.trim().toLowerCase();
+  if (!context || actual.length < 4 || esSaludo(actual)) return false;
+
+  const previos = context.mensajes_previos;
+  const delCliente = previos.filter((m) => m.tipo === 'user');
+  // El webhook guarda el mensaje antes de leer el historial: si el último del
+  // historial es este mismo mensaje, no es una repetición anterior
+  const ultimo = delCliente[delCliente.length - 1];
+  if (ultimo && ultimo === previos[previos.length - 1] && (ultimo.contenido || '').trim().toLowerCase() === actual) {
+    delCliente.pop();
+  }
+  const ahora = Date.now();
+  const anteriores = delCliente.slice(-2);
+  return anteriores.length === 2 && anteriores.every((m) =>
+    (m.contenido || '').trim().toLowerCase() === actual &&
+    ahora - new Date(m.created_at).getTime() < VENTANA_REPETICION_MS);
 }
 
 export function esConsultaEnvio(t: string) {

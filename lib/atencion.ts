@@ -47,6 +47,25 @@ async function leerEstado(id: string): Promise<Record<string, any> | null> {
   return data;
 }
 
+/** Horas sin que el asesor le escriba al cliente para que el bot retome un chat tomado. */
+export const HORAS_ASESOR_INACTIVO = 12;
+
+/**
+ * Un asesor tomó el chat pero dejó de escribir. Antes el bot no lo retomaba
+ * nunca: el cliente que volvía días después se quedaba sin respuesta hasta que
+ * alguien pulsara "Devolver al bot". Cuenta desde lo más reciente entre su
+ * último mensaje y la hora en que tomó el chat.
+ */
+export function asesorInactivo(
+  ultimoMensajeAsesor: string | null | undefined,
+  atendidoDesde: string | null | undefined,
+  ahora = Date.now()
+): boolean {
+  const referencias = [ultimoMensajeAsesor, atendidoDesde].filter(Boolean).map((f) => new Date(f as string).getTime());
+  if (!referencias.length) return true;
+  return (ahora - Math.max(...referencias)) / 3_600_000 > HORAS_ASESOR_INACTIVO;
+}
+
 /** El bot pasa la conversación a un asesor: entra a "Pendientes". */
 export async function pasarAPendiente(id: string, motivo: string): Promise<void> {
   const actual = await leerEstado(id);
