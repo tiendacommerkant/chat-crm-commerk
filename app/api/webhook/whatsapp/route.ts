@@ -190,7 +190,9 @@ export async function POST(req: Request) {
 
           // RED DE SEGURIDAD: si el bot está apagado esperando a un asesor y nadie
           // ha respondido en 30 min, lo reactivamos para no dejar al cliente hablando solo.
-          if (!botActivo && !atendidaPorAsesor) {
+          // Las ventas empresariales no: las atiende siempre una persona del equipo.
+          const esperaVentaEmpresarial = convData?.motivo_transferencia === 'empresarial';
+          if (!botActivo && !atendidaPorAsesor && !esperaVentaEmpresarial) {
             const { data: transferencia } = await supabaseAdmin
               .from('mensajes')
               .select('created_at')
@@ -467,8 +469,10 @@ export async function POST(req: Request) {
             const pideHumano = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien)\b/i.test(texto);
             // La derivación mayorista ya avisó a la sede: ahí sí se pasa el chat siempre
             const derivacionMayorista = respuesta.metadata?.derivacion === 'mayorista';
-            // Problema con el pago o cliente molesto: el bot no puede resolverlo, se pasa siempre
-            const transferenciaObligatoria = ['pago', 'frustracion'].includes(respuesta.metadata?.motivo_transferencia);
+            // Problema con el pago, cliente molesto o venta empresarial: lo atiende
+            // una persona, se pasa siempre
+            const motivoBot = respuesta.metadata?.motivo_transferencia as string | undefined;
+            const transferenciaObligatoria = ['pago', 'frustracion', 'empresarial'].includes(motivoBot || '');
             const flujoActivo = !!awaitingPrevio && !pideHumano && !derivacionMayorista && !transferenciaObligatoria;
 
             // Fuera del horario del equipo se le dice al cliente cuándo le escriben
@@ -486,8 +490,9 @@ export async function POST(req: Request) {
             if (!flujoActivo) {
               // El bot se apaga y la conversación entra a "Pendientes" del CRM
               const motivo = derivacionMayorista ? 'mayorista'
+                : motivoBot === 'empresarial' ? 'empresarial'
                 : pideHumano ? 'cliente_pidio_asesor'
-                : (respuesta.metadata?.motivo_transferencia as string) || 'sofi';
+                : motivoBot || 'sofi';
               await pasarAPendiente(conversacion.id, motivo);
 
               // Etiqueta visible en el CRM para que el equipo vea que es un lead mayorista

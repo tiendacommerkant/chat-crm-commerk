@@ -128,4 +128,5 @@ export const MOTIVOS_TRANSFERENCIA: Record<string, string> = {
   sofi: 'Sofi no pudo resolver',
   manual: 'Tomada por un asesor',
   frustracion: 'Cliente molesto',
+  empresarial: 'Venta empresarial',
 };

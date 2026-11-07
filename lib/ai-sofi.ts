@@ -146,12 +146,12 @@ COBERTURA DE DOMICILIO: SOLO los municipios listados en "Zona". Nunca digas "Val
 VENTAS EMPRESARIALES (temporada de fin de año)
 Es empresarial quien compra A NOMBRE DE UNA EMPRESA para regalar a sus colaboradores, empleados o clientes: anchetas, aguinaldos, regalos corporativos o de fin de año, "convenio empresarial", "tengo una empresa", "para mis empleados/clientes/colaboradores", áreas como Talento Humano, Bienestar o Compras, o una cotización para una compañía. Con cualquier cantidad.
 Lo que ofrecemos (dilo con estas condiciones, sin inventar porcentajes, precios por volumen ni plazos):
-- Sí manejamos convenio empresarial: le enviamos nuestra propuesta para sus colaboradores al correo electrónico.
+- Sí manejamos convenio empresarial: lo atiende personalmente un agente de ventas empresariales de Commerk por este mismo chat y le arma la propuesta.
 - Precio especial para sus anchetas en nuestros productos regulares (ron, aguardiente, cócteles), empaque de regalo gratis y obsequios sujetos a disponibilidad.
 - Requisitos para el descuento empresarial: RUT actualizado; el certificado bancario es opcional.
 - Catálogo: nuestro catálogo digital está en desarrollo; todos los productos están en https://tiendacommerkant.com.co y por WhatsApp le ampliamos la información que necesite.
 - Envío: no tiene costo adicional; los regalos llegan en carro y durante la temporada llevamos sus aguinaldos hasta la dirección que requiera. Si pregunta por una ciudad puntual fuera de la Zona, dile que el equipo empresarial se lo confirma en la propuesta.
-Si la conversación ya es empresarial y todavía no ha dado su correo, responde su duda con lo de arriba e invítalo a compartir el correo para enviarle la propuesta.
+Las ventas empresariales las atiende una persona: apenas notes que es empresarial (o si la conversación ya lo es) usa accion "empresarial". No pidas correo ni otros datos, y no prometas propuestas, precios ni tiempos: eso lo hace el agente.
 
 CATÁLOGO
 ${catalogoTexto}
@@ -236,9 +236,9 @@ TU DECISIÓN (elige UNA acción):
    incluye "variante" con la que quiere ajustar.
 
 6) "empresarial" → quien escribe compra para una EMPRESA (ver VENTAS
-   EMPRESARIALES): primer mensaje en que lo notas. Texto: responde su mensaje
-   con las condiciones que apliquen, sin pedir datos (el flujo le pide el
-   correo para enviarle la propuesta).
+   EMPRESARIALES): en cuanto lo notes. Texto: una frase corta y cálida, sin
+   pedir datos; el flujo le avisa que un agente de Commerk lo atiende por este
+   chat y le pasa la conversación al equipo.
 
 OJO NÚMEROS: "¿es el de 8 años?", "el de 750 ml", "el litro", "15 años" hablan
 del PRODUCTO (añejamiento, tamaño), NO de cuántas unidades quiere.
@@ -327,7 +327,7 @@ RESPONDE SOLO JSON:
     }
 
     // Compra empresarial (regalos de fin de año para colaboradores o clientes):
-    // bot-logic pide el correo y le pasa el lead al equipo de ventas empresariales.
+    // bot-logic registra el lead y pasa la conversación a una persona del equipo.
     if (parsed.accion === 'empresarial') {
       return {
         texto: textoFinal,

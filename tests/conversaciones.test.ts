@@ -255,11 +255,24 @@ describe('Conversación libre con Sofi', () => {
 });
 
 describe('Ventas empresariales', () => {
-  it('si una empresa deja su correo, registra la solicitud para el equipo', async () => {
-    const { ultima } = await conversar(['mi correo es compras@empresa.com'], { etiqueta: 'empresarial' });
-    expect(ultima.metadata?.lead_empresarial).toBe(true);
-    expect(ultima.texto).toMatch(/compras@empresa\.com/);
+  it('una empresa pasa a una persona del equipo y se le avisa que un agente la atiende', async () => {
+    sim.sofi.mockResolvedValueOnce({ texto: 'Con gusto', accion: 'iniciar_empresarial', metadata: { awaiting: '' } });
+    const { ultima } = await conversar(['Hola, somos una empresa y queremos anchetas para 80 colaboradores']);
+    expect(ultima.accion).toBe('transferir_a_asesor');
+    expect(ultima.metadata?.motivo_transferencia).toBe('empresarial');
+    expect(ultima.texto).toMatch(/en un momento un agente de Commerk te atenderá/);
+    expect(ultima.texto).not.toMatch(/correo/i);
+    // Queda etiquetada como empresa y el lead en el panel
+    expect(sim.registro.some((r) => r.tabla === 'conversaciones' && r.op === 'update' && r.args[0]?.etiqueta === 'empresarial')).toBe(true);
     expect(sim.registro.some((r) => r.tabla === 'leads_sedes' && r.op === 'insert')).toBe(true);
+  });
+
+  it('una conversación que había quedado esperando el correo también pasa a una persona', async () => {
+    const { ultima } = await conversar(['¿qué requisitos piden?'], {
+      etiqueta: 'empresarial', historial: [bot('¿Me compartes tu correo?', { awaiting: 'empresa_correo', empresarial: true })],
+    });
+    expect(ultima.accion).toBe('transferir_a_asesor');
+    expect(ultima.metadata?.motivo_transferencia).toBe('empresarial');
   });
 });
 

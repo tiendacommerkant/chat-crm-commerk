@@ -10,7 +10,7 @@
 //   awaiting: 'confirmacion'     → resumen mostrado, esperando confirmar/cancelar
 //   awaiting: 'link_enviado'     → link de pago Wompi ya enviado en el chat
 //   awaiting: 'mayorista_sede'   → detección mayorista, esperando sede del cliente
-//   awaiting: 'empresa_correo'   → compra empresarial, esperando el correo para la propuesta
+//   awaiting: 'empresa_correo'   → (anterior) compra empresarial esperando el correo; hoy pasa a una persona
 // NOTA: El método de pago lo elige el cliente directamente en el link de Wompi
 //       (Tarjeta, PSE, Nequi, Daviplata) — no se pregunta en el chat.
 // ============================================
@@ -33,6 +33,7 @@ import { evaluarCobertura } from './cobertura';
 import { parsearCalificacion } from './encuesta';
 import { asegurarOportunidad } from './oportunidades';
 import { esPedidoDeBaja } from './difusiones';
+import { avisoFueraDeHorario, obtenerHorario } from './horario';
 import { recordatorioPendiente, respuestaRecordatorioCarrito } from './bot/carrito-tienda';
 import {
   esSaludo,
@@ -350,13 +351,6 @@ export async function procesarMensajeBot(
     // Sin alias específico → Sofi pregunta cuál exactamente
   }
 
-  // ── EMPRESA QUE DEJA SU CORREO fuera del paso en que se le pidió (ej.
-  // después de ver fotos o de que expiró la espera): igual se registra el lead.
-  const correoSuelto = awaiting === '' ? extraerCorreo(texto) : null;
-  if (correoSuelto && esConversacionEmpresarial(context) && !(await leadEmpresarialRegistrado(context))) {
-    return await registrarLeadEmpresarial(context, correoSuelto, texto, pendingCart);
-  }
-
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
   if (USE_AI && awaiting === '') {
     return await atenderConSofi(texto, context, pendingCart, pendingProductId, pendingCantidad, pendingVariantId);
@@ -423,23 +417,11 @@ interface PasoBot {
 }
 
 /**
- * Estado: compra empresarial, esperando el correo para enviarle la propuesta
+ * Estado de conversaciones anteriores al cambio, que quedaron esperando el
+ * correo: ahora cualquier respuesta las pasa a una persona del equipo.
  */
 async function flujoEmpresaCorreo(e: PasoBot): Promise<BotResponse | null> {
-  const { texto, awaiting, context, pendingCart } = e;
-  const correo = extraerCorreo(texto);
-  if (correo) return await registrarLeadEmpresarial(context, correo, texto, pendingCart);
-  // Otra cosa (una duda, "¿qué requisitos piden?"): la responde Sofi, que ya
-  // conoce las condiciones empresariales, y se sigue esperando el correo.
-  if (USE_AI) {
-    const r = await atenderConSofi(texto, context, pendingCart);
-    if (!r.accion && !r.metadata?.awaiting) {
-      return { ...r, metadata: { ...r.metadata, awaiting: 'empresa_correo', empresarial: true } };
-    }
-    return r;
-  }
-  return respuestaEmpresarial(context, texto, pendingCart);
-  return null;
+  return await respuestaEmpresarial(e.context, e.texto, e.pendingCart);
 }
 
 /**
@@ -1173,14 +1155,9 @@ function mensajeInicialPendiente(context: BotContext): string {
 // clientes (anchetas, aguinaldos). No es mayorista (reventa por sedes): todo
 // se atiende desde el chat center. Apenas se detecta el interés la
 // conversación queda con la etiqueta "Empresa" para que quien revisa la
-// filtre, y se pide el correo para enviar la propuesta del convenio.
+// filtre, y pasa a una persona del equipo: el bot no la sigue atendiendo.
 
 const SEDE_EMPRESARIAL = 'Ventas Empresariales';
-
-function extraerCorreo(texto: string): string | null {
-  const m = texto.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  return m ? m[0].toLowerCase() : null;
-}
 
 function esConversacionEmpresarial(context: BotContext): boolean {
   return (context.conversacion as any)?.etiqueta === 'empresarial' ||
@@ -1241,7 +1218,7 @@ async function derivacionVolumen(
   cart: CartItem[]
 ): Promise<BotResponse | null> {
   const accion = (r as any).accion;
-  if (accion === 'iniciar_empresarial') return await respuestaEmpresarial(context, texto, cart, r.texto);
+  if (accion === 'iniciar_empresarial') return await respuestaEmpresarial(context, texto, cart);
   if (accion === 'iniciar_mayorista') {
     return esConversacionEmpresarial(context)
       ? await respuestaEmpresarial(context, texto, cart)
@@ -1250,94 +1227,60 @@ async function derivacionVolumen(
   return null;
 }
 
+/**
+ * Venta empresarial: la atiende una persona del equipo, no el bot. Se registra
+ * el lead (una vez) y la oportunidad, y la conversación pasa a "Pendientes"
+ * con el motivo "Venta empresarial". Antes el bot pedía el correo y seguía
+ * atendiendo él mismo.
+ */
 async function respuestaEmpresarial(
   context: BotContext,
   texto: string,
-  cart: CartItem[],
-  textoSofi = ''
+  cart: CartItem[]
 ): Promise<BotResponse> {
+  const resumen = resumenEmpresarial(context, texto, cart);
+
+  // El equipo lo atiende desde el chat center (etiqueta "Empresa"); el lead
+  // queda además en el conteo del panel como "Ventas Empresariales".
   await etiquetarEmpresarial(context);
-  // Entra al embudo de ventas empresariales apenas se detecta
+  if (!(await leadEmpresarialRegistrado(context))) await guardarLead(SEDE_EMPRESARIAL, '', context, resumen);
   await asegurarOportunidad({
     conversacionId: context.conversacion.id,
     clienteId: context.cliente.id,
     contacto: context.cliente.nombre,
     telefono: context.cliente.telefono,
-    necesidad: texto,
+    necesidad: resumen,
   });
 
-  // Ya escribió el correo en este mismo mensaje: se registra de una vez
-  const correo = extraerCorreo(texto);
-  if (correo) return await registrarLeadEmpresarial(context, correo, texto, cart);
-
-  // Su solicitud ya está con el equipo: se responde sin volver a pedir el correo
-  if (await leadEmpresarialRegistrado(context)) {
-    return {
-      texto: textoSofi.trim() ||
-        'Nuestro equipo de ventas empresariales ya tiene tu solicitud y te enviará la propuesta a tu correo. Mientras tanto te ayudo con lo que necesites por aquí. 😊',
-      metadata: { awaiting: '', empresarial: true, pending_cart: cart },
-    };
-  }
-
+  // Fuera de horario el webhook agrega cuándo le escriben: ahí no se promete "en un momento"
+  const fueraDeHorario = !!avisoFueraDeHorario(await obtenerHorario());
   const nombre = context.cliente.nombre?.split(' ')[0];
-  const intro = textoSofi.trim() ||
-    `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Manejamos *convenio empresarial*: precio especial para tus anchetas en nuestros productos regulares (ron, aguardiente y cócteles), empaque de regalo gratis y obsequios sujetos a disponibilidad. Los regalos llegan en carro, sin costo adicional de envío.`;
-  const pideCorreo = /correo|e-?mail/i.test(intro)
-    ? ''
-    : `\n\n📧 ¿Me compartes tu *correo electrónico*? Así nuestro equipo de ventas empresariales te envía la propuesta.`;
   return {
-    texto: `${intro}${pideCorreo}`,
-    metadata: { awaiting: 'empresa_correo', empresarial: true, pending_cart: cart },
+    texto:
+      `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Manejamos *convenio empresarial* para los regalos de tus colaboradores y clientes.\n\n` +
+      (fueraDeHorario
+        ? 'Te paso con nuestro equipo de *ventas empresariales*: un agente de Commerk te atenderá por este mismo chat.'
+        : 'Te paso con nuestro equipo de *ventas empresariales*: en un momento un agente de Commerk te atenderá por este mismo chat. 🙌'),
+    accion: 'transferir_a_asesor',
+    metadata: { awaiting: '', empresarial: true, lead_empresarial: true, motivo_transferencia: 'empresarial', pending_cart: cart },
   };
 }
 
-async function registrarLeadEmpresarial(
-  context: BotContext,
-  correo: string,
-  texto: string,
-  cart: CartItem[]
-): Promise<BotResponse> {
-  const nombre = context.cliente.nombre?.split(' ')[0];
-  // El resumen empieza por el mensaje en que se detectó la compra empresarial
-  // (empresa, cantidades, qué busca): los últimos suelen ser solo dudas.
-  // Si dio el correo en ese mismo mensaje, el disparador es este.
+/**
+ * Resumen para el equipo: empieza por el mensaje en que se detectó la compra
+ * empresarial (empresa, cantidades, qué busca) y sigue con el resto de lo que dijo.
+ */
+function resumenEmpresarial(context: BotContext, texto: string, cart: CartItem[]): string {
   const msgs = context.mensajes_previos;
   const idxDeteccion = msgs.findIndex((m) => m.tipo === 'bot' && m.metadata?.empresarial);
   const disparador = (idxDeteccion > 0
     ? [...msgs.slice(0, idxDeteccion)].reverse().find((m) => m.tipo === 'user')?.contenido?.trim()
     : '') || texto.trim();
-  // El resto de lo que dijo, sin repetir el disparador ni el mensaje del correo
+  // El resto de lo que dijo, sin repetir el disparador
   const otros = armarConsultaMayorista(context, texto, cart)
     .split(' | ')
-    .filter((p) => p && p !== 'Compra al por mayor' && !disparador.startsWith(p) && !p.includes(correo));
-  const resumen = [disparador.slice(0, 350), ...otros, `Correo: ${correo}`].join(' | ').replace(/\s+/g, ' ').slice(0, 700);
-
-  // El correo queda en el cliente solo si no tenía uno: el que ya tiene es al
-  // que llegan sus pedidos de Shopify y no se pisa.
-  if (!(context.cliente as any).email) {
-    await actualizarCliente(context.cliente.id, { email: correo }).catch(() => {});
-  }
-
-  // El equipo lo atiende desde el chat center (etiqueta "Empresa"); el lead
-  // queda además en el conteo del panel como "Ventas Empresariales".
-  await etiquetarEmpresarial(context);
-  await guardarLead(SEDE_EMPRESARIAL, '', context, resumen);
-  await asegurarOportunidad({
-    conversacionId: context.conversacion.id,
-    clienteId: context.cliente.id,
-    contacto: context.cliente.nombre,
-    telefono: context.cliente.telefono,
-    correo,
-    necesidad: resumen,
-  });
-
-  return {
-    texto:
-      `¡Gracias${nombre ? `, ${nombre}` : ''}! 🙌 Ya le pasé tu solicitud a nuestro equipo de *ventas empresariales*; te enviarán la propuesta a *${correo}*.\n\n` +
-      `Para activar el descuento empresarial solo necesitamos tu *RUT actualizado* (el certificado bancario es opcional).\n\n` +
-      `Mientras tanto, si quieres te muestro opciones para tus anchetas por aquí. 😊`,
-    metadata: { awaiting: '', empresarial: true, lead_empresarial: true, pending_cart: cart },
-  };
+    .filter((p) => p && p !== 'Compra al por mayor' && !disparador.startsWith(p));
+  return [disparador.slice(0, 350), ...otros].join(' | ').replace(/\s+/g, ' ').slice(0, 700);
 }
 
 // Enlace directo al WhatsApp de la sede con un mensaje ya escrito.
