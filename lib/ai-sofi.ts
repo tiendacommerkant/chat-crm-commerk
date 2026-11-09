@@ -500,8 +500,17 @@ RESPONDE SOLO JSON:
     await registrarEvento('error', 'sofi', (error?.message || 'Error desconocido').slice(0, 300), {
       status: error?.status ?? null,
     });
+    // Si pide una persona, se le pasa aunque la IA esté caída; si no, se le deja
+    // un camino (la tienda o pedir un asesor) en vez de "tuve un problema".
+    if (/(asesor(a)?|humano|humana|persona|agente|alguien)/i.test(mensaje)) {
+      return {
+        texto: 'Claro 🙌 Te paso con una persona del equipo; te atiende por este mismo chat.',
+        accion: 'transferir_a_asesor',
+        metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart, motivo_transferencia: 'sofi' },
+      };
+    }
     return {
-      texto: 'Disculpa, tuve un problema. ¿Me repites qué necesitas? 😊',
+      texto: 'Disculpa, en este momento no puedo responderte con detalle 🙏 Puedes ver precios y comprar en https://tiendacommerkant.com.co, o escribe *asesor* y te atiende una persona del equipo por este chat.',
       metadata: { awaiting: '', sofi_ia: true, pending_cart: pendingCart },
     };
   }

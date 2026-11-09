@@ -370,6 +370,11 @@ async function procesarMensajeBotInterno(
     // Sin alias específico → Sofi pregunta cuál exactamente
   }
 
+  // Un paso sin flujo (el menú de sedes o el muro de políticas de conversaciones
+  // viejas, una encuesta que no respondió) no debe silenciar a Sofi: en la
+  // auditoría "Precio" y "Estoy en Cali" recibían "Disculpa, no entendí bien".
+  if (awaiting && !FLUJOS[awaiting]) awaiting = '';
+
   // ── SOFI IA: maneja toda conversación libre (sin estado de checkout activo)
   if (USE_AI && awaiting === '') {
     return await atenderConSofi(texto, context, pendingCart, pendingProductId, pendingCantidad, pendingVariantId);
