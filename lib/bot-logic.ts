@@ -9,7 +9,7 @@
 //   awaiting: 'direccion'        → esperando dirección de envío
 //   awaiting: 'confirmacion'     → resumen mostrado, esperando confirmar/cancelar
 //   awaiting: 'link_enviado'     → link de pago Wompi ya enviado en el chat
-//   awaiting: 'mayorista_sede'   → detección mayorista, esperando sede del cliente
+//   awaiting: 'mayorista_sede'   → (anterior) mayorista esperando sede; hoy pasa a una persona
 //   awaiting: 'empresa_correo'   → (anterior) compra empresarial esperando el correo; hoy pasa a una persona
 // NOTA: El método de pago lo elige el cliente directamente en el link de Wompi
 //       (Tarjeta, PSE, Nequi, Daviplata) — no se pregunta en el chat.
@@ -25,10 +25,8 @@ import {
   decodificarPendiente, type Variante,
 } from './variantes';
 import { enviarMensajeWhatsApp } from './whatsapp';
-import { enviarLeadMayorista } from './whatsapp-templates';
 import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_REGISTRO, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
-import { esIdUsuarioWhatsApp, contactoVisible } from './whatsapp-id';
 import { evaluarCobertura } from './cobertura';
 import { parsearCalificacion } from './encuesta';
 import { asegurarOportunidad } from './oportunidades';
@@ -478,82 +476,11 @@ async function flujoVariante(e: PasoBot): Promise<BotResponse | null> {
 }
 
 /**
- * Estado: esperando elección de sede mayorista
+ * Estado de conversaciones anteriores al cambio, que quedaron esperando la sede
+ * mayorista: ahora pasan a una persona por esta misma línea.
  */
 async function flujoMayoristaSede(e: PasoBot): Promise<BotResponse | null> {
-  const { texto, awaiting, context, ultimoBot, pendingCart } = e;
-  const sede = encontrarSede(texto, SEDES_FISICAS);
-  if (sede) {
-    const consulta = armarConsultaMayorista(context, ultimoBot?.metadata?.pending_mayorista_mensaje || '', pendingCart);
-    const entregado = await enviarLeadASede(sede, context, consulta);
-    const enlaceSede = enlaceWhatsAppSede(sede, context.cliente.nombre);
-
-    // Si el aviso a la sede falló NO prometemos que van a escribir: le damos
-    // el contacto directo de la sede para que la conexión sí ocurra.
-    if (!entregado) {
-      return {
-        texto:
-          `No logré avisarle a la sede *${sede.nombre}* de forma automática 😕\n\n` +
-          `Para no hacerte esperar, escríbeles directamente y te atienden tu compra al por mayor:\n👉 ${enlaceSede}`,
-        metadata: { awaiting: '' },
-      };
-    }
-
-    // Derivación activa: el lead ya llegó a la sede, así que la conversación
-    // queda transferida (bot en pausa, etiquetada en el CRM). La red de
-    // seguridad del webhook reactiva el bot si nadie atiende en 30 min.
-    // Si el cliente usa nombre de usuario y oculta su número, la sede NO
-    // puede escribirle: no le prometemos que lo van a contactar, le pedimos
-    // que él les escriba (el enlace ya lleva el mensaje listo).
-    if (esIdUsuarioWhatsApp(context.cliente.telefono)) {
-      return {
-        texto:
-          `✅ ¡Listo! Ya le pasé tu solicitud, con el resumen de lo que buscas, a la sede *${sede.nombre}*.\n\n` +
-          `Como usas nombre de usuario en WhatsApp, la sede no ve tu número para escribirte. Escríbeles tú directo y te dan precios y condiciones especiales: 🤝\n👉 ${enlaceSede}\n\n` +
-          `Si prefieres, también puedes seguir por aquí y te ayudo con lo que necesites. 😊`,
-        metadata: { awaiting: '', derivacion: 'mayorista', sede_mayorista: sede.nombre },
-      };
-    }
-
-    return {
-      texto:
-        `✅ ¡Listo! Ya le pasé tu solicitud, con el resumen de lo que buscas, a la sede *${sede.nombre}*.\n\n` +
-        `Un asesor de compras al por mayor te va a escribir a este número (+${context.cliente.telefono}) con precios y condiciones especiales. 🤝\n\n` +
-        `Si prefieres no esperar, también puedes escribirles directo:\n👉 ${enlaceSede}\n\n` +
-        `Desde aquí te atiende una persona, así que dejo mi chat en pausa para no cruzarme con ellos. Si en 30 minutos nadie te ha escrito, mándame un mensaje y retomo contigo. 😊`,
-      accion: 'transferir_a_asesor',
-      metadata: { awaiting: '', derivacion: 'mayorista', sede_mayorista: sede.nombre },
-    };
-  }
-  // No eligió sede. Se le aclara una vez que no tiene que ir a la tienda; si
-  // vuelve a escribir otra cosa, le responde Sofi y se sigue atento a que
-  // diga la sede. Antes el menú se repetía en bucle: una clienta que pidió
-  // seguir por este chat lo recibió 4 veces.
-  const metaSedeMayorista = {
-    awaiting: 'mayorista_sede',
-    pending_mayorista_mensaje: ultimoBot?.metadata?.pending_mayorista_mensaje || '',
-    mayorista_aclarado: true,
-  };
-  if (USE_AI && ultimoBot?.metadata?.mayorista_aclarado) {
-    const r = await procesarMensajeSofi(texto, context, pendingCart);
-    // Sofi insiste en mayorista o solo conversa: ya está en ese paso, no se repite el menú
-    if ((r as any).accion === 'iniciar_mayorista') {
-      return { texto: `${r.texto}\n\n_Escríbeme el número de la sede más cercana (del 1 al ${Object.keys(SEDES_FISICAS).length}) y te conecto._`, metadata: metaSedeMayorista };
-    }
-    if (!r.accion && !r.metadata?.awaiting) return { texto: r.texto, metadata: metaSedeMayorista };
-    return (await checkoutDesdeSofi(r, pendingCart, '', 1)) ||
-      (await aplicarAjusteCarrito(r, pendingCart, context)) ||
-      (await derivacionVolumen(r, context, texto, pendingCart)) ||
-      r;
-  }
-  return {
-    texto:
-      `No tienes que ir a la tienda 😊 Un asesor de la sede que elijas te atiende por WhatsApp con precios y condiciones especiales.\n\n` +
-      `Escribe el *número* o el nombre de la sede más cercana:\n\n` +
-      MENU_SEDES,
-    metadata: metaSedeMayorista,
-  };
-  return null;
+  return await respuestaMayorista(e.context, e.ultimoBot?.metadata?.pending_mayorista_mensaje || e.texto, e.pendingCart);
 }
 
 /**
@@ -603,7 +530,7 @@ async function flujoCantidad(e: PasoBot): Promise<BotResponse | null> {
   if (cantidad && cantidad > 12) {
     return esConversacionEmpresarial(context)
       ? await respuestaEmpresarial(context, texto, pendingCart)
-      : respuestaMayoristaOpciones(context, `Quiero ${cantidad} unidades`);
+      : await respuestaMayorista(context, `Quiero ${cantidad} unidades`, pendingCart);
   }
 
   if (cantidad && cantidad > 0 && cantidad <= 12) {
@@ -1121,15 +1048,31 @@ const FLUJOS: Record<string, (e: PasoBot) => Promise<BotResponse | null>> = {
 // MAYORISTA
 // ──────────────────────────────────────────
 
-function respuestaMayoristaOpciones(context: BotContext, mensajeOriginal: string): BotResponse {
+// Todo se atiende por esta misma línea (decisión del 2026-11-09): antes el bot
+// pedía la sede, le mandaba el lead a esa tienda y le daba al cliente el
+// WhatsApp de la tienda. Ahora pasa a una persona del equipo por este chat.
+const SEDE_MAYORISTA = 'Ventas por mayor';
+
+async function respuestaMayorista(context: BotContext, mensajeOriginal: string, cart: CartItem[]): Promise<BotResponse> {
+  // El lead queda una sola vez en el panel, con el resumen de lo que busca
+  const yaRegistrado = context.mensajes_previos.some((m) => m.tipo === 'bot' && m.metadata?.lead_mayorista);
+  if (!yaRegistrado) await guardarLead(SEDE_MAYORISTA, '', context, armarConsultaMayorista(context, mensajeOriginal, cart));
   const nombre = context.cliente.nombre?.split(' ')[0];
   return {
     texto:
-      `¡Hola${nombre ? ` ${nombre}` : ''}! Para compras al por mayor te conectamos con un asesor de la sede más cercana, que te atiende por WhatsApp (no tienes que ir a la tienda). 🏪\n\n` +
-      `¿Cuál sede te queda más cerca?\n\n` +
-      MENU_SEDES,
-    metadata: { awaiting: 'mayorista_sede', pending_mayorista_mensaje: mensajeOriginal },
+      `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Las compras al por mayor las atiende nuestro equipo de ventas.\n\n` +
+      (await textoPaseAlEquipo('ventas al por mayor')),
+    accion: 'transferir_a_asesor',
+    metadata: { awaiting: '', derivacion: 'mayorista', motivo_transferencia: 'mayorista', lead_mayorista: true, pending_cart: cart },
   };
+}
+
+/** "Te paso con…": fuera de horario no promete "en un momento" (el webhook agrega cuándo le escriben). */
+async function textoPaseAlEquipo(equipo: string): Promise<string> {
+  const fueraDeHorario = !!avisoFueraDeHorario(await obtenerHorario());
+  return fueraDeHorario
+    ? `Te paso con nuestro equipo de *${equipo}*: un agente de Commerk te atenderá por este mismo chat.`
+    : `Te paso con nuestro equipo de *${equipo}*: en un momento un agente de Commerk te atenderá por este mismo chat. 🙌`;
 }
 
 /**
@@ -1222,7 +1165,7 @@ async function derivacionVolumen(
   if (accion === 'iniciar_mayorista') {
     return esConversacionEmpresarial(context)
       ? await respuestaEmpresarial(context, texto, cart)
-      : respuestaMayoristaOpciones(context, texto);
+      : await respuestaMayorista(context, texto, cart);
   }
   return null;
 }
@@ -1252,15 +1195,11 @@ async function respuestaEmpresarial(
     necesidad: resumen,
   });
 
-  // Fuera de horario el webhook agrega cuándo le escriben: ahí no se promete "en un momento"
-  const fueraDeHorario = !!avisoFueraDeHorario(await obtenerHorario());
   const nombre = context.cliente.nombre?.split(' ')[0];
   return {
     texto:
       `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Manejamos *convenio empresarial* para los regalos de tus colaboradores y clientes.\n\n` +
-      (fueraDeHorario
-        ? 'Te paso con nuestro equipo de *ventas empresariales*: un agente de Commerk te atenderá por este mismo chat.'
-        : 'Te paso con nuestro equipo de *ventas empresariales*: en un momento un agente de Commerk te atenderá por este mismo chat. 🙌'),
+      (await textoPaseAlEquipo('ventas empresariales')),
     accion: 'transferir_a_asesor',
     metadata: { awaiting: '', empresarial: true, lead_empresarial: true, motivo_transferencia: 'empresarial', pending_cart: cart },
   };
@@ -1281,15 +1220,6 @@ function resumenEmpresarial(context: BotContext, texto: string, cart: CartItem[]
     .split(' | ')
     .filter((p) => p && p !== 'Compra al por mayor' && !disparador.startsWith(p));
   return [disparador.slice(0, 350), ...otros].join(' | ').replace(/\s+/g, ' ').slice(0, 700);
-}
-
-// Enlace directo al WhatsApp de la sede con un mensaje ya escrito.
-function enlaceWhatsAppSede(sede: { telefono: string }, nombreCliente?: string | null): string {
-  const nombre = nombreCliente?.trim();
-  const msg = nombre
-    ? `Hola, soy ${nombre}. Vengo del chat de Commerk y quiero información para una compra al por mayor.`
-    : `Hola, vengo del chat de Commerk y quiero información para una compra al por mayor.`;
-  return `https://wa.me/${sede.telefono}?text=${encodeURIComponent(msg)}`;
 }
 
 /**
@@ -1319,67 +1249,6 @@ function armarConsultaMayorista(context: BotContext, mensajeDisparador: string, 
     partes.push('Carrito: ' + cart.map((i) => `${i.cantidad}x ${i.titulo}`).join(', '));
   }
   return (partes.join(' | ') || 'Compra al por mayor').slice(0, 450);
-}
-
-async function enviarLeadASede(
-  sede: { nombre: string; telefono: string },
-  context: BotContext,
-  mensajeOriginal: string
-): Promise<boolean> {
-  const entregado = await avisarLead(sede, context, mensajeOriginal);
-  await guardarLead(sede.nombre, sede.telefono, context, mensajeOriginal);
-  return entregado;
-}
-
-/** Avisa por WhatsApp a la sede que llegó un lead mayorista. */
-async function avisarLead(
-  sede: { nombre: string; telefono: string },
-  context: BotContext,
-  mensajeOriginal: string
-): Promise<boolean> {
-  const nombre = context.cliente.nombre || 'Sin nombre';
-  const telefono = context.cliente.telefono;
-  // Cliente con nombre de usuario: no hay número ni enlace wa.me posible
-  const sinNumero = esIdUsuarioWhatsApp(telefono);
-  const contacto = contactoVisible(telefono, context.cliente.wa_username);
-  const comoContactar = sinNumero
-    ? 'No comparte su número (usa nombre de usuario de WhatsApp). Ya le enviamos el enlace para que él te escriba a ti.'
-    : `Escríbele directo: https://wa.me/${telefono}`;
-
-  const mensajeLead =
-    `📋 *Nuevo lead mayorista — Commerk Bot*\n\n` +
-    `👤 Cliente: ${nombre}\n` +
-    `📱 Contacto: ${contacto}\n` +
-    `💬 Consulta: "${mensajeOriginal || 'compra al por mayor'}"\n\n` +
-    `👉 ${comoContactar}`;
-
-  // 1) Plantilla aprobada: llega siempre, incluso fuera de la ventana de 24h
-  let entregado = await enviarLeadMayorista(
-    sede.telefono,
-    sede.nombre,
-    nombre,
-    contacto,
-    `${mensajeOriginal || 'Compra al por mayor'} | ${comoContactar}`
-  ).catch(() => false);
-
-  // 2) Respaldo en texto libre mientras Meta aprueba la plantilla
-  // OJO: enviarMensajeWhatsApp NUNCA lanza (atrapa sus propios errores y
-  // devuelve {success:false, error}), así que "res !== false" comparaba un
-  // objeto contra el booleano false y SIEMPRE daba true — los fallos reales
-  // quedaban registrados como éxito y nunca se veían en los logs.
-  if (!entregado) {
-    try {
-      const res = await enviarMensajeWhatsApp(sede.telefono, mensajeLead);
-      entregado = res?.success === true;
-      if (!entregado) console.error(`[Lead sede] Envío a ${sede.nombre} (${sede.telefono}) falló:`, res?.error);
-    } catch (e: any) {
-      console.error(`[Lead sede] FALLÓ el envío a ${sede.nombre} (${sede.telefono}):`, e?.message);
-    }
-  }
-  if (!entregado) {
-    console.error(`[Lead sede] El lead de ${nombre} (+${telefono}) NO llegó a ${sede.nombre}. Revisar plantilla lead_mayorista / ventana 24h.`);
-  }
-  return entregado;
 }
 
 /** Registra el lead en leads_sedes (lo cuenta el panel del CRM por sede). */
@@ -1754,7 +1623,7 @@ async function aplicarAjusteCarrito(
   if (ajuste.cantidad > 12) {
     return esConversacionEmpresarial(context)
       ? await respuestaEmpresarial(context, `Quiero ${ajuste.cantidad} unidades`, cart)
-      : respuestaMayoristaOpciones(context, `Quiero ${ajuste.cantidad} unidades`);
+      : await respuestaMayorista(context, `Quiero ${ajuste.cantidad} unidades`, cart);
   }
 
   const productos = await obtenerProductosCache();

@@ -148,8 +148,26 @@ describe('Cantidades', () => {
 
   it('más de 12 unidades pasa a compra al por mayor sin tocar el carrito', async () => {
     const { ultima } = await conversar(['20'], { historial: esperandoCantidad() });
-    expect(ultima.metadata?.awaiting).toBe('mayorista_sede');
+    expect(ultima.accion).toBe('transferir_a_asesor');
+    expect(ultima.metadata?.motivo_transferencia).toBe('mayorista');
     expect(ultima.metadata?.pending_cart ?? []).toHaveLength(0);
+  });
+
+  it('un mayorista se atiende por esta misma línea: no se le pide sede ni se le manda a otra tienda', async () => {
+    sim.sofi.mockResolvedValueOnce({ texto: 'Con gusto', accion: 'iniciar_mayorista', metadata: { awaiting: '' } });
+    const { ultima } = await conversar(['Tengo una licorera y quiero comprar al por mayor para revender']);
+    expect(ultima.accion).toBe('transferir_a_asesor');
+    expect(ultima.metadata?.derivacion).toBe('mayorista');
+    expect(ultima.texto).toMatch(/en un momento un agente de Commerk te atenderá por este mismo chat/);
+    expect(ultima.texto).not.toMatch(/wa\.me|sede/i);
+    const lead = sim.registro.find((r) => r.tabla === 'leads_sedes' && r.op === 'insert');
+    expect(lead?.args[0]).toMatchObject({ sede: 'Ventas por mayor', telefono_sede: '' });
+  });
+
+  it('una conversación que había quedado esperando la sede mayorista pasa a una persona', async () => {
+    const { ultima } = await conversar(['3'], { historial: [bot('¿Cuál sede te queda más cerca?', { awaiting: 'mayorista_sede', pending_mayorista_mensaje: 'Quiero 50 cajas' })] });
+    expect(ultima.accion).toBe('transferir_a_asesor');
+    expect(ultima.metadata?.motivo_transferencia).toBe('mayorista');
   });
 
   it('más de 12 unidades en una conversación de empresa sigue como venta empresarial', async () => {

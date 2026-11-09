@@ -190,9 +190,9 @@ export async function POST(req: Request) {
 
           // RED DE SEGURIDAD: si el bot está apagado esperando a un asesor y nadie
           // ha respondido en 30 min, lo reactivamos para no dejar al cliente hablando solo.
-          // Las ventas empresariales no: las atiende siempre una persona del equipo.
-          const esperaVentaEmpresarial = convData?.motivo_transferencia === 'empresarial';
-          if (!botActivo && !atendidaPorAsesor && !esperaVentaEmpresarial) {
+          // Las ventas empresariales y al por mayor no: las atiende siempre una persona del equipo.
+          const esperaVentaEspecial = ['empresarial', 'mayorista'].includes(convData?.motivo_transferencia);
+          if (!botActivo && !atendidaPorAsesor && !esperaVentaEspecial) {
             const { data: transferencia } = await supabaseAdmin
               .from('mensajes')
               .select('created_at')
@@ -472,7 +472,7 @@ export async function POST(req: Request) {
             // Paso en que iba el cliente antes de este mensaje (estado guardado o último mensaje del bot)
             const awaitingPrevio = estado ? estado.datos?.awaiting : [...historial].reverse().find((m) => m.tipo === 'bot')?.metadata?.awaiting;
             const pideHumano = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien)\b/i.test(texto);
-            // La derivación mayorista ya avisó a la sede: ahí sí se pasa el chat siempre
+            // Compra al por mayor: la atiende una persona por esta misma línea, se pasa siempre
             const derivacionMayorista = respuesta.metadata?.derivacion === 'mayorista';
             // Problema con el pago, cliente molesto o venta empresarial: lo atiende
             // una persona, se pasa siempre
