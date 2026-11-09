@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import crypto from 'crypto';
 import { waitUntil } from '@vercel/functions';
+import { firmaWompiValida } from '@/lib/firma-wompi';
+import { registrarEvento } from '@/lib/eventos';
 import { supabaseAdmin, actualizarEstadoVenta } from '@/lib/supabase';
 import { crearPedidoShopifyMultiItem, formatearPrecioCOP } from '@/lib/shopify';
 import { enviarMensajeWhatsApp } from '@/lib/whatsapp';
@@ -21,26 +22,44 @@ const CONEXA_FORWARD_URL = 'https://wompi-event-shopify.conexa.ai/api/v1/shopify
 const COSTO_ENVIO        = parseInt(process.env.SHIPPING_COST || '8000');
 const ENVIO_GRATIS_DESDE = parseInt(process.env.FREE_SHIPPING_THRESHOLD || '149000');
 
+const CAMPOS_VENTA = 'id, estado, referencia_pago, producto_shopify_id, producto_nombre, producto_precio, cantidad, total, direccion_envio, conversacion_id, cliente:clientes(id, nombre, telefono, email)';
+
+/**
+ * Ventas del bot que paga esta transacción (un carrito tiene una fila por producto).
+ * Los links de pago del bot no llevan la referencia WA-: Wompi les pone la suya
+ * ("<link>_<hora>_<azar>") y manda el id del link en payment_link_id. Antes solo
+ * se buscaba por WA- y ningún pago hecho con el link se reconocía.
+ */
+async function ventasDeTransaccion(transaction: WompiWebhookEvent['data']['transaction']) {
+  if (transaction.reference?.startsWith('WA-')) {
+    const { data } = await supabaseAdmin.from('ventas').select(CAMPOS_VENTA).eq('referencia_pago', transaction.reference);
+    if (data?.length) return data;
+  }
+  if (!transaction.payment_link_id) return [];
+  const { data } = await supabaseAdmin.from('ventas').select(CAMPOS_VENTA)
+    .like('link_pago', `%/l/${transaction.payment_link_id}`);
+  return data || [];
+}
+
 // Procesamiento en background — no bloquea la respuesta al webhook
 async function procesarTransaccionBot(payload: WompiWebhookEvent) {
   const transaction = payload.data?.transaction;
   if (!transaction) return;
 
-  const reference = transaction.reference;
-
-  // Traer TODAS las ventas de esta referencia (carrito puede tener varios productos)
-  const { data: ventas } = await supabaseAdmin
-    .from('ventas')
-    .select('id, estado, producto_shopify_id, producto_nombre, producto_precio, cantidad, total, direccion_envio, conversacion_id, cliente:clientes(id, nombre, telefono, email)')
-    .eq('referencia_pago', reference);
-
-  if (!ventas || ventas.length === 0) return;
+  const ventas = await ventasDeTransaccion(transaction);
+  if (!ventas.length) return;
+  // Referencia del bot (WA-…): es la que conocen el CRM, el pedido de Shopify y los mensajes
+  const reference: string = (ventas[0] as any).referencia_pago || transaction.reference;
 
   // Idempotencia: Wompi puede reintentar la entrega del mismo evento (timeout,
   // respuesta lenta, etc.). Sin esto, cada reintento de "APPROVED" creaba OTRO
   // pedido en Shopify y reenviaba los mensajes de confirmación al cliente y a
-  // la sede. Si ya se procesó (estado ya no está "pendiente"), no repetir nada.
-  const yaProcesado = ventas.every((v) => v.estado !== 'pendiente');
+  // la sede. Si ya se procesó, no repetir nada. Un intento rechazado deja la
+  // venta "cancelada", pero el cliente puede volver a intentar con el mismo
+  // link: un pago aprobado posterior sí se procesa.
+  const yaProcesado = transaction.status === 'APPROVED'
+    ? ventas.every((v) => v.estado === 'pagado')
+    : ventas.every((v) => v.estado !== 'pendiente');
   if (yaProcesado) {
     console.log(`[Wompi] Referencia ${reference} ya procesada (estado actual: ${ventas[0].estado}) — evento repetido, se ignora.`);
     return;
@@ -69,12 +88,17 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
   const totalPedido = montoCobrado > 0 ? Math.round(montoCobrado) : subtotalPedido + envioAplicado;
 
   if (transaction.status === 'APPROVED') {
-    // 1. Marcar TODAS las ventas como pagadas (lo más crítico)
-    await Promise.allSettled(
-      ventas.map((v) =>
-        actualizarEstadoVenta(v.id, 'pagado', { metodo_pago: transaction.payment_method_type })
-      )
-    );
+    // 1. Marcar TODAS las ventas como pagadas (lo más crítico). Solo el primer
+    // aviso que las encuentre pendientes sigue: Wompi puede repetir el evento y
+    // dos avisos casi simultáneos creaban dos pedidos.
+    const { data: reclamadas } = await supabaseAdmin
+      .from('ventas')
+      .update({ estado: 'pagado', metodo_pago: transaction.payment_method_type, updated_at: new Date().toISOString() })
+      .in('id', ventas.map((v) => v.id))
+      .in('estado', ['pendiente', 'cancelado'])
+      .select('id');
+    if (!reclamadas?.length) return;
+    await registrarEvento('info', 'wompi', `Pago del bot aprobado: ${reference} (${formatearPrecioCOP(totalPedido)})`);
 
     // 2. Crear UN solo pedido Shopify con todos los productos + notificar WhatsApp
     const resumenProductos = ventas.map((v) => `${v.producto_nombre} × ${v.cantidad}`).join(', ');
@@ -98,6 +122,10 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
 
     const orderNumber = shopifyResult.status === 'fulfilled' ? (shopifyResult.value as any)?.orderNumber : null;
     const shopifyOrderNum = orderNumber ? `#${orderNumber}` : '';
+    if (!orderNumber) {
+      const motivo = shopifyResult.status === 'fulfilled' ? (shopifyResult.value as any)?.error : (shopifyResult as any).reason?.message;
+      await registrarEvento('error', 'wompi', `Pago confirmado de ${reference} pero NO se creó el pedido en Shopify: ${motivo || 'sin detalle'}`);
+    }
 
     // 3. Guardar mensaje de confirmación en conversación (no bloquea)
     if (telefono && conversacionId) {
@@ -230,6 +258,7 @@ export async function POST(req: Request) {
   const secret = process.env.WOMPI_EVENT_SECRET || '';
   const { signature, data } = payload;
   const transaction = data?.transaction;
+  const timestamp = (payload as any).timestamp;
 
   // Verificar firma de Wompi — OBLIGATORIA. Antes, si el payload llegaba sin
   // "signature.properties" la verificación se SALTABA por completo y el evento
@@ -245,26 +274,15 @@ export async function POST(req: Request) {
     console.error('[Wompi] Webhook sin firma — rechazado');
     return NextResponse.json({ error: 'Missing signature' }, { status: 401 });
   }
-  {
-    let concatString = '';
-    for (const prop of signature.properties) {
-      const keys = prop.split('.');
-      let value: any = payload;
-      for (const key of keys) value = value?.[key];
-      concatString += String(value ?? '');
-    }
-    concatString += payload.sent_at;
-    concatString += secret;
-
-    const expected = crypto.createHash('sha256').update(concatString).digest('hex');
-    if (expected !== signature.checksum) {
-      console.error('[Wompi] Firma inválida — posible intento de forjar el webhook');
-      return NextResponse.json({ error: 'Invalid Signature' }, { status: 401 });
-    }
+  if (!firmaWompiValida({ data, signature, timestamp }, secret)) {
+    console.error('[Wompi] Firma inválida — posible intento de forjar el webhook');
+    await registrarEvento('aviso', 'wompi', `Evento de Wompi rechazado (firma inválida): ${transaction?.reference || 'sin referencia'}`);
+    return NextResponse.json({ error: 'Invalid Signature' }, { status: 401 });
   }
 
-  // Solo procesar transacciones del bot (WA-)
-  if (!transaction?.reference?.startsWith('WA-')) {
+  // Solo transacciones que pueden ser del bot: referencia WA- o pago hecho con un
+  // link (procesarTransaccionBot busca la venta y no hace nada si no es del bot)
+  if (!transaction?.reference?.startsWith('WA-') && !transaction?.payment_link_id) {
     return NextResponse.json({ success: true }, { status: 200 });
   }
 

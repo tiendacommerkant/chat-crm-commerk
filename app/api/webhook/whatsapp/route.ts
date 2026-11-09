@@ -289,7 +289,13 @@ export async function POST(req: Request) {
 
           // Solo responder con bot si es texto, respuesta interactiva o botón de plantilla
           if (msgType !== 'text' && msgType !== 'interactive' && msgType !== 'button') {
-            const msgAcuse = '¡Hola! Recibimos tu mensaje. ¿En qué te podemos ayudar? 😊\n\nCuéntame qué producto buscas o qué necesitas.';
+            // Foto o PDF después del link de pago: casi siempre es el comprobante.
+            // Antes recibía el saludo genérico y el cliente quedaba sin saber nada.
+            const esperandoPago = ['image', 'document'].includes(msgType) &&
+              (await leerEstadoConversacion(conversacion.id))?.datos?.awaiting === 'link_enviado';
+            const msgAcuse = esperandoPago
+              ? '🧾 ¡Gracias! Recibimos tu comprobante. El pago se confirma solo con Wompi en pocos minutos y te avisamos por aquí mismo con el número de tu pedido.'
+              : '¡Hola! Recibimos tu mensaje. ¿En qué te podemos ayudar? 😊\n\nCuéntame qué producto buscas o qué necesitas.';
             await guardarMensaje(conversacion.id, 'bot', msgAcuse, { tipo_wa: 'text' });
             await enviarMensajeWhatsApp(phone, msgAcuse);
             continue;
@@ -342,7 +348,6 @@ export async function POST(req: Request) {
               descripcion: `${descripcionItems} — Envío: ${direccion}`,
               monto: total,
               referencia,
-              urlRedireccion: `${process.env.NEXT_PUBLIC_BASE_URL}/pago/confirmacion?ref=${referencia}`,
             });
 
             if (linkResult.success && linkResult.link) {

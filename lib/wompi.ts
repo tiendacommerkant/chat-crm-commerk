@@ -31,7 +31,9 @@ export async function generarLinkPagoWompi(params: {
       collect_shipping: false,
       amount_in_cents: montoEnCentavos,
       currency: 'COP',
-      redirect_url: params.urlRedireccion || `${process.env.NEXT_PUBLIC_BASE_URL}/pago/confirmacion?ref=${params.referencia}`,
+      // Al terminar de pagar vuelve al chat, donde le llega la confirmación con
+      // el número de pedido (antes iba a /pago/confirmacion, que no existe: 404)
+      redirect_url: params.urlRedireccion || `https://wa.me/${process.env.WHATSAPP_NUMERO_TIENDA || '573174644945'}`,
     };
 
     console.log('[Wompi] KEY presente:', !!WOMPI_PRIVATE_KEY, '| monto COP:', params.monto, '| centavos:', montoEnCentavos);
