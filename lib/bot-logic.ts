@@ -19,7 +19,7 @@ import type { BotContext, BotResponse, Producto } from '@/types';
 import { obtenerProductosCache, actualizarCliente, supabaseAdmin, obtenerPedidosClienteShopify } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
-import { asegurarPreguntaCantidad } from './sofi-texto';
+import { asegurarPreguntaCantidad, quitarUltimaPregunta } from './sofi-texto';
 import {
   variantesDe, varianteDe, resolverVariante, preguntaVariante, tituloConVariante,
   decodificarPendiente, type Variante,
@@ -32,6 +32,7 @@ import { parsearCalificacion } from './encuesta';
 import { asegurarOportunidad } from './oportunidades';
 import { esPedidoDeBaja } from './difusiones';
 import { avisoFueraDeHorario, obtenerHorario } from './horario';
+import { REGALO, regaloAplica } from './temporada';
 import { recordatorioPendiente, respuestaRecordatorioCarrito } from './bot/carrito-tienda';
 import {
   esSaludo,
@@ -550,7 +551,18 @@ async function flujoCantidad(e: PasoBot): Promise<BotResponse | null> {
   // como cantidad=1 y el producto pendiente se agregaba solo al carrito, sin
   // que el cliente lo confirmara, en vez de transferir a un asesor.
   const noEsCantidad = /\b(asesor(a)?|humano|humana|persona|agente|representante|encargado|alguien|pregunta|duda|momento|descuento|problema|foto|fotos|imagen|imagenes|imágenes|catalogo|catálogo)\b/i.test(texto);
-  const cantidad = noEsCantidad ? null : (cantidades[0] ?? null);
+  // Una dirección o un texto largo con números no es una cantidad: en la
+  // auditoría "Calle 45 F # 77-68 oficina 202" en este paso leyó 45 unidades y
+  // pasó al cliente a ventas al por mayor.
+  const pareceDireccion = /(\bcalle\b|\bcll\b|\bcarrera\b|\bcra\b|\bcr\b|\bcl\b|\bavenida\b|\bav\b|\btransversal\b|\bdiagonal\b|\bcircular\b|#|n[°º]|\bno\.\s*\d|\boficina\b|\bofic\b|\bapto\b|\bapartamento\b|\btorre\b|\bpiso\b|\bbarrio\b|\bkm\b|\bmanzana\b|\bmz\b|\bcasa\b|\blocal\b|\bbloque\b|\binterior\b)/i.test(texto);
+  const textoCorto = texto.trim().split(/\s+/).length <= 6 && cantidades.length === 1;
+  const cantidad = noEsCantidad || pareceDireccion || !textoCorto ? null : (cantidades[0] ?? null);
+  if (pareceDireccion && !noEsCantidad) {
+    return {
+      texto: `📍 Esa dirección la usamos al final para el envío. Primero dime: ¿cuántas unidades quieres? Escribe el número (ej: *1*, *2*, *3*).`,
+      metadata: { awaiting: 'cantidad', pending_product_id: pendingProductId, pending_variant_id: pendingVariantId, pending_queue: pendingQueue, pending_cart: pendingCart },
+    };
+  }
 
   // Más de 12 unidades: compra empresarial si la conversación ya lo es, si no mayorista
   if (cantidad && cantidad > 12) {
@@ -825,6 +837,7 @@ async function flujoRecogerSede(e: PasoBot): Promise<BotResponse | null> {
   });
   resumen += `─────────────────────\n`;
   resumen += `Subtotal: ${formatearPrecioCOP(subtotal)}\n`;
+  if (regaloAplica(subtotal)) resumen += `🎁 Incluye *${REGALO.nombreCorto}* de regalo\n`;
   resumen += `Entrega: 🏪 *Recoges en ${sede.nombre}*\n`;
   resumen += `*TOTAL: ${formatearPrecioCOP(total)}*\n\n`;
   resumen += `¿Confirmamos el pedido?\n*SI* para pagar | *NO* para cancelar`;
@@ -904,6 +917,7 @@ async function flujoDireccion(e: PasoBot): Promise<BotResponse | null> {
   });
   resumen += `─────────────────────\n`;
   resumen += `Subtotal: ${formatearPrecioCOP(subtotal)}\n`;
+  if (regaloAplica(subtotal)) resumen += `🎁 Incluye *${REGALO.nombreCorto}* de regalo\n`;
   resumen += costoEnvio === 0
     ? `Envío: 🎁 *GRATIS*\n`
     : `Envío: ${formatearPrecioCOP(costoEnvio)} _(gratis desde ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)})_\n`;
@@ -1582,6 +1596,7 @@ function textoCarritoResumen(cart: CartItem[]): string {
     msg += `${i + 1}. ${asignarEmojiProducto(item.titulo)} ${item.titulo} × ${item.cantidad} = ${formatearPrecioCOP(item.precio * item.cantidad)}\n`;
   });
   msg += `\nSubtotal: ${formatearPrecioCOP(subtotal)}`;
+  if (regaloAplica(subtotal)) msg += `\n🎁 Incluye *${REGALO.nombreCorto}* de regalo`;
   // Cuando se cobra envío, se explica el porqué ahí mismo — sin esto algunos
   // clientes se sorprendían con el cargo pensando que el envío siempre es gratis.
   msg += costoEnvio === 0
@@ -1614,6 +1629,24 @@ async function atenderConSofi(
   pendingVariantId: string | null = null
 ): Promise<BotResponse> {
   const respuestaSofi = await procesarMensajeSofi(texto, context, pendingCart);
+
+  // "Quiero 3 botellas de…": la cantidad venía en el mensaje; no se vuelve a
+  // preguntar (en la auditoría el bot preguntaba "¿cuántas?" y el cliente
+  // respondía "no", y se perdía la compra).
+  const sugerida = Number(respuestaSofi.metadata?.cantidad_sugerida);
+  if (respuestaSofi.metadata?.awaiting === 'cantidad' && sugerida >= 1 && sugerida <= 12) {
+    const md = respuestaSofi.metadata;
+    const r = await flujoCantidad({
+      texto: String(sugerida), textoLower: String(sugerida), awaiting: 'cantidad', context,
+      ultimoBot: { metadata: md }, pendingProductId: md.pending_product_id || '', pendingVariantId: md.pending_variant_id || null,
+      pendingQueue: md.pending_queue || [], pendingCantidad: sugerida, pendingDireccion: '', pendingCart,
+      pendingTotal: 0, pendingSubtotal: 0, pendingCostoEnvio: 0,
+    });
+    if (r) {
+      const intro = quitarUltimaPregunta(respuestaSofi.texto || '').trim();
+      return intro && !r.texto.startsWith(intro) ? { ...r, texto: `${intro}\n\n${r.texto}` } : r;
+    }
+  }
 
   // Sofi detectó que el cliente quiere cerrar → el CÓDIGO toma el control
   // del checkout (entrega → dirección → confirmación → link de Wompi).

@@ -10,8 +10,21 @@ import { obtenerProductosCache } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { registrarUsoClaude } from './costos';
 import { registrarEvento } from './eventos';
+import { textoTemporadaSofi } from './temporada';
 import { matchProductoDistintivo } from './matching';
 import { asegurarPreguntaCantidad, quitarUltimaPregunta } from './sofi-texto';
+import { quitarNumerosDeProducto } from './bot/intenciones';
+
+const CANTIDAD_PALABRA: Record<string, number> = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12 };
+
+/** "Quiero 3 botellas de…": cantidad dicha en el mismo mensaje (1 a 12), para no volver a preguntarla. */
+function cantidadEnMensaje(mensaje: string): number | null {
+  const sin = quitarNumerosDeProducto(mensaje).toLowerCase();
+  const m = sin.match(/\b(\d{1,2}|una?|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\s+(botellas?|unidades?|uds?\.?|und\.?|kits?|cajas?|anchetas?|garrafas?|estuches?|combos?|cremas?|rones|aguardientes|medias)\b/);
+  if (!m) return null;
+  const n = /^\d+$/.test(m[1]) ? parseInt(m[1]) : CANTIDAD_PALABRA[m[1]];
+  return n >= 1 && n <= 12 ? n : null;
+}
 import {
   variantesDe, varianteDe, resolverVariante, lineaVariantes, preguntaVariante,
   tituloConVariante, codificarPendiente, decodificarPendiente,
@@ -142,6 +155,8 @@ Sedes: CC Tesoro · CC Fabricato · Autopista Sur (Itagüí) · Gran Manzana (It
 Envío: ${COSTO_ENVIO === 0 ? 'GRATIS siempre, sin monto mínimo' : `${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}`} | 24-48h | Zona: ${COBERTURA.join(', ')}
 Pagos: Tarjeta, PSE, Nequi, Daviplata (Wompi)
 COBERTURA DE DOMICILIO: SOLO los municipios listados en "Zona". Nunca digas "Valle de Aburrá", "toda el área metropolitana" ni menciones otros municipios como cubiertos. Si preguntan por uno que no está en la lista (ej. Itagüí, Rionegro), di que no está en la cobertura estándar de domicilio y ofrece la opción de recoger en tienda. No agregues condiciones de envío que no estén escritas arriba (nada de "hábiles" u otros detalles). (Los pedidos empresariales tienen su propia condición de envío: ver VENTAS EMPRESARIALES.)
+
+${textoTemporadaSofi()}
 
 VENTAS EMPRESARIALES (temporada de fin de año)
 Es empresarial quien compra A NOMBRE DE UNA EMPRESA para regalar a sus colaboradores, empleados o clientes: anchetas, aguinaldos, regalos corporativos o de fin de año, "convenio empresarial", "tengo una empresa", "para mis empleados/clientes/colaboradores", áreas como Talento Humano, Bienestar o Compras, o una cotización para una compañía. Con cualquier cantidad.
@@ -400,6 +415,8 @@ RESPONDE SOLO JSON:
             pending_queue: cola,
             pending_cart: pendingCart,
             sofi_ia: true,
+            // Si pidió un solo producto y dijo cuántos, bot-logic lo agrega sin volver a preguntar
+            cantidad_sugerida: solicitados.length === 1 ? cantidadEnMensaje(mensaje) : null,
           },
         };
       }

@@ -13,6 +13,8 @@ import { esIdUsuarioWhatsApp } from './whatsapp-id';
 import { enviarConfirmacionPago, enviarPedidoRecogerSede } from './whatsapp-templates';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from './sedes';
 import { registrarEvento } from './eventos';
+import { REGALO, regaloAplica, varianteRegaloDisponible } from './temporada';
+import { SEPARADOR_VARIANTE } from './variantes';
 import type { WompiWebhookEvent } from '@/types';
 
 export type TransaccionWompi = WompiWebhookEvent['data']['transaction'];
@@ -104,13 +106,18 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
     await registrarEvento('info', 'wompi', `Pago del bot aprobado: ${reference} (${formatearPrecioCOP(totalPedido)})`);
 
     // 2. Crear UN solo pedido Shopify con todos los productos + notificar WhatsApp
-    const resumenProductos = ventas.map((v) => `${v.producto_nombre} × ${v.cantidad}`).join(', ');
+    // Gorra de regalo por compras desde $199.000, igual que en la tienda online
+    // (va a $0 con el primer color que tenga unidades)
+    const regalo = regaloAplica(subtotalPedido) ? await varianteRegaloDisponible().catch(() => null) : null;
+    const itemsPedido = ventas.map((v) => ({
+      productoShopifyId: v.producto_shopify_id, cantidad: v.cantidad, productoNombre: v.producto_nombre,
+      precioUnitario: Number(v.producto_precio) || (v.cantidad ? Number(v.total) / v.cantidad : null),
+    }));
+    if (regalo) itemsPedido.push({ productoShopifyId: REGALO.productoShopifyId, cantidad: 1, productoNombre: `${REGALO.nombre}${SEPARADOR_VARIANTE}${regalo.title}`, precioUnitario: 0 });
+    const resumenProductos = ventas.map((v) => `${v.producto_nombre} × ${v.cantidad}`).join(', ') + (regalo ? ` + ${REGALO.nombreCorto} (regalo)` : '');
     const [shopifyResult] = await Promise.allSettled([
       crearPedidoShopifyMultiItem({
-        items: ventas.map((v) => ({
-          productoShopifyId: v.producto_shopify_id, cantidad: v.cantidad, productoNombre: v.producto_nombre,
-          precioUnitario: Number(v.producto_precio) || (v.cantidad ? Number(v.total) / v.cantidad : null),
-        })),
+        items: itemsPedido,
         clienteNombre: nombreCliente || null,
         // Un cliente con nombre de usuario no tiene número: Shopify rechaza
         // un "teléfono" con formato de ID de usuario y el pedido no se crearía.
@@ -134,7 +141,7 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
     if (telefono && conversacionId) {
       const lineasProductos = ventas
         .map((v) => `📦 *${v.producto_nombre}* × ${v.cantidad}`)
-        .join('\n');
+        .join('\n') + (regalo ? `\n🎁 *${REGALO.nombreCorto}* × 1 (regalo)` : '');
       const cierre = recogida
         ? `\n🏪 Tu pedido quedará *listo para recoger en ${nombreSede}*. Te avisamos apenas puedas pasar. ¡Gracias! 🎉`
         : `\n🚚 Te enviaremos tu pedido en las próximas 24-48 horas. ¡Gracias! 🎉`;
