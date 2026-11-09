@@ -91,12 +91,17 @@ async function procesarTransaccionBot(payload: WompiWebhookEvent) {
     // 1. Marcar TODAS las ventas como pagadas (lo más crítico). Solo el primer
     // aviso que las encuentre pendientes sigue: Wompi puede repetir el evento y
     // dos avisos casi simultáneos creaban dos pedidos.
-    const { data: reclamadas } = await supabaseAdmin
+    // (ventas no tiene columna de método de pago: va en la nota del pedido de Shopify)
+    const { data: reclamadas, error: errReclamo } = await supabaseAdmin
       .from('ventas')
-      .update({ estado: 'pagado', metodo_pago: transaction.payment_method_type, updated_at: new Date().toISOString() })
+      .update({ estado: 'pagado', updated_at: new Date().toISOString() })
       .in('id', ventas.map((v) => v.id))
       .in('estado', ['pendiente', 'cancelado'])
       .select('id');
+    if (errReclamo) {
+      await registrarEvento('error', 'wompi', `Pago aprobado de ${reference} pero no se pudo marcar la venta: ${errReclamo.message}`);
+      return;
+    }
     if (!reclamadas?.length) return;
     await registrarEvento('info', 'wompi', `Pago del bot aprobado: ${reference} (${formatearPrecioCOP(totalPedido)})`);
 

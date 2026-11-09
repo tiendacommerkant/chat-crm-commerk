@@ -412,6 +412,9 @@ export async function crearPedidoShopify(params: {
           country_code: 'CO',
         },
         financial_status: 'paid',
+        // Descuenta el inventario (por defecto la API no lo hace); sin bloquear si
+        // el stock quedó en cero: el cliente ya pagó y el pedido debe existir
+        inventory_behaviour: 'decrement_ignoring_policy',
         tags: `whatsapp,bot,ref:${params.referenciaPago}`,
         note: `Venta por WhatsApp Bot | Pago: ${params.metodoPago || 'Wompi'} | Ref: ${params.referenciaPago}`,
         send_receipt: false,
@@ -513,6 +516,9 @@ export async function crearPedidoShopifyMultiItem(params: {
           country_code: 'CO',
         },
         financial_status: 'paid',
+        // Descuenta el inventario (por defecto la API no lo hace); sin bloquear si
+        // el stock quedó en cero: el cliente ya pagó y el pedido debe existir
+        inventory_behaviour: 'decrement_ignoring_policy',
         tags: `whatsapp,bot,ref:${params.referenciaPago}`,
         note: `Venta por WhatsApp Bot | Pago: ${params.metodoPago || 'Wompi'} | Ref: ${params.referenciaPago}`,
         send_receipt: false,
