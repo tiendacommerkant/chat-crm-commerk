@@ -25,7 +25,7 @@ import {
   decodificarPendiente, type Variante,
 } from './variantes';
 import { enviarMensajeWhatsApp } from './whatsapp';
-import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, MENU_SEDES_REGISTRO, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
+import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
 import { evaluarCobertura } from './cobertura';
 import { parsearCalificacion } from './encuesta';
@@ -93,7 +93,61 @@ export interface PedidoPendiente {
   total: number;
 }
 
-export async function procesarMensajeBot(
+/** Aviso de la primera respuesta: seguir el chat es aceptar la política. No se bloquea a nadie. */
+export const AVISO_POLITICAS = '🔒 _Al continuar esta conversación aceptas nuestras políticas de privacidad y tratamiento de datos: https://tiendacommerkant.com.co/policies/privacy-policy_';
+
+const esAceptacionPoliticas = (t: string) => /\b(acept|asept|aceto\b|aseto\b|autorizo|de acuerdo)/i.test(t);
+// "Acepto" a secas (con sus variantes y errores de escritura), sin otra pregunta
+const esSoloAceptacion = (t: string) =>
+  /^(ok|s[ií]|si|dale|listo|claro|obvio( que)?|pues|yo|ya)?[\s,.!]*(acepto|aceptar|aceptado|asepto|aceto|aseto|autorizo|de acuerdo|acept[oa] (las|la) pol[ií]ticas?|acepto todo|s[ií] acepto|ok acepto)[\s.!]*$/i.test(t.trim());
+const esRechazoPoliticas = (t: string) => /\bno (acepto|autorizo|quiero (aceptar|compartir|dar mis datos))\b/i.test(t);
+
+/**
+ * Políticas de privacidad sin muro: antes el bot no respondía nada hasta que el
+ * cliente escribiera exactamente "acepto", y quien preguntaba el precio, saludaba
+ * o escribía "Asepto" recibía el mismo aviso una y otra vez (20 casos en 3 días).
+ * Ahora se responde desde el primer mensaje con el aviso al final; si el cliente
+ * sigue escribiendo, queda aceptada. Decir que no acepta sí frena la atención.
+ */
+export async function procesarMensajeBot(mensaje: string, context: BotContext): Promise<BotResponse> {
+  if (context.cliente.politicas_aceptadas) return procesarMensajeBotInterno(mensaje, context);
+
+  const texto = mensaje.trim();
+  if (esRechazoPoliticas(texto)) {
+    return {
+      texto: 'Entiendo 🙏 Sin tu autorización no podemos seguir atendiéndote por este chat. Si cambias de opinión, escribe *acepto* y seguimos. También puedes comprar directamente en https://tiendacommerkant.com.co',
+      metadata: { awaiting: '' },
+    };
+  }
+  // Ya vio el aviso (o el muro anterior de "Responde ACEPTO"): seguir escribiendo es aceptar.
+  // El recordatorio de carrito de la tienda no cuenta como aviso.
+  const yaAvisado = context.mensajes_previos.some((m) => m.tipo === 'bot' && !String(m.metadata?.evento || '').startsWith('carrito'));
+  if (yaAvisado || esAceptacionPoliticas(texto)) {
+    await actualizarCliente(context.cliente.id, { politicas_aceptadas: true });
+    const aceptado: BotContext = { ...context, cliente: { ...context.cliente, politicas_aceptadas: true } };
+    if (esSoloAceptacion(texto)) {
+      // "Acepto" a secas: se responde lo que había escrito antes del muro, o se saluda
+      const inicial = mensajeInicialPendiente(context);
+      if (inicial) {
+        const r = await procesarMensajeBotInterno(inicial, { ...aceptado, mensajes_previos: [] });
+        return { ...r, texto: `✅ ¡Gracias por aceptar!\n\n${r.texto}` };
+      }
+      const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
+      return {
+        texto:
+          `✅ ¡Gracias${nombre}! Soy Sofi, tu asesora de ventas 24/7 ✨\n\n` +
+          `Cuéntame, ¿en qué te puedo ayudar hoy? Puedes preguntarme por cualquier producto, presupuesto de regalo, envíos o lo que necesites. 😊`,
+        metadata: { awaiting: '' },
+      };
+    }
+    return procesarMensajeBotInterno(mensaje, aceptado);
+  }
+  // Primer mensaje: se responde normal y al final va el aviso
+  const r = await procesarMensajeBotInterno(mensaje, context);
+  return { ...r, texto: `${r.texto}\n\n${AVISO_POLITICAS}`, metadata: { ...(r.metadata || {}), aviso_politicas: true } };
+}
+
+async function procesarMensajeBotInterno(
   mensaje: string,
   context: BotContext
 ): Promise<BotResponse> {
@@ -147,47 +201,22 @@ export async function procesarMensajeBot(
   // ── AVÍSAME DE LA HORA ROJA (botón de la tienda en Black Week) ─────
   // La conversación queda con la etiqueta "Hora Roja" para enviarle la
   // plantilla hora_roja_destapada solo a quien la pidió (CRM › Difusiones).
-  // Un cliente nuevo queda etiquetado y sigue a aceptar la política.
+  // (La política de privacidad la maneja procesarMensajeBot: el aviso va en la primera respuesta.)
   if (esAvisoHoraRoja(texto)) {
     await etiquetarHoraRoja(context);
-    if (context.cliente.politicas_aceptadas) {
-      // Pedir el aviso es aceptar ese mensaje, aunque antes hubiera pedido la baja
-      await supabaseAdmin.from('clientes').update({ no_publicidad: false }).eq('id', context.cliente.id);
-      return {
-        texto: '¡Listo! 🔔 Te escribimos por aquí apenas se destape la oferta de La Hora Roja.\n\nMientras tanto, todas las ofertas de Black Week están en tiendacommerkant.com.co 🔥',
-        metadata: { awaiting: '', pending_cart: pendingCart },
-      };
-    }
-  }
-
-  // ── POLÍTICAS: cliente nuevo debe aceptar antes de interactuar ─────
-  if (!context.cliente.politicas_aceptadas) {
-    if (/^(acepto|si acepto|accept|aceptar|de acuerdo|ok acepto|s[íi] acepto)$/i.test(textoLower)) {
-      await actualizarCliente(context.cliente.id, { politicas_aceptadas: true });
-      return {
-        texto:
-          `✅ *¡Gracias por aceptar nuestras políticas!*\n\n` +
-          `🏪 *¿Cuál es la sede más cercana a ti?*\n\n` +
-          `${MENU_SEDES_REGISTRO}\n\n` +
-          `_Escribe el número o el nombre de tu sede._`,
-        metadata: { awaiting: 'sede' },
-      };
-    }
+    // Pedir el aviso es aceptar ese mensaje, aunque antes hubiera pedido la baja
+    await supabaseAdmin.from('clientes').update({ no_publicidad: false }).eq('id', context.cliente.id);
     return {
-      texto:
-        `¡Hola! 👋 Bienvenido a *Tienda Commerk Antioquia*.\n\n` +
-        `Antes de continuar, debes aceptar nuestras *políticas de privacidad*:\n` +
-        `🔒 https://tiendacommerkant.com.co/policies/privacy-policy\n\n` +
-        `🌐 Visita nuestra tienda: https://tiendacommerkant.com.co\n\n` +
-        `Responde *ACEPTO* para continuar. Al hacerlo, aceptas el tratamiento de tus datos personales conforme a nuestra política de privacidad.`,
-      metadata: { awaiting: 'politicas' },
+      texto: '¡Listo! 🔔 Te escribimos por aquí apenas se destape la oferta de La Hora Roja.\n\nMientras tanto, todas las ofertas de Black Week están en tiendacommerkant.com.co 🔥',
+      metadata: { awaiting: '', pending_cart: pendingCart },
     };
   }
 
-  // ── SEDE: cliente aceptó políticas pero no ha elegido sede ─────────
-  // Solo pedir sede cuando NO hay un flujo activo (sin esto, un "3" para
-  // cantidad se interpretaba como selección de sede #3).
-  if (awaiting === 'sede' || (awaiting === '' && !context.cliente.sede_preferida)) {
+  // ── SEDE (solo conversaciones anteriores que quedaron en el menú de sedes) ──
+  // Ya no se pregunta la sede al registrarse: bloqueaba a quien escribía desde
+  // otra ciudad o preguntaba otra cosa (15 veces en 3 días). Si responde una
+  // sede se guarda; si escribe otra cosa, se atiende normal.
+  if (awaiting === 'sede') {
     // Por número (siempre, tolerando "3.", "3)" como responde la gente en
     // WhatsApp — antes exigía el dígito pelado) o, cuando el menú de sedes
     // está en pantalla, también por nombre hablado ("tesoro", "la de
@@ -229,14 +258,6 @@ export async function procesarMensajeBot(
           `Soy Sofi, tu asesora de ventas 24/7 ✨\n\n` +
           `Cuéntame, ¿en qué te puedo ayudar hoy? Puedes preguntarme por cualquier producto, presupuesto de regalo, envíos o lo que necesites. 😊`,
         metadata: { awaiting: '' },
-      };
-    }
-    if (awaiting === 'sede') {
-      return {
-        texto:
-          `No logré identificar la sede 🤔 Escríbeme el número o el nombre de la más cercana:\n\n` +
-          MENU_SEDES_REGISTRO,
-        metadata: { awaiting: 'sede' },
       };
     }
   }
@@ -977,12 +998,10 @@ async function flujoConfirmacion(e: PasoBot): Promise<BotResponse | null> {
  * Estado: link ya enviado — el cliente debe usar el link que recibió en el chat
  */
 async function flujoLinkEnviado(e: PasoBot): Promise<BotResponse | null> {
-  const { texto, textoLower, awaiting, context, pendingCart } = e;
-  if (/(pagu[eé]|ya pagu[eé]|hice el pago|realic[eé] el pago|pag[ué])/i.test(textoLower)) {
-    return {
-      texto: '✅ ¡Perfecto! En cuanto Wompi confirme el pago, te avisamos aquí mismo y procesamos tu pedido. ¡Gracias por comprar con nosotros! 🎉',
-      metadata: { awaiting: 'link_enviado', pending_cart: pendingCart },
-    };
+  const { texto, textoLower, context, pendingCart } = e;
+  // Dice que ya pagó o pide que le confirmen el pago: se verifica con Wompi al instante
+  if (/(pagu[eé]|\bya (lo )?pag|hice el pago|realic[eé] el pago|qued[oó] el pago|transfer[ií]|consign[eé]|comprobante|confirm\w*.{0,15}pago|pago.{0,15}confirm|ya (lo )?cancel[eé])/i.test(textoLower)) {
+    return await respuestaPagoReportado(context, pendingCart);
   }
   // Problema con el pago u otro medio (contra entrega, efectivo, transferencia):
   // en octubre a estos clientes se les repetía el link y ninguno pagó. Ahora
@@ -994,8 +1013,9 @@ async function flujoLinkEnviado(e: PasoBot): Promise<BotResponse | null> {
       metadata: { awaiting: '', pending_cart: pendingCart, motivo_transferencia: 'pago' },
     };
   }
-  // Si el cliente pregunta por el link, recordarle que ya fue enviado
-  if (/(link|enlace|pago|pagar|donde|c[oó]mo pago)/i.test(textoLower)) {
+  // Pide el link otra vez (solo si lo pide de verdad: antes cualquier mensaje con
+  // "pago" recibía "el link ya fue enviado", incluso "me confirman el pago")
+  if (/((m[aá]nda|env[ií]a|p[aá]sa|da|necesito|quiero|no (me )?(lleg[oó]|aparece|veo|sale)).{0,25}(link|enlace)|^(el )?(link|enlace)\??$|d[oó]nde (pago|est[aá] el (link|enlace))|c[oó]mo (pago|hago el pago)|otra vez el (link|enlace))/i.test(textoLower)) {
     return {
       texto: '🔗 El link de pago ya fue enviado arriba en esta misma conversación. ¡Solo haz clic en él para pagar con Nequi, Daviplata, PSE o Tarjeta! 💳\n\n_Si no lo ves, desplázate hacia arriba._',
       metadata: { awaiting: 'link_enviado', pending_cart: pendingCart },
@@ -1026,6 +1046,32 @@ async function flujoLinkEnviado(e: PasoBot): Promise<BotResponse | null> {
     return r;
   }
   return null;
+}
+
+/**
+ * El cliente dice que ya pagó: se consulta Wompi y, si el pago está aprobado,
+ * se procesa de una vez (venta pagada, pedido en Shopify, confirmación). Red
+ * de seguridad para cuando el aviso de Wompi no llegó.
+ */
+async function respuestaPagoReportado(context: BotContext, cart: CartItem[]): Promise<BotResponse> {
+  const { data } = await supabaseAdmin.from('ventas').select('id, estado, link_pago, created_at')
+    .eq('conversacion_id', context.conversacion.id).order('created_at', { ascending: false }).limit(1).maybeSingle();
+  const venta = data as any;
+  if (venta?.estado === 'pagado') {
+    return { texto: '✅ Tu pago ya quedó confirmado y tu pedido está en proceso. Te avisamos por aquí cuando avance. 🎉', metadata: { awaiting: '', pending_cart: [] } };
+  }
+  if (venta?.link_pago) {
+    const [{ buscarPagoAprobadoDeLink }, { procesarTransaccionBot }] = await Promise.all([import('./wompi'), import('./pagos-bot')]);
+    const tx = await buscarPagoAprobadoDeLink(venta.link_pago, venta.created_at).catch(() => null);
+    if (tx) {
+      await procesarTransaccionBot(tx as any);
+      return { texto: '✅ ¡Listo! Verifiqué con Wompi y tu pago quedó confirmado. Te acabo de enviar el detalle de tu pedido. 🎉', metadata: { awaiting: '', pending_cart: [] } };
+    }
+  }
+  return {
+    texto: '✅ ¡Perfecto! Todavía no me aparece en Wompi (a veces tarda unos minutos, sobre todo por PSE). En cuanto Wompi confirme el pago, te avisamos aquí mismo y procesamos tu pedido. 🎉',
+    metadata: { awaiting: 'link_enviado', pending_cart: cart },
+  };
 }
 
 /** Paso en que va el cliente → flujo que atiende su mensaje. */

@@ -54,16 +54,41 @@ beforeEach(() => {
 });
 
 describe('Registro de un cliente nuevo', () => {
-  it('primero pide aceptar las políticas de privacidad', async () => {
+  it('responde desde el primer mensaje y avisa que seguir el chat acepta las políticas', async () => {
     const { ultima } = await conversar(['hola'], { politicas: false, sede: null });
-    expect(ultima.metadata?.awaiting).toBe('politicas');
-    expect(ultima.texto).toMatch(/ACEPTO/);
+    expect(ultima.metadata?.aviso_politicas).toBe(true);
+    expect(ultima.texto).toMatch(/Al continuar esta conversación aceptas/);
+    expect(ultima.texto).not.toMatch(/Responde \*ACEPTO\*/);
   });
 
-  it('al aceptar guarda la aceptación y pregunta la sede', async () => {
+  it('si sigue escribiendo, queda aceptada y no se repite el aviso', async () => {
+    const { ultima } = await conversar(['¿tienen ron?'], { politicas: false, sede: null, historial: [cliente('hola'), bot('¡Hola! Soy Sofi', { aviso_politicas: true })] });
+    expect(sim.actualizarCliente).toHaveBeenCalledWith('cliente-1', { politicas_aceptadas: true });
+    expect(ultima.texto).not.toMatch(/Al continuar esta conversación/);
+  });
+
+  it('"acepto" a secas guarda la aceptación y saluda sin preguntar la sede', async () => {
     const { ultima } = await conversar(['acepto'], { politicas: false, sede: null });
     expect(sim.actualizarCliente).toHaveBeenCalledWith('cliente-1', { politicas_aceptadas: true });
-    expect(ultima.metadata?.awaiting).toBe('sede');
+    expect(ultima.metadata?.awaiting).toBe('');
+    expect(ultima.texto).not.toMatch(/sede más cercana/);
+  });
+
+  it.each(['Asepto', 'Obvio que acepto', 'ok acepto'])('"%s" también cuenta como aceptación', async (t) => {
+    await conversar([t], { politicas: false, sede: null });
+    expect(sim.actualizarCliente).toHaveBeenCalledWith('cliente-1', { politicas_aceptadas: true });
+  });
+
+  it('"no acepto" no insiste con el muro: explica y deja la puerta abierta', async () => {
+    const { ultima } = await conversar(['no acepto'], { politicas: false, sede: null });
+    expect(sim.actualizarCliente).not.toHaveBeenCalled();
+    expect(ultima.texto).toMatch(/Si cambias de opinión/);
+  });
+
+  it('en el menú de sedes, una respuesta que no es una sede ya no bloquea', async () => {
+    const { ultima } = await conversar(['estoy en Bogotá, ¿hacen envíos?'], { sede: null, historial: [bot('¿Cuál es tu sede?', { awaiting: 'sede' })] });
+    expect(ultima.texto).not.toMatch(/No logré identificar la sede/);
+    expect(ultima.metadata?.awaiting).not.toBe('sede');
   });
 
   it('acepta la sede escrita como "3." (antes no la reconocía)', async () => {

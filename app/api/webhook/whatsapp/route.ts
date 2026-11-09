@@ -10,7 +10,7 @@ import {
   registrarVentaPendiente,
   supabaseAdmin,
 } from '@/lib/supabase';
-import { procesarMensajeBot } from '@/lib/bot-logic';
+import { procesarMensajeBot, AVISO_POLITICAS } from '@/lib/bot-logic';
 import { enviarMensajeWhatsApp, enviarImagenWhatsApp, formatearNumeroWhatsApp, marcarComoLeido } from '@/lib/whatsapp';
 import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
@@ -287,15 +287,28 @@ export async function POST(req: Request) {
           // Si el agente tomó control manual, no responder con bot
           if (!botActivo) continue;
 
-          // Solo responder con bot si es texto, respuesta interactiva o botón de plantilla
-          if (msgType !== 'text' && msgType !== 'interactive' && msgType !== 'button') {
+          // El bot responde texto, respuestas interactivas, botones de plantilla y
+          // fotos con texto ("qué precio tiene esta ancheta" + pantallazo: se atiende el texto)
+          const conTexto = ['text', 'interactive', 'button'].includes(msgType) ||
+            (['image', 'document', 'video'].includes(msgType) && String(metadata.caption || '').trim().length >= 3);
+          if (!conTexto) {
+            // Un sticker no necesita respuesta
+            if (msgType === 'sticker') continue;
             // Foto o PDF después del link de pago: casi siempre es el comprobante.
-            // Antes recibía el saludo genérico y el cliente quedaba sin saber nada.
+            // Antes todo recibía el saludo genérico y el cliente quedaba sin saber nada.
             const esperandoPago = ['image', 'document'].includes(msgType) &&
               (await leerEstadoConversacion(conversacion.id))?.datos?.awaiting === 'link_enviado';
-            const msgAcuse = esperandoPago
+            let msgAcuse = esperandoPago
               ? '🧾 ¡Gracias! Recibimos tu comprobante. El pago se confirma solo con Wompi en pocos minutos y te avisamos por aquí mismo con el número de tu pedido.'
-              : '¡Hola! Recibimos tu mensaje. ¿En qué te podemos ayudar? 😊\n\nCuéntame qué producto buscas o qué necesitas.';
+              : msgType === 'audio'
+                ? '🎧 Recibí tu nota de voz, pero por ahora solo puedo leer texto. ¿Me escribes tu consulta? Con gusto te ayudo. 😊'
+                : ['image', 'document', 'video'].includes(msgType)
+                  ? '📷 Recibí tu imagen. Si es de un producto que viste en nuestras redes, cuéntame cuál es o qué buscas y te digo precio y disponibilidad al instante. 😊'
+                  : '¡Hola! Recibimos tu mensaje. ¿En qué te podemos ayudar? 😊\n\nCuéntame qué producto buscas o qué necesitas.';
+            // Primer contacto sin texto: va con el aviso de la política (seguir el chat es aceptarla)
+            if (!cliente.politicas_aceptadas && !(await obtenerHistorialMensajes(conversacion.id, 15)).some((m) => m.tipo === 'bot')) {
+              msgAcuse += `\n\n${AVISO_POLITICAS}`;
+            }
             await guardarMensaje(conversacion.id, 'bot', msgAcuse, { tipo_wa: 'text' });
             await enviarMensajeWhatsApp(phone, msgAcuse);
             continue;
@@ -478,7 +491,12 @@ export async function POST(req: Request) {
             // una persona, se pasa siempre
             const motivoBot = respuesta.metadata?.motivo_transferencia as string | undefined;
             const transferenciaObligatoria = ['pago', 'frustracion', 'empresarial'].includes(motivoBot || '');
-            const flujoActivo = !!awaitingPrevio && !pideHumano && !derivacionMayorista && !transferenciaObligatoria;
+            // Solo se retiene la transferencia en los pasos que esperan una respuesta
+            // corta (cantidad, dirección, confirmar…). Con el link de pago ya enviado,
+            // o en conversación libre, sí se pasa: en pruebas reales Sofi decía "te
+            // paso con un asesor" y el bot seguía contestando solo.
+            const PASOS_CORTOS = ['compra', 'variante', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'confirmacion', 'sede', 'encuesta', 'encuesta_comentario'];
+            const flujoActivo = PASOS_CORTOS.includes(awaitingPrevio || '') && !pideHumano && !derivacionMayorista && !transferenciaObligatoria;
 
             // Fuera del horario del equipo se le dice al cliente cuándo le escriben
             const aviso = flujoActivo ? '' : avisoFueraDeHorario(await obtenerHorario());

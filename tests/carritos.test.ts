@@ -20,7 +20,8 @@ vi.mock('@/lib/supabase', async () => {
     obtenerConversacionActiva: async () => ({ id: 'conv-nueva' }),
   };
 });
-vi.mock('@/lib/ai-sofi', () => ({ procesarMensajeSofi: vi.fn() }));
+// Sin el muro de políticas, los mensajes que no responden al recordatorio llegan a Sofi
+vi.mock('@/lib/ai-sofi', () => ({ procesarMensajeSofi: vi.fn(async () => ({ texto: 'Respuesta de Sofi', metadata: { awaiting: '' } })) }));
 vi.mock('@/lib/whatsapp', async (original) => ({
   ...(await original<typeof import('@/lib/whatsapp')>()),
   enviarMensajeWhatsApp: sim.texto,
@@ -160,13 +161,13 @@ describe('Respuesta del cliente al recordatorio', () => {
   it('cliente nuevo que responde "Sí": recibe su link sin pasar por las políticas', async () => {
     const r = await procesarMensajeBot('Sí', contexto({ politicas: false, sede: null, nombre: 'Ana', historial: [recordatorio()] }));
     expect(r.texto).toContain(carrito.url_checkout);
-    expect(r.texto).not.toMatch(/pol[ií]ticas/i);
+    expect(r.texto).not.toMatch(/Responde \*ACEPTO\*/);
   });
 
   it('una pregunta distinta sigue el flujo normal', async () => {
     const r = await procesarMensajeBot('¿hacen envíos a Rionegro?', contexto({ politicas: false, sede: null, historial: [recordatorio()] }));
     expect(r.texto).not.toContain(carrito.url_checkout);
-    expect(r.texto).toMatch(/pol[ií]ticas/i);
+    expect(r.texto).not.toMatch(/Responde \*ACEPTO\*/);
   });
 
   it('un recordatorio de hace más de 3 días ya no cuenta', async () => {

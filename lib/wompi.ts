@@ -131,3 +131,29 @@ export async function obtenerTransaccionWompi(
     return null;
   }
 }
+
+/**
+ * Pago aprobado de un link del bot, consultando Wompi directamente. Los links
+ * no llevan nuestra referencia (Wompi les pone la suya), así que se listan las
+ * transacciones desde que se creó el link y se filtra por payment_link_id.
+ * Red de seguridad para cuando el cliente dice "ya pagué" y el webhook no llegó.
+ */
+export async function buscarPagoAprobadoDeLink(linkPago: string, creadoEn: string): Promise<WompiTransaction | null> {
+  const linkId = linkPago.split('/').pop();
+  if (!linkId) return null;
+  const dia = (d: Date) => d.toISOString().slice(0, 10);
+  const desde = dia(new Date(creadoEn));
+  const hasta = dia(new Date(Date.now() + 864e5));
+  for (let page = 1; page <= 6; page++) {
+    const r = await fetch(`${WOMPI_API_URL}/transactions?from_date=${desde}&until_date=${hasta}&page=${page}&page_size=50`, {
+      headers: { Authorization: `Bearer ${WOMPI_PRIVATE_KEY}` }, cache: 'no-store',
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const lista: WompiTransaction[] = j.data || [];
+    const aprobada = lista.find((t: any) => t.payment_link_id === linkId && t.status === 'APPROVED');
+    if (aprobada) return aprobada;
+    if (lista.length < 50) break;
+  }
+  return null;
+}

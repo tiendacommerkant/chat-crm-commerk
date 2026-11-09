@@ -263,11 +263,11 @@ describe('Difusiones', async () => {
     expect(r.texto).toMatch(/apenas se destape/);
   });
 
-  it('"Avísame" de un cliente nuevo: queda etiquetado y sigue a aceptar la política', async () => {
+  it('"Avísame" de un cliente nuevo: queda etiquetado, confirma y lleva el aviso de la política', async () => {
     const r = await procesarMensajeBot('Avísame cuando se destape la Hora Roja 🔔', contexto({ politicas: false }));
     expect(sim.registro.some((x) => x.tabla === 'conversaciones' && x.op === 'update' && x.args[0]?.etiqueta === 'hora_roja')).toBe(true);
-    expect(sim.registro.some((x) => x.tabla === 'clientes' && x.op === 'update' && x.args[0]?.no_publicidad === false)).toBe(false);
-    expect(r.texto).not.toMatch(/apenas se destape/);
+    expect(r.texto).toMatch(/apenas se destape/);
+    expect(r.texto).toMatch(/Al continuar esta conversación/);
   });
 
   it('el bot marca la baja y lo confirma, aun a mitad de una compra', async () => {
