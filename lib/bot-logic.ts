@@ -53,6 +53,10 @@ import {
   quitarNumerosDeProducto,
   quitarAcentos,
   incluyeTermino,
+  esPedidoPorCaja,
+  unidadesPedidas,
+  pareceCompraEmpresarial,
+  UNIDADES_MAYORISTA,
 } from './bot/intenciones';
 // Se siguen exportando desde aquí para quien ya los usa
 export { esProblemaDePago, esFrustracion } from './bot/intenciones';
@@ -342,6 +346,14 @@ async function procesarMensajeBotInterno(
     return await respuestaEstadoPedido(context, texto, pidioNumero);
   }
 
+  // ── POR CAJA / POR MAYOR: nunca un precio unitario multiplicado ────
+  // "¿En cuánto sale la caja x12 de 750?" → Sofi multiplicaba $55.360 × 12 y
+  // cotizaba $664.320 cuando la caja vale $589.099. Los precios por caja y por
+  // volumen los da el equipo de ventas: pasa a una persona sin cotizar.
+  if (awaiting === '' && (esPedidoPorCaja(texto) || unidadesPedidas(texto) >= UNIDADES_MAYORISTA)) {
+    return await respuestaPorVolumen(context, texto, pendingCart);
+  }
+
   // ── PAGO CON CARRITO ACTIVO: interceptar ANTES de Sofi ────────────
   // IMPORTANTE: solo cuando awaiting === '' (sin estado activo).
   // Si hay un estado activo (compra/confirmacion/cantidad), la máquina de estados
@@ -568,11 +580,11 @@ async function flujoCantidad(e: PasoBot): Promise<BotResponse | null> {
     };
   }
 
-  // Más de 12 unidades: compra empresarial si la conversación ya lo es, si no mayorista
-  if (cantidad && cantidad > 12) {
-    return esConversacionEmpresarial(context)
-      ? await respuestaEmpresarial(context, texto, pendingCart)
-      : await respuestaMayorista(context, `Quiero ${cantidad} unidades`, pendingCart);
+  // "Una caja" o 12 unidades en adelante: precio por mayor, lo da el equipo
+  // (empresarial si la conversación ya lo es, si no mayorista)
+  if (esPedidoPorCaja(texto)) return await respuestaPorVolumen(context, texto, pendingCart);
+  if (cantidad && cantidad >= UNIDADES_MAYORISTA) {
+    return await respuestaPorVolumen(context, `Quiero ${cantidad} unidades`, pendingCart);
   }
 
   if (cantidad && cantidad > 0 && cantidad <= 12) {
@@ -1129,11 +1141,18 @@ async function respuestaMayorista(context: BotContext, mensajeOriginal: string, 
   const nombre = primerNombre(context.cliente.nombre);
   return {
     texto:
-      `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Las compras al por mayor las atiende nuestro equipo de ventas.\n\n` +
+      `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Los precios por caja y al por mayor se manejan aparte (no son el precio por unidad multiplicado) y te los da directamente nuestro equipo de ventas.\n\n` +
       (await textoPaseAlEquipo('ventas al por mayor')),
     accion: 'transferir_a_asesor',
     metadata: { awaiting: '', derivacion: 'mayorista', motivo_transferencia: 'mayorista', lead_mayorista: true, pending_cart: cart },
   };
+}
+
+/** Compra por volumen: empresarial si la conversación ya lo es o suena a empresa que regala; si no, mayorista. */
+async function respuestaPorVolumen(context: BotContext, texto: string, cart: CartItem[]): Promise<BotResponse> {
+  return esConversacionEmpresarial(context) || pareceCompraEmpresarial(texto)
+    ? await respuestaEmpresarial(context, texto, cart)
+    : await respuestaMayorista(context, texto, cart);
 }
 
 /** "Te paso con…": fuera de horario no promete "en un momento" (el webhook agrega cuándo le escriben). */
@@ -1231,11 +1250,7 @@ async function derivacionVolumen(
 ): Promise<BotResponse | null> {
   const accion = (r as any).accion;
   if (accion === 'iniciar_empresarial') return await respuestaEmpresarial(context, texto, cart);
-  if (accion === 'iniciar_mayorista') {
-    return esConversacionEmpresarial(context)
-      ? await respuestaEmpresarial(context, texto, cart)
-      : await respuestaMayorista(context, texto, cart);
-  }
+  if (accion === 'iniciar_mayorista') return await respuestaPorVolumen(context, texto, cart);
   return null;
 }
 
@@ -1775,10 +1790,8 @@ async function aplicarAjusteCarrito(
   const ajuste = r.metadata?.ajuste_carrito as { shopify_id: string; variant_id?: string | null; cantidad: number } | undefined;
   if (!ajuste) return null;
 
-  if (ajuste.cantidad > 12) {
-    return esConversacionEmpresarial(context)
-      ? await respuestaEmpresarial(context, `Quiero ${ajuste.cantidad} unidades`, cart)
-      : await respuestaMayorista(context, `Quiero ${ajuste.cantidad} unidades`, cart);
+  if (ajuste.cantidad >= UNIDADES_MAYORISTA) {
+    return await respuestaPorVolumen(context, `Quiero ${ajuste.cantidad} unidades`, cart);
   }
 
   const productos = await obtenerProductosCache();

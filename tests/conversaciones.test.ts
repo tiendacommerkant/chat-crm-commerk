@@ -171,11 +171,17 @@ describe('Cantidades', () => {
     expect(sim.actualizarCliente).not.toHaveBeenCalled();
   });
 
-  it('más de 12 unidades pasa a compra al por mayor sin tocar el carrito', async () => {
-    const { ultima } = await conversar(['20'], { historial: esperandoCantidad() });
+  it.each(['20', '12', 'una caja', '2 cajas'])('"%s" en el paso de cantidad pasa a compra al por mayor sin tocar el carrito', async (m) => {
+    const { ultima } = await conversar([m], { historial: esperandoCantidad() });
     expect(ultima.accion).toBe('transferir_a_asesor');
     expect(ultima.metadata?.motivo_transferencia).toBe('mayorista');
     expect(ultima.metadata?.pending_cart ?? []).toHaveLength(0);
+  });
+
+  it('11 unidades siguen siendo una compra normal', async () => {
+    const { ultima } = await conversar(['11'], { historial: esperandoCantidad() });
+    expect(ultima.accion).not.toBe('transferir_a_asesor');
+    expect(ultima.metadata?.pending_cart?.[0]?.cantidad).toBe(11);
   });
 
   it('un mayorista se atiende por esta misma línea: no se le pide sede ni se le manda a otra tienda', async () => {

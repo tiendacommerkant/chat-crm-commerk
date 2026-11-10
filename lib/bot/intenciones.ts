@@ -82,6 +82,63 @@ export function esConsultaEnvio(t: string) {
   return /(envio|env[íi]o|entregan|llevan|despachan|cobertura|domicilio|delivery)/i.test(t);
 }
 
+/** Desde cuántas unidades de un mismo producto la compra es por mayor (una caja de licor son 12 botellas). */
+export const UNIDADES_MAYORISTA = 12;
+
+/** "Calle 45 # 77-68 oficina 202": los números de una dirección no son cantidades ni pedidos. */
+export function pareceDireccion(t: string): boolean {
+  return /\b(calle|cll|carrera|cra|cr|cl|avenida|av|transversal|diagonal|circular|barrio|apto|apartamento|oficina|ofic|torre|piso|manzana|mz|bloque|interior|km)\b|#|n[°º]/i.test(t);
+}
+
+/**
+ * Pedido "por caja" de un producto del catálogo: "la caja x12 de 750", "2 cajas
+ * de amarillo", "precio por caja", "cuánto sale la caja". Una caja de licor son
+ * 12 o 24 botellas y su precio NO es el unitario multiplicado: lo da el equipo
+ * de ventas por mayor. No cuenta la caja de regalo ni el empaque ("caja de
+ * regalo", "caja cartón", "¿me lo envían en una caja?").
+ */
+export function esPedidoPorCaja(t: string): boolean {
+  const s = quitarAcentos(t.toLowerCase());
+  if (!/\bcajas?\b/.test(s)) return false;
+  const empaque = /\bcajas?\s+(de\s+|para\s+)?(regalo|regalos|obsequio|carton|madera|decorad\w*|sorpresa|ejecutiva|personalizad\w*|presentacion)\b|\bcajita|\bempaque\b|\ben\s+(una\s+|la\s+|su\s+)?cajas?\b|\bcon\s+(su\s+|la\s+)?cajas?\b(?!\s*(x|por|de|con)\s*\d)/;
+  if (empaque.test(s)) return false;
+  return (
+    /\bcajas?\s*(x|por|de|con)\s*\d{1,3}\b/.test(s) || // caja x12, caja de 24
+    /\b(\d{1,3}|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|media)\s+cajas?\b/.test(s) || // 2 cajas, una caja
+    /\b(al\s+)?por\s+cajas?\b/.test(s) || // precio por caja
+    /\bcuantas\s+cajas\b/.test(s) ||
+    /\b(precio|vale|sale|cuesta|valor|cuanto)\b[^.?!]{0,30}\b(la|las|una|unas)\s+cajas?\b/.test(s) // cuánto sale la caja
+  );
+}
+
+/**
+ * Unidades que pide en el mensaje ("12 botellas", "x24", "una docena"): la
+ * mayor; 0 si no dice. Ignora tamaños ("750 ml", "12 años") y direcciones.
+ */
+export function unidadesPedidas(t: string): number {
+  if (pareceDireccion(t)) return 0;
+  const s = quitarAcentos(quitarNumerosDeProducto(t).toLowerCase());
+  let max = 0;
+  for (const m of s.matchAll(/\b(\d{1,3})\s*(unidades|unidad|unds?|uds?|und|botellas|kits|anchetas|garrafas|estuches|combos|cremas|rones|aguardientes|medias)\b|\bx\s*(\d{1,3})\b/g)) {
+    const n = parseInt(m[1] || m[3]);
+    if (n > max) max = n;
+  }
+  if (/\bdocenas?\b/.test(s)) max = Math.max(max, 12);
+  return max;
+}
+
+/**
+ * Compra por volumen que suena a empresa regalando a su gente o a sus clientes
+ * ("somos una empresa y necesitamos 200 kits para nuestros clientes"): es venta
+ * empresarial, no mayorista. Si habla de revender o de su negocio/licorera,
+ * manda lo mayorista aunque diga "empresa".
+ */
+export function pareceCompraEmpresarial(t: string): boolean {
+  const s = quitarAcentos(t.toLowerCase());
+  if (/\b(revender|reventa|negocio|licorera|estanco|distribuidor\w*|distribuir|mayorista|por mayor|mi tienda|mi bar|discoteca|surtir)\b/.test(s)) return false;
+  return /\b(empresa|compania|corporativ\w*|somos|colaboradores|empleados|trabajadores|funcionarios|aguinaldos?|obsequios?|nomina|gerencia|nuestr[oa]s?\s+(clientes|equipo|personal|gente)|regalos?\s+(para|corporativ\w*|empresarial\w*))\b/.test(s);
+}
+
 export function esConsultaPedido(t: string): boolean {
   const s = t.trim();
   // "quiero hacer mi pedido", "cancelar mi compra": es una acción, no una consulta de estado
