@@ -136,6 +136,34 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
     if (!orderNumber) {
       const motivo = shopifyResult.status === 'fulfilled' ? (shopifyResult.value as any)?.error : (shopifyResult as any).reason?.message;
       await registrarEvento('error', 'wompi', `Pago confirmado de ${reference} pero NO se creó el pedido en Shopify: ${motivo || 'sin detalle'}`);
+    } else {
+      // La ficha del cliente y el panel leen pedidos_shopify: se registra aquí
+      // mismo, sin esperar el aviso de Shopify (un pedido creado por API ya
+      // pagado no dispara orders/paid y la compra no aparecía en la ficha).
+      const ahora = new Date().toISOString();
+      const { error: errPedido } = await supabaseAdmin.from('pedidos_shopify').upsert({
+        shopify_order_id: (shopifyResult as any).value?.orderId,
+        shopify_order_number: String(orderNumber),
+        cliente_id: cliente?.id || null,
+        email: cliente?.email || null,
+        telefono: telefono || null,
+        nombre_cliente: nombreCliente || 'Cliente WhatsApp',
+        total: totalPedido,
+        subtotal: subtotalPedido,
+        total_descuentos: 0,
+        moneda: 'COP',
+        estado_financiero: 'paid',
+        estado_fulfillment: null,
+        items: [
+          ...ventas.map((v) => ({ title: v.producto_nombre, quantity: v.cantidad, price: Number(v.producto_precio) || 0 })),
+          ...(regalo ? [{ title: `${REGALO.nombre}${SEPARADOR_VARIANTE}${regalo.title}`, quantity: 1, price: 0 }] : []),
+        ],
+        direccion_envio: recogida ? null : { address1: direccionEnvio },
+        shopify_created_at: ahora,
+        notificado_whatsapp: true,
+        updated_at: ahora,
+      }, { onConflict: 'shopify_order_id' });
+      if (errPedido) console.error('[pagos-bot] No se pudo registrar el pedido en pedidos_shopify:', errPedido.message);
     }
 
     // 3. Guardar mensaje de confirmación en conversación (no bloquea)
