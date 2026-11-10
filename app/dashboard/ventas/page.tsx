@@ -10,6 +10,7 @@ type VentaUnificada = {
   fuente: 'shopify' | 'bot';
   fecha: string;
   referencia: string;
+  pedido_shopify?: string | null;
   nombre_cliente: string;
   telefono: string | null;
   email: string | null;
@@ -245,6 +246,9 @@ export default function VentasPage() {
                     <td className="px-5 py-3.5">
                       <p className="text-xs text-slate-500 whitespace-nowrap">{fmtFecha(v.fecha)}</p>
                       <p className="text-xs text-slate-400 font-mono mt-0.5">{v.referencia}</p>
+                      {v.pedido_shopify && (
+                        <p className="text-xs text-slate-500 font-mono">Shopify {v.pedido_shopify}</p>
+                      )}
                     </td>
                     <td className="px-5 py-3.5 hidden sm:table-cell">
                       <FuenteBadge fuente={v.fuente} />
@@ -282,7 +286,9 @@ export default function VentasPage() {
                     </td>
                     <td className="px-5 py-3.5 text-center hidden sm:table-cell">
                       {v.fuente === 'bot' && v.estado === 'pagado' && v.telefono ? (
-                        enviados.has(v.id) ? (
+                        v.estado_fulfillment === 'fulfilled' ? (
+                          <span className="text-xs font-semibold text-emerald-600 px-2.5 py-1 bg-emerald-50 rounded-full">🚚 Despachado</span>
+                        ) : enviados.has(v.id) ? (
                           <span className="text-xs font-semibold text-emerald-600 px-2.5 py-1 bg-emerald-50 rounded-full">✓ Enviado</span>
                         ) : (
                           <button

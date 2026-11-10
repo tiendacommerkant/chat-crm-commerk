@@ -91,7 +91,11 @@ async function handleOrderPaid(order: ShopifyOrder) {
     estado_financiero: order.financial_status,
     estado_fulfillment: order.fulfillment_status,
     items,
-    direccion_envio: order.shipping_address || null,
+    // Un pedido que nació en el bot lleva su referencia dentro de la dirección
+    // (sin columna nueva): así Ventas y el panel no lo cuentan dos veces.
+    direccion_envio: esPedidoBot
+      ? { ...(order.shipping_address || {}), origen: 'bot', referencia_pago: String((order as any).tags || '').match(/ref:(WA-[\w-]+)/)?.[1] || null }
+      : order.shipping_address || null,
     shopify_created_at: order.created_at,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'shopify_order_id' });

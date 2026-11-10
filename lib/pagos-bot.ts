@@ -158,7 +158,8 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
           ...ventas.map((v) => ({ title: v.producto_nombre, quantity: v.cantidad, price: Number(v.producto_precio) || 0 })),
           ...(regalo ? [{ title: `${REGALO.nombre}${SEPARADOR_VARIANTE}${regalo.title}`, quantity: 1, price: 0 }] : []),
         ],
-        direccion_envio: recogida ? null : { address1: direccionEnvio },
+        // origen y referencia: Ventas y el panel saben que es la misma compra que la fila de `ventas`
+        direccion_envio: { address1: direccionEnvio, origen: 'bot', referencia_pago: reference },
         shopify_created_at: ahora,
         notificado_whatsapp: true,
         updated_at: ahora,

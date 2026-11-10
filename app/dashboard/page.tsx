@@ -9,6 +9,9 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 
+// Pedidos de Shopify que nacieron en el bot: ya están en `ventas`, no se cuentan dos veces
+const SIN_BOT = 'direccion_envio->>origen.is.null,direccion_envio->>origen.neq.bot';
+
 // ─── Metric Card ─────────────────────────────────────────────
 function MetricCard({
   label,
@@ -122,21 +125,21 @@ export default function DashboardPage() {
           supabase.from('ventas').select('total').gte('created_at', inicioMes.toISOString()).eq('estado', 'pagado'),
           supabase.from('clientes').select('id', { count: 'exact', head: true }).gte('created_at', hoy),
           supabase.from('conversaciones').select('id', { count: 'exact', head: true }).eq('estado', 'activa'),
-          supabase.from('pedidos_shopify').select('*, cliente:clientes(nombre, telefono)').order('shopify_created_at', { ascending: false }).limit(5),
+          supabase.from('pedidos_shopify').select('*, cliente:clientes(nombre, telefono)').or(SIN_BOT).order('shopify_created_at', { ascending: false }).limit(5),
           supabase.from('carritos_abandonados').select('id', { count: 'exact', head: true }).eq('estado', 'en_progreso').gte('shopify_updated_at', hace30min),
           supabase.from('carritos_abandonados').select('id', { count: 'exact', head: true }).in('estado', ['abandonado', 'notificado']).gte('shopify_updated_at', hace30dias),
           supabase.from('ventas').select('*, cliente:clientes(nombre, telefono)').order('created_at', { ascending: false }).limit(5),
           supabase.from('clientes').select('*').order('created_at', { ascending: false }).limit(5),
           // Pedidos Shopify pagados hoy
-          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', hoy).eq('estado_financiero', 'paid'),
+          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', hoy).eq('estado_financiero', 'paid').or(SIN_BOT),
           // Pedidos Shopify pagados esta semana
-          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioSemana.toISOString()).eq('estado_financiero', 'paid'),
+          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioSemana.toISOString()).eq('estado_financiero', 'paid').or(SIN_BOT),
           // Pedidos Shopify pagados este mes
-          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioMes.toISOString()).eq('estado_financiero', 'paid'),
+          supabase.from('pedidos_shopify').select('total').gte('shopify_created_at', inicioMes.toISOString()).eq('estado_financiero', 'paid').or(SIN_BOT),
           // Ventas WA últimos 7 días (para gráfico)
           supabase.from('ventas').select('total, created_at, producto_nombre').gte('created_at', hace7dias.toISOString()).eq('estado', 'pagado'),
           // Pedidos Shopify últimos 7 días (para gráfico)
-          supabase.from('pedidos_shopify').select('total, shopify_created_at').gte('shopify_created_at', hace7dias.toISOString()).eq('estado_financiero', 'paid'),
+          supabase.from('pedidos_shopify').select('total, shopify_created_at').gte('shopify_created_at', hace7dias.toISOString()).eq('estado_financiero', 'paid').or(SIN_BOT),
         ]);
 
         // Ingresos WhatsApp bot
