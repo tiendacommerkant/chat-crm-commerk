@@ -11,6 +11,7 @@
 import { enviarMensajeWhatsApp, enviarPlantillaWhatsApp, formatearNumeroWhatsApp } from './whatsapp';
 import { formatearPrecioCOP } from './shopify';
 import { supabaseAdmin } from './supabase';
+import { primerNombre } from './nombre';
 import { registrarEnvioPlantilla } from './costos';
 
 const VENTANA_MS = 24 * 3_600_000;
@@ -88,7 +89,7 @@ export async function notificarPedidoConfirmado(pedido: {
   const telefono = formatearNumeroWhatsApp(pedido.telefono);
   if (!telefono) return { success: false, error: 'Número inválido' };
 
-  const nombre = pedido.nombre_cliente?.split(' ')[0] || 'amig@';
+  const nombre = primerNombre(pedido.nombre_cliente) || 'amig@';
   const total = formatearPrecioCOP(pedido.total);
   const itemsList = pedido.items
     .slice(0, 5)
@@ -140,7 +141,7 @@ export async function notificarPedidoCancelado(pedido: {
     return resultado;
   }
 
-  const nombre = pedido.nombre_cliente?.split(' ')[0] || 'amig@';
+  const nombre = primerNombre(pedido.nombre_cliente) || 'amig@';
   const mensaje =
     `😔 *Pedido Cancelado*\n\n` +
     `Hola ${nombre}, tu pedido *#${pedido.shopify_order_number}* (${formatearPrecioCOP(pedido.total)}) ha sido cancelado.\n\n` +
@@ -174,7 +175,7 @@ export async function notificarPedidoEnviado(pedido: {
     return resultado;
   }
 
-  const nombre = pedido.nombre_cliente?.split(' ')[0] || 'amig@';
+  const nombre = primerNombre(pedido.nombre_cliente) || 'amig@';
   const guia = pedido.tracking_number ? `Guía ${pedido.tracking_company || ''} ${pedido.tracking_number}`.replace(/\s+/g, ' ') : '';
   const texto =
     `🚚 *¡Tu pedido está en camino!*\n\n` +

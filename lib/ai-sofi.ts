@@ -11,6 +11,7 @@ import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { registrarUsoClaude } from './costos';
 import { registrarEvento } from './eventos';
 import { textoTemporadaSofi } from './temporada';
+import { primerNombre } from './nombre';
 import { matchProductoDistintivo } from './matching';
 import { asegurarPreguntaCantidad, quitarUltimaPregunta } from './sofi-texto';
 import { quitarNumerosDeProducto } from './bot/intenciones';
@@ -145,7 +146,7 @@ export async function procesarMensajeSofi(
       content: m.contenido,
     }));
 
-  const nombre = context.cliente.nombre?.split(' ')[0] ?? null;
+  const nombre = primerNombre(context.cliente.nombre);
   const sede   = context.cliente.sede_preferida ?? null;
 
   const system = `Eres Sofi, asesora de ventas de ${BUSINESS_NAME}. Español colombiano natural, cálida y directa. Máximo 3 líneas por respuesta.${nombre ? ` Cliente: ${nombre}.` : ''}${sede ? ` Sede: ${sede}.` : ''}

@@ -15,6 +15,7 @@ import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from
 import { registrarEvento } from './eventos';
 import { REGALO, regaloAplica, varianteRegaloDisponible } from './temporada';
 import { SEPARADOR_VARIANTE } from './variantes';
+import { primerNombre } from './nombre';
 import type { WompiWebhookEvent } from '@/types';
 
 export type TransaccionWompi = WompiWebhookEvent['data']['transaction'];
@@ -147,7 +148,7 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
         : `\n🚚 Te enviaremos tu pedido en las próximas 24-48 horas. ¡Gracias! 🎉`;
       const msgConfirmacion =
         `✅ *¡Pago confirmado!*\n\n` +
-        `Hola ${nombreCliente.split(' ')[0] || 'amigo'}, recibimos tu pago correctamente.\n\n` +
+        `Hola ${primerNombre(nombreCliente) || 'amigo'}, recibimos tu pago correctamente.\n\n` +
         `${lineasProductos}\n` +
         `💵 Total pagado: *${formatearPrecioCOP(totalPedido)}*\n` +
         (shopifyOrderNum ? `🔢 Pedido Shopify: *${shopifyOrderNum}*\n` : '') +

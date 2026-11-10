@@ -33,6 +33,7 @@ import { asegurarOportunidad } from './oportunidades';
 import { esPedidoDeBaja } from './difusiones';
 import { avisoFueraDeHorario, obtenerHorario } from './horario';
 import { REGALO, regaloAplica } from './temporada';
+import { primerNombre } from './nombre';
 import { recordatorioPendiente, respuestaRecordatorioCarrito } from './bot/carrito-tienda';
 import {
   esSaludo,
@@ -133,7 +134,7 @@ export async function procesarMensajeBot(mensaje: string, context: BotContext): 
         const r = await procesarMensajeBotInterno(inicial, { ...aceptado, mensajes_previos: [] });
         return { ...r, texto: `✅ ¡Gracias por aceptar!\n\n${r.texto}` };
       }
-      const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
+      const nombre = primerNombre(context.cliente.nombre) ? ` ${primerNombre(context.cliente.nombre)}` : '';
       return {
         texto:
           `✅ ¡Gracias${nombre}! Soy Sofi, tu asesora de ventas 24/7 ✨\n\n` +
@@ -234,7 +235,7 @@ async function procesarMensajeBotInterno(
     }
     if (sedeElegida) {
       await actualizarCliente(context.cliente.id, { sede_preferida: sedeElegida });
-      const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
+      const nombre = primerNombre(context.cliente.nombre) ? ` ${primerNombre(context.cliente.nombre)}` : '';
 
       // Lo que escribió antes de aceptar las políticas (ej. una empresa que
       // cuenta de entrada qué necesita) se responde ya: antes se perdía y el
@@ -1122,7 +1123,7 @@ async function respuestaMayorista(context: BotContext, mensajeOriginal: string, 
   // El lead queda una sola vez en el panel, con el resumen de lo que busca
   const yaRegistrado = context.mensajes_previos.some((m) => m.tipo === 'bot' && m.metadata?.lead_mayorista);
   if (!yaRegistrado) await guardarLead(SEDE_MAYORISTA, '', context, armarConsultaMayorista(context, mensajeOriginal, cart));
-  const nombre = context.cliente.nombre?.split(' ')[0];
+  const nombre = primerNombre(context.cliente.nombre);
   return {
     texto:
       `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Las compras al por mayor las atiende nuestro equipo de ventas.\n\n` +
@@ -1260,7 +1261,7 @@ async function respuestaEmpresarial(
     necesidad: resumen,
   });
 
-  const nombre = context.cliente.nombre?.split(' ')[0];
+  const nombre = primerNombre(context.cliente.nombre);
   return {
     texto:
       `¡Claro que sí${nombre ? `, ${nombre}` : ''}! 🤝 Manejamos *convenio empresarial* para los regalos de tus colaboradores y clientes.\n\n` +
@@ -1759,7 +1760,7 @@ function preguntarSedeRecogida(cart: CartItem[]): BotResponse {
 // ──────────────────────────────────────────
 
 function respuestaSaludo(context: BotContext, cart: CartItem[] = []): BotResponse {
-  const nombre = context.cliente.nombre ? ` ${context.cliente.nombre.split(' ')[0]}` : '';
+  const nombre = primerNombre(context.cliente.nombre) ? ` ${primerNombre(context.cliente.nombre)}` : '';
   const avisoCarrito = cart.length > 0
     ? `\n\n🛒 _Tienes ${cart.length} producto${cart.length !== 1 ? 's' : ''} en tu carrito. Escribe *carrito* para verlo._`
     : '';
