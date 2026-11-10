@@ -588,3 +588,48 @@ export async function obtenerCheckoutsAbandonadosShopify(limite: number = 250): 
     return [];
   }
 }
+
+/** Pedido por su número visible para el cliente (#2692). */
+export async function obtenerPedidoShopifyPorNumero(numero: string | number): Promise<any | null> {
+  try {
+    const nombre = encodeURIComponent('#' + String(numero).replace(/\D/g, ''));
+    const r = await fetch(`${SHOPIFY_API_URL}/orders.json?name=${nombre}&status=any&limit=1`, {
+      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' }, cache: 'no-store',
+    });
+    if (!r.ok) return null;
+    return (await r.json()).orders?.[0] || null;
+  } catch (error) {
+    console.error('Error buscando pedido por número:', error);
+    return null;
+  }
+}
+
+/**
+ * Pedidos del cliente buscándolo en Shopify por teléfono o correo, para los
+ * pedidos de la tienda web que no quedaron en el CRM (ej. los avisos
+ * rechazados entre el 30 de octubre y el 6 de noviembre).
+ */
+export async function buscarPedidosShopifyPorCliente(telefono?: string | null, email?: string | null): Promise<any[]> {
+  const digitos = String(telefono || '').replace(/\D/g, '');
+  const consultas = [digitos.length >= 10 ? `phone:+${digitos}` : '', email ? `email:${email}` : ''].filter(Boolean);
+  const headers = { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN, 'Content-Type': 'application/json' };
+  for (const q of consultas) {
+    try {
+      const r = await fetch(`https://${SHOPIFY_STORE}.myshopify.com/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+        method: 'POST', headers, cache: 'no-store',
+        body: JSON.stringify({ query: 'query($q: String!) { customers(first: 3, query: $q) { nodes { legacyResourceId } } }', variables: { q } }),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      for (const c of j.data?.customers?.nodes || []) {
+        const o = await fetch(`${SHOPIFY_API_URL}/orders.json?customer_id=${c.legacyResourceId}&status=any&limit=5`, { headers, cache: 'no-store' });
+        if (!o.ok) continue;
+        const pedidos: any[] = (await o.json()).orders || [];
+        if (pedidos.length) return pedidos.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      }
+    } catch (error) {
+      console.error('Error buscando pedidos por cliente:', error);
+    }
+  }
+  return [];
+}

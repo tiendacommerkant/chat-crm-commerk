@@ -83,7 +83,17 @@ export function esConsultaEnvio(t: string) {
 }
 
 export function esConsultaPedido(t: string): boolean {
-  return /(estado (de )?(mi|el)? ?(pedido|orden|compra|env[íi]o)|c[oó]mo va mi (pedido|orden|compra|env[íi]o)|d[oó]nde (está|va) mi (pedido|orden|compra|env[íi]o)|mi (pedido|orden|compra)|ya (lo )?(enviaron|despacharon|mandaron)|cu[aá]ndo (me )?(llega|lo entregan|lo reciben)|rastrear|rastreo|seguimiento|tracking|gu[íi]a de env[íi]o|n[uú]mero de gu[íi]a)/i.test(t.trim());
+  const s = t.trim();
+  // "quiero hacer mi pedido", "cancelar mi compra": es una acción, no una consulta de estado
+  if (/\b(hacer|armar|realizar|iniciar|empezar|comenzar|cancelar|anular|pagar|finalizar|cerrar|confirmar|cambiar|modificar|agregar|separar|quiero|deseo|hago|voy a)\b[^.?!]{0,25}\bmi (pedido|orden|compra)\b/i.test(s)) return false;
+  return /(estado (de )?(mi|el)? ?(pedido|orden|compra|env[íi]o)|c[oó]mo va mi (pedido|orden|compra|env[íi]o)|d[oó]nde (está|va) mi (pedido|orden|compra|env[íi]o)|mi (pedido|orden|compra)|ya (lo )?(enviaron|despacharon|mandaron)|cu[aá]ndo (me )?(llega|lo entregan|lo reciben)|rastrear|rastreo|seguimiento|tracking|gu[íi]a de env[íi]o|n[uú]mero de gu[íi]a)/i.test(s);
+}
+
+/** Número de pedido que el cliente escribe ("#2692", "pedido 2692"); null si no hay o si es una dirección. */
+export function numeroDePedidoEn(t: string): string | null {
+  if (/\b(calle|cll|carrera|cra|cr|avenida|av|transversal|diagonal|circular|barrio|apto|apartamento|oficina|torre|piso)\b/i.test(t)) return null;
+  const m = t.match(/(?:#|\b(?:pedido|orden|order|n[uú]mero|no\.?)\s*#?\s*)(\d{3,6})\b/i);
+  return m ? m[1] : null;
 }
 
 export function esAgradecimiento(t: string) {

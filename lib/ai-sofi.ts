@@ -6,7 +6,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { BotContext, BotResponse } from '@/types';
 import type { CartItem } from './bot-logic';
-import { obtenerProductosCache } from './supabase';
+import { obtenerProductosCache, obtenerPedidosClienteShopify } from './supabase';
 import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { registrarUsoClaude } from './costos';
 import { registrarEvento } from './eventos';
@@ -149,6 +149,14 @@ export async function procesarMensajeSofi(
   const nombre = primerNombre(context.cliente.nombre);
   const sede   = context.cliente.sede_preferida ?? null;
 
+  // Pedidos del cliente, para que Sofi sepa si ya compró y qué (el estado en vivo lo consulta bot-logic)
+  const pedidosRecientes: any[] = await obtenerPedidosClienteShopify(context.cliente.telefono, context.cliente.id).catch(() => []);
+  const textoPedidos = pedidosRecientes.length
+    ? `PEDIDOS RECIENTES DEL CLIENTE (nuestro registro): ${pedidosRecientes.slice(0, 2).map((p: any) =>
+        `#${p.shopify_order_number} (${p.shopify_created_at ? new Date(p.shopify_created_at).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', timeZone: 'America/Bogota' }) : ''}) ${(p.items || []).map((i: any) => `${i.title} x${i.quantity}`).join(', ')} · pago ${p.estado_financiero === 'paid' ? 'confirmado' : p.estado_financiero || 'pendiente'} · ${p.estado_fulfillment === 'fulfilled' ? 'despachado' : 'en preparación'}`
+      ).join(' | ')}. Si pregunta por su pedido, responde con estos datos (sin inventar guías ni fechas); para el detalle en vivo dile que escriba "mi pedido".`
+    : 'PEDIDOS DEL CLIENTE: no tenemos pedidos registrados con su número. Si pregunta por "su pedido", pídele el número de pedido (#) del correo de confirmación; no inventes estados.';
+
   const system = `Eres Sofi, asesora de ventas de ${BUSINESS_NAME}. Español colombiano natural, cálida y directa. Máximo 3 líneas por respuesta.${nombre ? ` Cliente: ${nombre}.` : ''}${sede ? ` Sede: ${sede}.` : ''}
 
 NEGOCIO
@@ -156,6 +164,8 @@ Sedes: CC Tesoro · CC Fabricato · Autopista Sur (Itagüí) · Gran Manzana (It
 Envío: ${COSTO_ENVIO === 0 ? 'GRATIS siempre, sin monto mínimo' : `${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}`} | 24-48h | Zona: ${COBERTURA.join(', ')}
 Pagos: Tarjeta, PSE, Nequi, Daviplata (Wompi)
 COBERTURA DE DOMICILIO: SOLO los municipios listados en "Zona". Nunca digas "Valle de Aburrá", "toda el área metropolitana" ni menciones otros municipios como cubiertos. Si preguntan por uno que no está en la lista (ej. Itagüí, Rionegro), di que no está en la cobertura estándar de domicilio y ofrece la opción de recoger en tienda. No agregues condiciones de envío que no estén escritas arriba (nada de "hábiles" u otros detalles). (Los pedidos empresariales tienen su propia condición de envío: ver VENTAS EMPRESARIALES.)
+
+${textoPedidos}
 
 ${textoTemporadaSofi()}
 

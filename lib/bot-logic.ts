@@ -17,7 +17,7 @@
 
 import type { BotContext, BotResponse, Producto } from '@/types';
 import { obtenerProductosCache, actualizarCliente, supabaseAdmin, obtenerPedidosClienteShopify } from './supabase';
-import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId } from './shopify';
+import { formatearPrecioCOP, asignarEmojiProducto, obtenerPedidoShopifyPorId, obtenerPedidoShopifyPorNumero, buscarPedidosShopifyPorCliente } from './shopify';
 import { procesarMensajeSofi } from './ai-sofi';
 import { asegurarPreguntaCantidad, quitarUltimaPregunta } from './sofi-texto';
 import {
@@ -44,6 +44,7 @@ import {
   esAvisoHoraRoja,
   esConsultaEnvio,
   esConsultaPedido,
+  numeroDePedidoEn,
   esAgradecimiento,
   esConfirmacion,
   esNegacion,
@@ -335,8 +336,10 @@ async function procesarMensajeBotInterno(
 
   // ── ESTADO DE PEDIDO: consulta Shopify en tiempo real ─────────────
   // Solo sin carrito activo (con carrito, "finalizar mi pedido" es pago, no consulta).
-  if (awaiting === '' && pendingCart.length === 0 && esConsultaPedido(textoLower)) {
-    return await respuestaEstadoPedido(context);
+  // Si el bot le pidió el número de pedido y responde solo con dígitos, es ese número
+  const pidioNumero = !!ultimoBot?.metadata?.pidio_numero_pedido && /^\s*#?\s*\d{3,6}\s*$/.test(texto);
+  if (awaiting === '' && pendingCart.length === 0 && (esConsultaPedido(textoLower) || numeroDePedidoEn(texto) || pidioNumero)) {
+    return await respuestaEstadoPedido(context, texto, pidioNumero);
   }
 
   // ── PAGO CON CARRITO ACTIVO: interceptar ANTES de Sofi ────────────
@@ -1412,63 +1415,130 @@ function estadoEnvioEspanol(ful?: string | null): string {
   return m[ful] || ful;
 }
 
-async function respuestaEstadoPedido(context: BotContext): Promise<BotResponse> {
-  const telefono = context.cliente.telefono;
-  const pedidos = await obtenerPedidosClienteShopify(telefono, context.cliente.id);
+/** Últimos 10 dígitos de un teléfono, para comparar "+57 300…" con "57300…". */
+const ultimosDigitos = (t?: string | null) => String(t || '').replace(/\D/g, '').slice(-10);
 
-  if (pedidos.length === 0) {
+/** El pedido se hizo con el celular o el correo de este cliente (por seguridad no se muestran pedidos ajenos). */
+function pedidoEsDelCliente(order: any, cliente: { telefono?: string | null; email?: string | null }): boolean {
+  const mio = ultimosDigitos(cliente.telefono);
+  const telefonos = [order?.phone, order?.customer?.phone, order?.shipping_address?.phone, order?.billing_address?.phone]
+    .map(ultimosDigitos).filter((x) => x.length >= 7);
+  if (mio.length >= 7 && telefonos.includes(mio)) return true;
+  const correo = String(cliente.email || '').toLowerCase();
+  return !!correo && [order?.email, order?.customer?.email].some((e) => String(e || '').toLowerCase() === correo);
+}
+
+/** Estado de un pedido en palabras: pago, entrega (o recogida), guía si ya salió. */
+function textoEstadoPedido(order: any, fila?: any): string {
+  const numero = order?.order_number ?? fila?.shopify_order_number;
+  const finStatus = order?.financial_status ?? fila?.estado_financiero;
+  const fulStatus = order?.fulfillment_status ?? fila?.estado_fulfillment;
+  const total = order ? parseFloat(order.total_price) : Number(fila?.total || 0);
+  const items: any[] = order?.line_items ?? fila?.items ?? [];
+  const creado = order?.created_at ?? fila?.shopify_created_at;
+  const fecha = creado ? new Date(creado).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', timeZone: 'America/Bogota' }) : '';
+  const lineas = items.map((i) => `• ${i.title} × ${i.quantity}`).join('\n');
+
+  const cancelado = !!order?.cancelled_at || finStatus === 'voided' || finStatus === 'refunded';
+  // Recogida en tienda: el bot la guarda en la dirección; en la web, en el método de envío
+  const dir = fila?.direccion_envio;
+  const dirTexto: string = typeof dir === 'string' ? dir : dir?.address1 || '';
+  const envioLinea = order?.shipping_lines?.[0];
+  const esRecoge = (!!dirTexto && esRecogidaEnTienda(dirTexto)) ||
+    (!!envioLinea && /recog|pickup|retiro|tienda/i.test(`${envioLinea.title || ''} ${envioLinea.code || ''}`));
+  const fulfillment = (order?.fulfillments || []).find((f: any) => f.status !== 'cancelled') || order?.fulfillments?.[0];
+
+  let entrega: string;
+  if (cancelado) entrega = '❌ Pedido cancelado';
+  else if (esRecoge) entrega = fulStatus === 'fulfilled'
+    ? '🏪 Entregado en tienda'
+    : `🏪 Para recoger en *${dirTexto ? nombreSedeDesdeDireccion(dirTexto) : 'la sede elegida'}*. Te avisamos por aquí cuando esté listo.`;
+  else if (fulStatus === 'fulfilled') entrega = fulfillment?.shipment_status === 'delivered' ? '✅ Entregado' : '🚚 Despachado: va en camino';
+  else if (finStatus === 'paid') entrega = '📦 En preparación. Los envíos llegan en 24 a 48 horas.';
+  else entrega = '⏳ Pendiente de pago';
+
+  let texto =
+    `📦 *Pedido #${numero}*${fecha ? ` · ${fecha}` : ''}\n` +
+    `${lineas}\n\n` +
+    `💳 Pago: *${estadoPagoEspanol(finStatus)}*\n` +
+    `${entrega}\n` +
+    `💵 Total: *${formatearPrecioCOP(total)}*\n`;
+  if (fulfillment?.tracking_number) {
+    texto += `\n📍 Guía: *${fulfillment.tracking_company || 'Transportadora'} ${fulfillment.tracking_number}*\n`;
+    const url = fulfillment.tracking_url || fulfillment.tracking_urls?.[0];
+    if (url) texto += `${url}\n`;
+  }
+  return texto;
+}
+
+/**
+ * "¿Cómo va mi pedido?": estado real del pedido del cliente. Busca en el CRM,
+ * si no está lo busca en Shopify por su celular o correo, y si tampoco, mira
+ * si tiene una compra por este chat pendiente de pago. Con un número de
+ * pedido (#2692) lo consulta directo, solo si es suyo.
+ */
+async function respuestaEstadoPedido(context: BotContext, texto: string, pidioNumero = false): Promise<BotResponse> {
+  const cliente = context.cliente as any;
+  const sinEstado = { awaiting: '', pending_cart: [] as CartItem[] };
+  const numero = numeroDePedidoEn(texto) || (pidioNumero ? texto.replace(/\D/g, '') : null);
+
+  if (numero) {
+    const order = await obtenerPedidoShopifyPorNumero(numero);
+    if (!order) {
+      return {
+        texto: `🔎 No encuentro el pedido *#${numero}* 🤔 Revisa el número en tu correo de confirmación y escríbemelo de nuevo, o cuéntame qué compraste y lo busco.`,
+        metadata: { ...sinEstado, pidio_numero_pedido: true },
+      };
+    }
+    if (!pedidoEsDelCliente(order, cliente)) {
+      return {
+        texto: `Por seguridad solo puedo mostrar los pedidos hechos con este número de WhatsApp o con tu correo 🙏 El pedido *#${numero}* quedó con otros datos: escríbenos desde ese número, o escribe *asesor* y una persona del equipo lo revisa contigo.`,
+        metadata: sinEstado,
+      };
+    }
+    return { texto: `${textoEstadoPedido(order)}\n¿Te ayudo con algo más? 😊`, metadata: sinEstado };
+  }
+
+  // 1. Pedidos registrados en el CRM (y su estado en Shopify en tiempo real)
+  const pedidos = await obtenerPedidosClienteShopify(cliente.telefono, cliente.id);
+  let order: any = null;
+  let fila: any = null;
+  if (pedidos.length) {
+    fila = pedidos[0];
+    order = await obtenerPedidoShopifyPorId(fila.shopify_order_id);
+  } else {
+    // 2. Pedidos de la tienda web que no llegaron al CRM
+    const vivos = await buscarPedidosShopifyPorCliente(cliente.telefono, cliente.email).catch(() => []);
+    if (vivos.length) order = vivos[0];
+  }
+  if (order || fila) {
+    const otros = pedidos.length - 1;
+    const nota = otros > 0 ? `\n_(Tienes ${otros} pedido${otros > 1 ? 's' : ''} más; si quieres ver otro, escríbeme su número.)_\n` : '';
+    return { texto: `${textoEstadoPedido(order, fila)}${nota}\n¿Te ayudo con algo más? 😊`, metadata: sinEstado };
+  }
+
+  // 3. Compra por este chat sin pedido todavía (link pendiente o pago recién confirmado)
+  const { data: ventas } = await supabaseAdmin.from('ventas').select('estado, producto_nombre, cantidad, total, link_pago, created_at')
+    .eq('cliente_id', cliente.id).gte('created_at', new Date(Date.now() - 3 * 864e5).toISOString())
+    .order('created_at', { ascending: false }).limit(5);
+  const lista = ((ventas as any[]) || []).filter((v) => v && v.estado);
+  if (lista.some((v) => v.estado === 'pagado')) {
+    return { texto: '✅ Tu pago ya quedó confirmado y tu pedido está en preparación 📦 Te avisamos por aquí cuando salga. ¿Te ayudo con algo más? 😊', metadata: sinEstado };
+  }
+  const pendiente = lista.find((v) => v.estado === 'pendiente');
+  if (pendiente) {
     return {
-      texto:
-        `🔎 No encuentro pedidos asociados a tu número. 🤔\n\n` +
-        `Si compraste hace pocos minutos, dame un momentico y vuelve a preguntar. ` +
-        `Si tienes el *número de pedido*, escríbemelo y lo reviso. 😊`,
-      metadata: { awaiting: '', pending_cart: [] },
+      texto: `⏳ Tu pedido de *${pendiente.producto_nombre} × ${pendiente.cantidad}* está pendiente de pago. Puedes pagarlo aquí:\n${pendiente.link_pago}\n\nApenas Wompi confirme, lo preparamos. 😊`,
+      metadata: sinEstado,
     };
   }
 
-  // Tomar el pedido más reciente y consultar Shopify en TIEMPO REAL
-  const ultimo = pedidos[0];
-  const orderRT = await obtenerPedidoShopifyPorId(ultimo.shopify_order_id);
-
-  const numero = orderRT?.order_number ?? ultimo.shopify_order_number;
-  const finStatus = orderRT?.financial_status ?? ultimo.estado_financiero;
-  const fulStatus = orderRT?.fulfillment_status ?? ultimo.estado_fulfillment;
-  const total = orderRT ? parseFloat(orderRT.total_price) : Number(ultimo.total);
-  const items = orderRT?.line_items ?? ultimo.items ?? [];
-  const direccion = ultimo.direccion_envio;
-
-  const lineas = (items as any[])
-    .map((i) => `• ${i.title} × ${i.quantity}`)
-    .join('\n');
-
-  // Tracking si ya fue despachado
-  const fulfillment = orderRT?.fulfillments?.[0];
-  const trackingNum = fulfillment?.tracking_number;
-  const trackingCompany = fulfillment?.tracking_company;
-  const trackingUrl = fulfillment?.tracking_url || fulfillment?.tracking_urls?.[0];
-
-  const esRecoge = typeof direccion === 'string' && esRecogidaEnTienda(direccion);
-  const entregaLinea = esRecoge
-    ? `🏪 Recoges en: *${nombreSedeDesdeDireccion(direccion as string)}*`
-    : `🚚 Envío: *${estadoEnvioEspanol(fulStatus)}*`;
-
-  let texto =
-    `📦 *Pedido #${numero}*\n` +
-    `${lineas}\n\n` +
-    `💳 Pago: *${estadoPagoEspanol(finStatus)}*\n` +
-    `${entregaLinea}\n` +
-    `💵 Total: *${formatearPrecioCOP(total)}*\n`;
-
-  if (trackingNum) {
-    texto += `\n📍 Guía: *${trackingCompany || 'Transportadora'} ${trackingNum}*\n`;
-    if (trackingUrl) texto += `${trackingUrl}\n`;
-  }
-
-  texto += `\n¿Te ayudo con algo más? 😊`;
-
   return {
-    texto,
-    metadata: { awaiting: '', pending_cart: [] },
+    texto:
+      `🔎 No encuentro pedidos asociados a tu número 🤔\n\n` +
+      `Si compraste hace pocos minutos, dame un momentico y vuelve a preguntar. ` +
+      `Si compraste en la tienda web con otro celular, escríbeme el *número de pedido* (está en el correo de confirmación, ej. *#2692*) y lo reviso. 😊`,
+    metadata: { ...sinEstado, pidio_numero_pedido: true },
   };
 }
 
