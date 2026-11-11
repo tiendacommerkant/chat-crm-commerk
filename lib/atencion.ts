@@ -51,6 +51,13 @@ async function leerEstado(id: string): Promise<Record<string, any> | null> {
 export const HORAS_ASESOR_INACTIVO = 12;
 
 /**
+ * Si lo último que mandó el asesor fue una plantilla (p. ej. retomar_conversacion,
+ * pasadas las 24 h), está esperando la respuesta de ese cliente: el cliente
+ * suele contestar al otro día y debe llegarle a él, no a Sofi.
+ */
+export const HORAS_ESPERA_PLANTILLA = 24;
+
+/**
  * Un asesor tomó el chat pero dejó de escribir. Antes el bot no lo retomaba
  * nunca: el cliente que volvía días después se quedaba sin respuesta hasta que
  * alguien pulsara "Devolver al bot". Cuenta desde lo más reciente entre su
@@ -59,11 +66,12 @@ export const HORAS_ASESOR_INACTIVO = 12;
 export function asesorInactivo(
   ultimoMensajeAsesor: string | null | undefined,
   atendidoDesde: string | null | undefined,
-  ahora = Date.now()
+  ahora = Date.now(),
+  horas = HORAS_ASESOR_INACTIVO
 ): boolean {
   const referencias = [ultimoMensajeAsesor, atendidoDesde].filter(Boolean).map((f) => new Date(f as string).getTime());
   if (!referencias.length) return true;
-  return (ahora - Math.max(...referencias)) / 3_600_000 > HORAS_ASESOR_INACTIVO;
+  return (ahora - Math.max(...referencias)) / 3_600_000 > horas;
 }
 
 /** El bot pasa la conversación a un asesor: entra a "Pendientes". */

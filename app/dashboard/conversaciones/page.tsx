@@ -12,7 +12,7 @@ import {
 import { Bandeja, MOTIVOS, tiempoEspera, type BandejaId } from '@/components/chat/Bandeja';
 import { Compositor, type RespuestaRapida } from '@/components/chat/Compositor';
 import { FichaCliente, type Ficha, type Usuario } from '@/components/chat/FichaCliente';
-import { ModalPlantilla } from '@/components/chat/ModalPlantilla';
+import { ModalPlantilla, PLANTILLA_RETOMAR } from '@/components/chat/ModalPlantilla';
 import { ModalRespuestas } from '@/components/chat/ModalRespuestas';
 
 type Nota = { id: string; conversacion_id: string; autor: string; autor_nombre?: string | null; contenido: string; created_at: string };
@@ -474,6 +474,7 @@ function ChatCenter() {
         <ModalPlantilla
           conversacionId={activa.id}
           clienteNombre={activa.cliente?.nombre}
+          sugerida={ficha?.ventana.abierta === false ? PLANTILLA_RETOMAR : undefined}
           onClose={() => setMostrarPlantilla(false)}
           onEnviada={() => { setMostrarPlantilla(false); setAviso(''); refrescarTodo(); }}
         />

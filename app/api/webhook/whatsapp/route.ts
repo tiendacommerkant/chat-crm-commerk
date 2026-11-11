@@ -15,7 +15,7 @@ import { enviarMensajeWhatsApp, enviarImagenWhatsApp, formatearNumeroWhatsApp, m
 import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
-import { pasarAPendiente, devolverAlBot, asesorInactivo, HORAS_ASESOR_INACTIVO } from '@/lib/atencion';
+import { pasarAPendiente, devolverAlBot, asesorInactivo, HORAS_ASESOR_INACTIVO, HORAS_ESPERA_PLANTILLA } from '@/lib/atencion';
 import { obtenerHorario, avisoFueraDeHorario } from '@/lib/horario';
 import { registrarEvento } from '@/lib/eventos';
 import { leerEstadoConversacion, guardarEstadoConversacion } from '@/lib/estado';
@@ -170,7 +170,7 @@ export async function POST(req: Request) {
 
           const { data: ultimoAgente } = botActivo ? { data: null } : await supabaseAdmin
             .from('mensajes')
-            .select('created_at')
+            .select('created_at, metadata')
             .eq('conversacion_id', conversacion.id)
             .eq('metadata->>enviado_por', 'agente')
             .order('created_at', { ascending: false })
@@ -179,12 +179,15 @@ export async function POST(req: Request) {
 
           // ...salvo que el asesor haya dejado de escribirle: el cliente que vuelve
           // al otro día no se queda hablando solo esperando a que lo devuelvan al bot.
-          if (!botActivo && atendidaPorAsesor && asesorInactivo(ultimoAgente?.created_at, convData?.atendido_desde)) {
+          // Si lo último del asesor fue una plantilla, espera más: la mandó para
+          // retomar a ese cliente y la respuesta es para él.
+          const horasEspera = (ultimoAgente as any)?.metadata?.tipo_wa === 'template' ? HORAS_ESPERA_PLANTILLA : HORAS_ASESOR_INACTIVO;
+          if (!botActivo && atendidaPorAsesor && asesorInactivo(ultimoAgente?.created_at, convData?.atendido_desde, Date.now(), horasEspera)) {
             await devolverAlBot(conversacion.id);
             botActivo = true;
             atendidaPorAsesor = false;
             await registrarEvento('aviso', 'atencion',
-              `${convData?.asignado_nombre || 'El asesor'} no escribía hace más de ${HORAS_ASESOR_INACTIVO} h: el bot volvió a responder`,
+              `${convData?.asignado_nombre || 'El asesor'} no escribía hace más de ${horasEspera} h: el bot volvió a responder`,
               { conversacion_id: conversacion.id });
           }
 

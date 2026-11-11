@@ -28,7 +28,7 @@ import {
 import { parsearCalificacion } from '@/lib/encuesta';
 import { esFrustracion, procesarMensajeBot } from '@/lib/bot-logic';
 import { recordarCarritosAbandonados } from '@/lib/recordatorios';
-import { asesorInactivo, HORAS_ASESOR_INACTIVO } from '@/lib/atencion';
+import { asesorInactivo, HORAS_ASESOR_INACTIVO, HORAS_ESPERA_PLANTILLA } from '@/lib/atencion';
 import { contexto, bot, cliente } from './apoyo/simulador';
 
 beforeEach(() => {
@@ -174,6 +174,14 @@ describe('Chat tomado por un asesor que dejó de escribir', () => {
 
   it('si lo volvió a tomar hace poco, manda la hora en que lo tomó aunque su último mensaje sea viejo', () => {
     expect(asesorInactivo(haceHoras(100), haceHoras(1))).toBe(false);
+  });
+
+  // Caso Juli Toro: pasadas las 24 h el asesor le manda "Retomar conversación"
+  // a las 3 p. m. y ella contesta a las 9 a. m. del otro día: es para el asesor.
+  it(`después de una plantilla del asesor, su respuesta le llega a él hasta ${HORAS_ESPERA_PLANTILLA} h`, () => {
+    expect(asesorInactivo(haceHoras(18), haceHoras(72), Date.now(), HORAS_ESPERA_PLANTILLA)).toBe(false);
+    expect(asesorInactivo(haceHoras(18), haceHoras(72))).toBe(true);
+    expect(asesorInactivo(haceHoras(HORAS_ESPERA_PLANTILLA + 1), haceHoras(72), Date.now(), HORAS_ESPERA_PLANTILLA)).toBe(true);
   });
 });
 
