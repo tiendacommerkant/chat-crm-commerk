@@ -98,9 +98,16 @@ async function omitir(carrito: CarritoFila, telefono: string, motivo: string, es
   return { enviado: false, motivo };
 }
 
-/** ¿Compró en la tienda (mismo correo o celular) después de dejar el carrito? */
+/**
+ * ¿Compró en la tienda (mismo correo o celular) después de dejar el carrito?
+ * Se cuenta desde 2 horas antes: Shopify a veces registra el checkout minutos
+ * después del pedido, y a Sandra Toro (#2690) le llegó "¿olvidaste algo?" 10
+ * minutos después de comprar.
+ */
 async function comproDespues(carrito: CarritoFila, telefono: string): Promise<boolean> {
-  const desde = carrito.shopify_created_at || new Date(Date.now() - VIGENCIA_MS).toISOString();
+  const desde = carrito.shopify_created_at
+    ? new Date(new Date(carrito.shopify_created_at).getTime() - 2 * 3_600_000).toISOString()
+    : new Date(Date.now() - VIGENCIA_MS).toISOString();
   const base = () => supabaseAdmin.from('pedidos_shopify').select('id', { count: 'exact', head: true })
     .gt('shopify_created_at', desde).in('estado_financiero', ['paid', 'pending', 'authorized']);
   const consultas = [base().ilike('telefono', `%${telefono.slice(-10)}`)];

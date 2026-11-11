@@ -63,6 +63,11 @@ export async function GET() {
       });
       if (r.status === 401) return { ok: false, nivel: 'error', detalle: 'La llave privada de Wompi no es válida: no se pueden crear links de pago' };
       if (!r.ok) return { ok: false, nivel: 'error', detalle: `Wompi respondió HTTP ${r.status}` };
+      // Un pago aprobado sin pedido en Shopify (o que la app de Wompi no recibió) en las últimas 24 h
+      const { data: alertas } = await supabaseAdmin.from('eventos_sistema').select('mensaje')
+        .eq('origen', 'wompi').eq('nivel', 'error').gte('created_at', new Date(Date.now() - 24 * 3_600_000).toISOString())
+        .order('created_at', { ascending: false }).limit(1);
+      if (alertas?.length) return { ok: false, nivel: 'error', detalle: alertas[0].mensaje };
       return { ok: true, nivel: 'ok', detalle: pruebas ? 'Conectado en modo pruebas' : 'Conectado: se pueden crear links de pago' };
     }),
     revisar('Base de datos', async () => {

@@ -283,6 +283,12 @@ describe('Sincronización de carritos sin escrituras de más', async () => {
     expect(escrituras()).toHaveLength(1);
   });
 
+  it('un checkout pagado (completed_at) queda como "Compró" aunque estuviera notificado', async () => {
+    sim.datos.carritos_abandonados = { id: 'c1', estado: 'notificado', shopify_updated_at: '2026-10-27T10:00:00+00:00', notificado_whatsapp: true };
+    expect(await guardarCheckout({ ...checkout, completed_at: '2026-10-28T15:31:00Z' })).toMatchObject({ estado: 'convertido' });
+    expect(escrituras()[0].args[0].estado).toBe('convertido');
+  });
+
   it('un carrito ya notificado no vuelve a "abandonado"', async () => {
     sim.datos.carritos_abandonados = { id: 'c1', estado: 'notificado', shopify_updated_at: '2026-10-27T10:00:00+00:00', notificado_whatsapp: true };
     await guardarCheckout(checkout);

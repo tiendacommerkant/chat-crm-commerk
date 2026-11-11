@@ -383,6 +383,8 @@ export interface ShopifyCheckout {
   abandoned_checkout_url: string;
   created_at: string;
   updated_at: string;
+  /** Fecha en que se pagó: el checkout ya es un pedido */
+  completed_at?: string | null;
 }
 
 export interface PedidoShopify {
