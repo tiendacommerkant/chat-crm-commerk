@@ -15,6 +15,7 @@ import { enviarMensajeWhatsApp, enviarImagenWhatsApp, formatearNumeroWhatsApp, m
 import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
+import { CORREO_VALIDO, type DatosEnvio } from '@/lib/bot/datos-envio';
 import { pasarAPendiente, devolverAlBot, asesorInactivo, HORAS_ASESOR_INACTIVO, HORAS_ESPERA_PLANTILLA } from '@/lib/atencion';
 import { obtenerHorario, avisoFueraDeHorario } from '@/lib/horario';
 import { registrarEvento } from '@/lib/eventos';
@@ -325,7 +326,9 @@ export async function POST(req: Request) {
 
           // ── Acción: generar link de pago Wompi ─────────────────────────
           if (respuesta.accion === 'generar_link_pago' && respuesta.metadata) {
-            const { pending_cart, pending_direccion, pending_total, pending_costo_envio } = respuesta.metadata;
+            const { pending_cart, pending_direccion, pending_total, pending_costo_envio, pending_datos_envio } = respuesta.metadata;
+            // Nombre, cédula, correo, barrio y factura del domicilio (lib/bot/datos-envio.ts)
+            const datosEnvio: DatosEnvio | null = pending_datos_envio || null;
             const cart: Array<{ shopify_id: string; titulo: string; precio: number; cantidad: number }> = pending_cart || [];
             const direccion = pending_direccion || 'Sin especificar';
             const total = pending_total || cart.reduce((s: number, i: any) => s + i.precio * i.cantidad, 0);
@@ -387,6 +390,19 @@ export async function POST(req: Request) {
               // Actualizar updated_at de la conversación
               await supabaseAdmin.from('conversaciones').update({ updated_at: new Date().toISOString() }).eq('id', conversacion.id);
 
+              // Nombre y correo reales en la ficha del cliente (el perfil de
+              // WhatsApp suele traer apodos o emojis)
+              if (datosEnvio) {
+                const ficha: Record<string, string> = {};
+                if (datosEnvio.nombre) ficha.nombre = datosEnvio.nombre.slice(0, 100);
+                if (datosEnvio.correo && CORREO_VALIDO.test(datosEnvio.correo)) ficha.email = datosEnvio.correo.slice(0, 100);
+                if (Object.keys(ficha).length) {
+                  const { error: errFicha } = await supabaseAdmin.from('clientes')
+                    .update({ ...ficha, updated_at: new Date().toISOString() }).eq('id', cliente.id);
+                  if (errFicha) console.error('[Webhook] No se pudo guardar el nombre/correo del cliente:', errFicha.message);
+                }
+              }
+
               // Construir mensaje con detalle de todos los ítems
               let resumenItems = '';
               cart.forEach((item, i) => {
@@ -404,11 +420,13 @@ export async function POST(req: Request) {
                 `💳 Puedes pagar con *Nequi, Daviplata, PSE o Tarjeta* — elige tu método dentro del link.\n\n` +
                 `_Link de un solo uso y 100% seguro con Wompi. Una vez confirmado el pago te avisamos aquí y procesamos tu pedido._ ✅`;
 
+              // datos_envio viaja con la referencia: lo lee lib/pagos-bot.ts para el pedido de Shopify
               const metaLink = {
                 tipo_wa: 'text',
                 awaiting: 'link_enviado',
                 referencia_pago: referencia,
                 pending_cart: cart,
+                ...(datosEnvio ? { datos_envio: datosEnvio } : {}),
               };
               await guardarMensaje(conversacion.id, 'bot', msgLink, metaLink);
               await guardarEstadoConversacion(conversacion.id, metaLink);
@@ -498,7 +516,7 @@ export async function POST(req: Request) {
             // corta (cantidad, dirección, confirmar…). Con el link de pago ya enviado,
             // o en conversación libre, sí se pasa: en pruebas reales Sofi decía "te
             // paso con un asesor" y el bot seguía contestando solo.
-            const PASOS_CORTOS = ['compra', 'variante', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'confirmacion', 'sede', 'encuesta', 'encuesta_comentario'];
+            const PASOS_CORTOS = ['compra', 'variante', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'datos_envio', 'confirmacion', 'sede', 'encuesta', 'encuesta_comentario'];
             const flujoActivo = PASOS_CORTOS.includes(awaitingPrevio || '') && !pideHumano && !derivacionMayorista && !transferenciaObligatoria;
 
             // Fuera del horario del equipo se le dice al cliente cuándo le escriben

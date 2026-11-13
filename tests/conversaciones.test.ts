@@ -103,24 +103,74 @@ describe('Registro de un cliente nuevo', () => {
   });
 });
 
+// La plantilla de domicilio del equipo, llenada por el cliente
+const DATOS_JULI = 'Nombre: Juliana Toro\nCédula: 1036654321\nCorreo: juli.toro@gmail.com\nTeléfono: 3116350500\nDirección: Calle 10 # 40-20\nBarrio: El Poblado\n¿Factura electrónica? SI/NO: si';
+const carritoCarta = () => [{ shopify_id: cartaDeOro.shopify_id, titulo: cartaDeOro.titulo, precio: cartaDeOro.precio, cantidad: 1 }];
+const esperandoDatos = (datos: Record<string, any> = { telefono: '3001234567' }) =>
+  [bot('Para enviarte el pedido, indícame estos datos', { awaiting: 'datos_envio', pending_cart: carritoCarta(), pending_datos_envio: datos })];
+
 describe('Compra completa a domicilio', () => {
-  it('de "quiero comprar carta de oro 750" hasta el link de pago', async () => {
+  it('de "quiero comprar carta de oro 750" hasta el link de pago, con los datos de envío', async () => {
     const { respuestas, ultima } = await conversar([
       'quiero comprar carta de oro 750',
       '2',
       'no, eso es todo',
       'a domicilio',
-      'Calle 10 # 40-20, El Poblado, Medellín',
+      DATOS_JULI,
       'si',
     ]);
     expect(respuestas[0].metadata?.awaiting).toBe('cantidad');
     expect(respuestas[1].metadata?.pending_cart?.[0]?.cantidad).toBe(2);
-    expect(respuestas[3].metadata?.awaiting).toBe('direccion');
+    // Pide la plantilla del equipo con el tiempo de entrega real
+    expect(respuestas[3].metadata?.awaiting).toBe('datos_envio');
+    expect(respuestas[3].texto).toMatch(/Cédula/);
+    expect(respuestas[3].texto).toMatch(/Factura electrónica/);
+    expect(respuestas[3].texto).toMatch(/3 a 5 días hábiles/);
+    // Resumen con los datos para confirmar
     expect(respuestas[4].metadata?.awaiting).toBe('confirmacion');
+    expect(respuestas[4].texto).toMatch(/Juliana Toro · 🪪 1036654321/);
+    expect(respuestas[4].texto).toMatch(/Calle 10 # 40-20, barrio El Poblado, Medellín/);
+    expect(respuestas[4].texto).toMatch(/Factura electrónica: \*SÍ\*/);
     expect(ultima.accion).toBe('generar_link_pago');
     const item = ultima.metadata?.pending_cart?.[0];
     expect(item.titulo).toMatch(/carta de oro/i);
     expect(ultima.metadata?.pending_total).toBe(ultima.metadata!.pending_subtotal + ultima.metadata!.pending_costo_envio);
+    // Los datos viajan hasta el link de pago (de ahí al pedido de Shopify)
+    expect(ultima.metadata?.pending_datos_envio).toMatchObject({ nombre: 'Juliana Toro', cedula: '1036654321', correo: 'juli.toro@gmail.com', factura: 'SI', municipio: 'Medellín' });
+    expect(ultima.metadata?.pending_direccion).toBe('Calle 10 # 40-20, barrio El Poblado, Medellín');
+  });
+
+  it('si faltan datos, pide solo esos; el teléfono es el del WhatsApp si no da otro', async () => {
+    const { respuestas } = await conversar(['Juan Pérez\nCarrera 43A # 1-50\nZúñiga, Envigado', '43567890\njuanp@gmail.com\nno'], { historial: esperandoDatos({ telefono: '3001234567' }) });
+    expect(respuestas[0].metadata?.awaiting).toBe('datos_envio');
+    expect(respuestas[0].texto).toMatch(/Gracias, Juan/);
+    expect(respuestas[0].texto).toMatch(/Cédula/);
+    expect(respuestas[0].texto).not.toMatch(/Barrio|Dirección|Teléfono/);
+    expect(respuestas[1].metadata?.awaiting).toBe('confirmacion');
+    expect(respuestas[1].metadata?.pending_datos_envio).toMatchObject({ cedula: '43567890', telefono: '3001234567', barrio: 'Zúñiga', municipio: 'Envigado', factura: 'NO' });
+  });
+
+  it('desde el resumen corrige un dato sin cancelar ("no, mi cédula es…")', async () => {
+    const { respuestas, ultima } = await conversar([DATOS_JULI, 'no, mi cédula es 43.567.890', 'si'], { historial: esperandoDatos() });
+    expect(respuestas[1].metadata?.awaiting).toBe('confirmacion');
+    expect(respuestas[1].texto).toMatch(/🪪 43567890/);
+    expect(ultima.accion).toBe('generar_link_pago');
+    expect(ultima.metadata?.pending_datos_envio?.cedula).toBe('43567890');
+  });
+
+  it('una pregunta en medio: Sofi responde y se le recuerda lo que falta', async () => {
+    const { ultima } = await conversar(['¿cuánto se demora en llegar?'], { historial: esperandoDatos() });
+    expect(sim.sofi).toHaveBeenCalled();
+    expect(ultima.metadata?.awaiting).toBe('datos_envio');
+    expect(ultima.texto).toMatch(/me faltan estos datos/);
+  });
+
+  it('barrio sin municipio conocido: pregunta el municipio antes del resumen', async () => {
+    const datos = 'Nombre: Ana Gil\nCédula: 43567890\nCorreo: ana@gmail.com\nDirección: Calle 5 # 10-20\nBarrio: San José\nFactura: no';
+    const { respuestas } = await conversar([datos, 'Bello'], { historial: esperandoDatos() });
+    expect(respuestas[0].texto).toMatch(/En qué municipio/);
+    expect(respuestas[1].metadata?.awaiting).toBe('confirmacion');
+    expect(respuestas[1].metadata?.pending_direccion).toBe('Calle 5 # 10-20, barrio San José, Bello');
   });
 
   it('sin el tamaño no adivina: Sofi pregunta cuál (hay 375 y 750 ml)', async () => {
@@ -130,26 +180,33 @@ describe('Compra completa a domicilio', () => {
   });
 
   it('el envío es gratis desde $149.000', async () => {
-    const { respuestas } = await conversar(['quiero comprar carta de oro 750', '4', 'listo', 'domicilio', 'Carrera 43A # 1-50, Envigado']);
+    const { respuestas } = await conversar(['quiero comprar carta de oro 750', '4', 'listo', 'domicilio', DATOS_JULI]);
     const resumen = respuestas[4];
     expect(resumen.metadata?.pending_subtotal).toBeGreaterThanOrEqual(149000);
     expect(resumen.metadata?.pending_costo_envio).toBe(0);
   });
 
-  it('no acepta una dirección sin número', async () => {
-    const { ultima } = await conversar(['no sé todavía'], {
-      historial: [bot('¿A qué dirección?', { awaiting: 'direccion', pending_cart: [{ shopify_id: cartaDeOro.shopify_id, titulo: cartaDeOro.titulo, precio: cartaDeOro.precio, cantidad: 1 }] })],
-    });
-    expect(ultima.metadata?.awaiting).toBe('direccion');
-    expect(ultima.texto).toMatch(/dirección completa/);
+  it('no toma "no sé todavía" como datos (ni como "no" a la factura)', async () => {
+    const { ultima } = await conversar(['no sé todavía'], { historial: esperandoDatos() });
+    expect(ultima.metadata?.awaiting).toBe('datos_envio');
+    expect(ultima.metadata?.pending_datos_envio?.factura).toBeUndefined();
+    expect(ultima.texto).toMatch(/Dirección/);
   });
 
-  it('no envía a municipios fuera de cobertura', async () => {
-    const { ultima } = await conversar(['Calle 50 # 45-10, Rionegro'], {
-      historial: [bot('¿A qué dirección?', { awaiting: 'direccion', pending_cart: [{ shopify_id: cartaDeOro.shopify_id, titulo: cartaDeOro.titulo, precio: cartaDeOro.precio, cantidad: 1 }] })],
+  it('no envía a municipios fuera de cobertura: lo dice apenas da la dirección', async () => {
+    const { ultima } = await conversar(['Calle 50 # 45-10, Rionegro'], { historial: esperandoDatos() });
+    expect(ultima.metadata?.awaiting).toBe('datos_envio');
+    expect(ultima.texto).toMatch(/no hacemos domicilio a \*Rionegro\*/);
+    expect(ultima.metadata?.pending_datos_envio?.direccion).toBeUndefined();
+  });
+
+  it('un chat que quedó esperando solo la dirección (antes del cambio) sigue con los datos', async () => {
+    const { ultima } = await conversar(['Calle 10 # 40-20, El Poblado, Medellín'], {
+      historial: [bot('¿A qué dirección?', { awaiting: 'direccion', pending_cart: carritoCarta() })],
     });
-    expect(ultima.metadata?.awaiting).toBe('direccion');
-    expect(ultima.texto).toMatch(/no hacemos domicilio/);
+    expect(ultima.metadata?.awaiting).toBe('datos_envio');
+    expect(ultima.metadata?.pending_datos_envio).toMatchObject({ direccion: 'Calle 10 # 40-20', barrio: 'El Poblado' });
+    expect(ultima.texto).toMatch(/Cédula/);
   });
 
   it('recoger en tienda no cobra envío', async () => {

@@ -11,6 +11,7 @@ import { formatearPrecioCOP, asignarEmojiProducto } from './shopify';
 import { registrarUsoClaude } from './costos';
 import { registrarEvento } from './eventos';
 import { textoTemporadaSofi } from './temporada';
+import { TIEMPO_ENTREGA } from './cobertura';
 import { primerNombre } from './nombre';
 import { matchProductoDistintivo } from './matching';
 import { asegurarPreguntaCantidad, quitarUltimaPregunta } from './sofi-texto';
@@ -161,9 +162,10 @@ export async function procesarMensajeSofi(
 
 NEGOCIO
 Sedes: CC Tesoro · CC Fabricato · Autopista Sur (Itagüí) · Gran Manzana (Itagüí) · Mall Indiana · Urabá (Apartadó) · Parque Comercial Florida
-Envío: ${COSTO_ENVIO === 0 ? 'GRATIS siempre, sin monto mínimo' : `${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}`} | 24-48h | Zona: ${COBERTURA.join(', ')}
+Envío: ${COSTO_ENVIO === 0 ? 'GRATIS siempre, sin monto mínimo' : `${formatearPrecioCOP(COSTO_ENVIO)} — GRATIS > ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}`} | Entrega: ${TIEMPO_ENTREGA} desde la confirmación del pago | Zona: ${COBERTURA.join(', ')}
 Pagos: Tarjeta, PSE, Nequi, Daviplata (Wompi)
-COBERTURA DE DOMICILIO: SOLO los municipios listados en "Zona". Nunca digas "Valle de Aburrá", "toda el área metropolitana" ni menciones otros municipios como cubiertos. Si preguntan por uno que no está en la lista (ej. Itagüí, Rionegro), di que no está en la cobertura estándar de domicilio y ofrece la opción de recoger en tienda. No agregues condiciones de envío que no estén escritas arriba (nada de "hábiles" u otros detalles). (Los pedidos empresariales tienen su propia condición de envío: ver VENTAS EMPRESARIALES.)
+COBERTURA DE DOMICILIO: SOLO los municipios listados en "Zona". Nunca digas "Valle de Aburrá", "toda el área metropolitana" ni menciones otros municipios como cubiertos. Si preguntan por uno que no está en la lista (ej. Itagüí, Rionegro), di que no está en la cobertura estándar de domicilio y ofrece la opción de recoger en tienda. No agregues condiciones de envío que no estén escritas arriba.
+TIEMPO DE ENTREGA: ${TIEMPO_ENTREGA} desde la confirmación del pago, también para pedidos ya pagados o en preparación. NUNCA digas que llega hoy, mañana, al día siguiente o "lo más probable es que mañana lo tengas", aunque el cliente lo pida o insista: con muchos pedidos no se puede cumplir. Si lo necesita con urgencia, ofrécele recogerlo en una de nuestras tiendas. (Los pedidos empresariales tienen su propia condición de envío: ver VENTAS EMPRESARIALES.)
 
 ${textoPedidos}
 

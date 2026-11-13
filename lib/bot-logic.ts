@@ -6,7 +6,9 @@
 //   awaiting: 'variante'         → kit "Arma tu kit", esperando con qué botella
 //   awaiting: 'cantidad'         → esperando cuántas unidades
 //   awaiting: 'carrito'          → ítem agregado, esperando agregar más o pagar
-//   awaiting: 'direccion'        → esperando dirección de envío
+//   awaiting: 'datos_envio'      → esperando los datos del domicilio (plantilla del equipo:
+//                                  nombre, cédula, correo, teléfono, dirección, barrio, factura)
+//   awaiting: 'direccion'        → (anterior) esperando solo la dirección; hoy lo atiende datos_envio
 //   awaiting: 'confirmacion'     → resumen mostrado, esperando confirmar/cancelar
 //   awaiting: 'link_enviado'     → link de pago Wompi ya enviado en el chat
 //   awaiting: 'mayorista_sede'   → (anterior) mayorista esperando sede; hoy pasa a una persona
@@ -27,7 +29,11 @@ import {
 import { enviarMensajeWhatsApp } from './whatsapp';
 import { SEDES_FISICAS, PREFIJO_RECOGIDA, MENU_SEDES, sedeDeRegistroPorNumero, esRecogidaEnTienda, nombreSedeDesdeDireccion, encontrarSede, extraerNumeroOpcion } from './sedes';
 import { matchProductoDistintivo } from './matching';
-import { evaluarCobertura } from './cobertura';
+import { evaluarCobertura, TIEMPO_ENTREGA } from './cobertura';
+import {
+  extraerDatosEnvio, camposFaltantes, direccionCompleta, resumenDatosEnvio, lineasCampos,
+  telefonoDeWhatsApp, CAMPOS_PEDIDOS, type DatosEnvio,
+} from './bot/datos-envio';
 import { parsearCalificacion } from './encuesta';
 import { asegurarOportunidad } from './oportunidades';
 import { esPedidoDeBaja } from './difusiones';
@@ -172,7 +178,7 @@ async function procesarMensajeBotInterno(
   // Expirar flujos de checkout abandonados: si el último mensaje del bot es
   // viejo, no dejamos al cliente "atascado" en un menú. Entra fresco y lo
   // atiende Sofi de forma conversacional (el carrito se conserva para retomarlo).
-  const ESTADOS_CHECKOUT = ['compra', 'variante', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'confirmacion', 'link_enviado', 'mayorista_sede', 'empresa_correo'];
+  const ESTADOS_CHECKOUT = ['compra', 'variante', 'cantidad', 'carrito', 'tipo_entrega', 'recoger_sede', 'direccion', 'datos_envio', 'confirmacion', 'link_enviado', 'mayorista_sede', 'empresa_correo'];
   if (awaiting && ESTADOS_CHECKOUT.includes(awaiting) && ultimoBot?.created_at) {
     const horasInactivo = (Date.now() - new Date(ultimoBot.created_at).getTime()) / 3_600_000;
     if (horasInactivo > 6) awaiting = '';
@@ -792,16 +798,9 @@ async function flujoTipoEntrega(e: PasoBot): Promise<BotResponse | null> {
   if (numeroEntrega === '2' || /(recoger|recojo|recoge|recogerlo|paso por|pasar por|paso a|retiro|retirar|en tienda|en la tienda|tienda f[ií]sica|f[ií]sica|recogida|voy por)/i.test(textoLower)) {
     return preguntarSedeRecogida(pendingCart);
   }
-  // Domicilio
+  // Domicilio: se piden los datos de envío con la plantilla del equipo
   if (numeroEntrega === '1' || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|env[ií]amelo|mandar|m[aá]ndamelo|a mi casa|a casa|entrega|que llegue)/i.test(textoLower)) {
-    return {
-      texto:
-        `📍 Perfecto, ¿a qué dirección te lo enviamos?\n\n` +
-        `Escríbeme la dirección completa con barrio o municipio.\n` +
-        `_Ejemplo: Calle 50 #30-20, Barrio El Poblado, Medellín_\n\n` +
-        `Cubrimos: ${COBERTURA_ENVIOS.join(', ')}`,
-      metadata: { awaiting: 'direccion', pending_cart: pendingCart },
-    };
+    return pedirDatosEnvio(context, pendingCart);
   }
   // No quedó claro (ej. "¿cuánto vale el envío?") → Sofi resuelve la duda,
   // pero seguimos esperando la elección de entrega.
@@ -873,50 +872,67 @@ async function flujoRecogerSede(e: PasoBot): Promise<BotResponse | null> {
 }
 
 /**
- * Estado: esperando dirección
+ * Plantilla de datos del domicilio: la misma que el equipo mandaba a mano.
+ * El teléfono se deja con el del WhatsApp; si el cliente da otro, se usa ese.
  */
-async function flujoDireccion(e: PasoBot): Promise<BotResponse | null> {
-  const { texto, textoLower, ultimoBot, pendingProductId, pendingVariantId, pendingCantidad, pendingCart } = e;
-  // Fuera de cobertura (o lo prefiere): puede cambiar a recoger en tienda
-  if (/(recoger|recojo|recogerlo|en tienda|en la tienda|paso por|pasar por|voy por|retiro|retirar)/i.test(textoLower)) {
-    return preguntarSedeRecogida(pendingCart);
-  }
+function pedirDatosEnvio(context: BotContext, cart: CartItem[], previos: DatosEnvio = {}): BotResponse {
+  const datos: DatosEnvio = { ...previos };
+  const telefono = telefonoDeWhatsApp(context.cliente.telefono);
+  if (!datos.telefono && telefono) datos.telefono = telefono;
+  return {
+    texto:
+      `📦 ¡Perfecto! Para enviarte el pedido, por favor indícame estos datos 🥃\n\n` +
+      `${lineasCampos(CAMPOS_PEDIDOS)}\n\n` +
+      `_Puedes copiar este mensaje y llenarlo._\n` +
+      `🚚 Hacemos domicilio en: ${COBERTURA_ENVIOS.join(', ')}. Llega en ${TIEMPO_ENTREGA}.`,
+    metadata: { awaiting: 'datos_envio', pending_cart: cart, pending_datos_envio: datos },
+  };
+}
 
-  // Respuesta a "¿en qué municipio queda?": se une a la dirección guardada
-  const direccionSinMunicipio: string = ultimoBot?.metadata?.pending_direccion_sin_municipio || '';
-  const direccion = direccionSinMunicipio ? `${direccionSinMunicipio}, ${texto}` : texto;
+/** "Me falta: …" con solo los campos que no ha dado. */
+function textoFaltantes(datos: DatosEnvio): string {
+  const faltan = camposFaltantes(datos);
+  return `Para enviarte el pedido me falta${faltan.length > 1 ? 'n estos datos' : ' este dato'}:\n\n${lineasCampos(faltan)}`;
+}
 
-  // Antes solo exigía 10+ caracteres: "no se todavia" (14) pasaba como
-  // dirección válida y el pedido seguía hasta el link de pago con una
-  // dirección sin sentido. Las direcciones colombianas reales siempre
-  // llevan un número (Calle 50 #30-20, Cra 43 5 Sur-50, etc.).
-  if (!direccionSinMunicipio && (texto.length < 10 || !/\d/.test(texto))) {
-    return {
-      texto: '📍 Por favor escribe la dirección completa con número y ciudad.\n_Ejemplo: Calle 50 #30-20, El Poblado, Medellín_',
-      metadata: { awaiting: 'direccion', pending_cart: pendingCart },
-    };
-  }
+/**
+ * Con los datos que hay: pide lo que falte, valida la zona y, si todo está,
+ * muestra el resumen para confirmar. También lo usa la corrección de un dato
+ * desde el resumen.
+ */
+async function completarDatosEnvio(datosIniciales: DatosEnvio, e: PasoBot): Promise<BotResponse> {
+  const { pendingProductId, pendingVariantId, pendingCantidad, pendingCart } = e;
+  let datos = datosIniciales;
+  const metaDatos = { awaiting: 'datos_envio', pending_cart: pendingCart, pending_datos_envio: datos };
 
   // Validar la zona ANTES del resumen y del link de pago. Antes cualquier
   // dirección pasaba (ej. Guarne): se generaba el link, el cliente pagaba y
-  // solo después, si preguntaba, se le decía que no llegamos hasta allá.
-  const cobertura = evaluarCobertura(direccion, COBERTURA_ENVIOS);
+  // solo después, si preguntaba, se le decía que no llegamos hasta allá. Se
+  // revisa apenas llega la dirección, sin esperar a que dé los demás datos.
   const zona = COBERTURA_ENVIOS.join(', ');
+  const cobertura = datos.direccion ? evaluarCobertura(direccionCompleta(datos), COBERTURA_ENVIOS) : { estado: 'desconocido' as const };
+  if (cobertura.estado !== 'fuera' && camposFaltantes(datos).length) {
+    const nombre = primerNombre(datos.nombre);
+    return { texto: `¡Gracias${nombre ? `, ${nombre}` : ''}! 🙌 ${textoFaltantes(datos)}`, metadata: metaDatos };
+  }
   if (cobertura.estado === 'fuera') {
+    const { direccion: _d, barrio: _b, municipio: _m, ...sinDireccion } = datos;
     return {
       texto:
         `😕 Por ahora no hacemos domicilio a *${cobertura.municipio}*.\n\n` +
         `El domicilio llega a: ${zona}.\n\n` +
-        `Puedes escribirme una dirección dentro de esa zona, o recoger tu pedido en una de nuestras tiendas — escribe *recoger*. 🏪`,
-      metadata: { awaiting: 'direccion', pending_cart: pendingCart },
+        `Puedes escribirme una dirección dentro de esa zona con su barrio, o recoger tu pedido en una de nuestras tiendas — escribe *recoger*. 🏪`,
+      metadata: { ...metaDatos, pending_datos_envio: sinDireccion },
     };
   }
   if (cobertura.estado === 'desconocido') {
     return {
-      texto: `📍 ¿En qué municipio queda esa dirección? Hacemos domicilio en ${zona}.`,
-      metadata: { awaiting: 'direccion', pending_cart: pendingCart, pending_direccion_sin_municipio: direccion },
+      texto: `📍 ¿En qué municipio queda *${direccionCompleta(datos)}*? Hacemos domicilio en ${zona}.`,
+      metadata: { ...metaDatos, pending_pide_municipio: true },
     };
   }
+  if (!datos.municipio) datos = { ...datos, municipio: cobertura.municipio };
+  const direccion = direccionCompleta(datos);
 
   let cart = pendingCart;
   if (cart.length === 0) cart = await carritoDesdePendiente(pendingProductId, pendingVariantId, pendingCantidad);
@@ -938,8 +954,10 @@ async function flujoDireccion(e: PasoBot): Promise<BotResponse | null> {
     ? `Envío: 🎁 *GRATIS*\n`
     : `Envío: ${formatearPrecioCOP(costoEnvio)} _(gratis desde ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)})_\n`;
   resumen += `*TOTAL: ${formatearPrecioCOP(total)}*\n\n`;
-  resumen += `📍 Dirección: ${direccion}\n\n`;
-  resumen += `¿Confirmamos el pedido?\n*SI* para pagar | *NO* para cancelar`;
+  resumen += `${resumenDatosEnvio(datos)}\n`;
+  resumen += `🚚 Llega en ${TIEMPO_ENTREGA} después de confirmar el pago.\n\n`;
+  resumen += `¿Confirmamos el pedido?\n*SI* para pagar | *NO* para cancelar\n`;
+  resumen += `_Si algún dato está mal, escríbeme el correcto._`;
 
   return {
     texto: resumen,
@@ -947,19 +965,70 @@ async function flujoDireccion(e: PasoBot): Promise<BotResponse | null> {
       awaiting: 'confirmacion',
       pending_cart: cart,
       pending_direccion: direccion,
+      pending_datos_envio: datos,
       pending_subtotal: subtotal,
       pending_costo_envio: costoEnvio,
       pending_total: total,
     },
   };
-  return null;
+}
+
+/**
+ * Estado: esperando los datos del domicilio (también atiende los chats que
+ * quedaron esperando solo la dirección antes del cambio)
+ */
+async function flujoDatosEnvio(e: PasoBot): Promise<BotResponse | null> {
+  const { texto, textoLower, ultimoBot, context, pendingCart } = e;
+  if (esCancelacion(textoLower)) {
+    return { texto: '✅ Listo, cancelé tu pedido. Cuando quieras seguimos. 😊', metadata: { awaiting: '', pending_cart: [] } };
+  }
+  // Fuera de cobertura (o lo prefiere): puede cambiar a recoger en tienda
+  if (/(recoger|recojo|recogerlo|en tienda|en la tienda|paso por|pasar por|voy por|retiro|retirar)/i.test(textoLower)) {
+    return preguntarSedeRecogida(pendingCart);
+  }
+
+  const md = ultimoBot?.metadata || {};
+  let previos: DatosEnvio = { ...(md.pending_datos_envio || {}) };
+  // Chat que quedó en "¿en qué municipio queda?" con el paso anterior
+  if (md.pending_direccion_sin_municipio && !previos.direccion) previos.direccion = md.pending_direccion_sin_municipio;
+  const pideMunicipio = !!(md.pending_pide_municipio || md.pending_direccion_sin_municipio);
+  const telefono = telefonoDeWhatsApp(context.cliente.telefono);
+  if (!previos.telefono && telefono) previos = { ...previos, telefono };
+
+  let { datos, nuevos } = extraerDatosEnvio(texto, previos, COBERTURA_ENVIOS);
+  // Respuesta a "¿en qué municipio queda?": "Envigado", "es en Bello"
+  if (pideMunicipio && datos.municipio === previos.municipio && texto.trim().length <= 40 && /\p{L}{3,}/u.test(texto)) {
+    datos = { ...datos, municipio: texto.trim().replace(/^(es |queda )?(en )?/i, '') };
+    nuevos = [...nuevos, 'municipio'];
+  }
+
+  if (!nuevos.length) {
+    // No mandó datos: una pregunta o un comentario. Sofi responde y se le
+    // recuerda lo que falta, sin perder lo que ya dio.
+    const metaDatos = { awaiting: 'datos_envio', pending_cart: pendingCart, pending_datos_envio: previos, ...(pideMunicipio ? { pending_pide_municipio: true } : {}) };
+    const recordatorio = pideMunicipio
+      ? `📍 ¿En qué municipio queda la dirección? Hacemos domicilio en ${COBERTURA_ENVIOS.join(', ')}.`
+      : textoFaltantes(previos);
+    if (USE_AI) {
+      const r = await procesarMensajeSofi(texto, context, pendingCart);
+      if ((r as any).accion === 'transferir_a_asesor') return r;
+      const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
+      if (ajuste) return ajuste;
+      if (!r.accion && !r.metadata?.awaiting) return { texto: `${r.texto}\n\n${recordatorio}`, metadata: metaDatos };
+      return r;
+    }
+    return { texto: recordatorio, metadata: metaDatos };
+  }
+  return await completarDatosEnvio(datos, e);
 }
 
 /**
  * Estado: esperando confirmación final del pedido
  */
 async function flujoConfirmacion(e: PasoBot): Promise<BotResponse | null> {
-  const { texto, textoLower, context, pendingProductId, pendingVariantId, pendingCantidad, pendingDireccion, pendingCart, pendingTotal, pendingSubtotal, pendingCostoEnvio } = e;
+  const { texto, textoLower, context, ultimoBot, pendingProductId, pendingVariantId, pendingCantidad, pendingDireccion, pendingCart, pendingTotal, pendingSubtotal, pendingCostoEnvio } = e;
+  // Datos del domicilio (nombre, cédula, correo…): viajan hasta el link de pago y el pedido
+  const datosEnvio: DatosEnvio | undefined = ultimoBot?.metadata?.pending_datos_envio || undefined;
   if (esConfirmacion(textoLower)) {
     let cart = pendingCart;
     if (cart.length === 0) cart = await carritoDesdePendiente(pendingProductId, pendingVariantId, pendingCantidad);
@@ -977,11 +1046,19 @@ async function flujoConfirmacion(e: PasoBot): Promise<BotResponse | null> {
         awaiting: 'link_enviado',
         pending_cart: cart,
         pending_direccion: pendingDireccion,
+        ...(datosEnvio ? { pending_datos_envio: datosEnvio } : {}),
         pending_subtotal: subtotal,
         pending_costo_envio: costoEnvio,
         pending_total: total,
       },
     };
+  }
+  // Corrige un dato desde el resumen ("la cédula es 43567890", otro correo,
+  // otra dirección): se actualiza y se vuelve a mostrar el resumen. Va antes
+  // del "no" para que "no, mi cédula es…" no cancele el pedido.
+  if (datosEnvio) {
+    const { datos, nuevos } = extraerDatosEnvio(texto, datosEnvio, COBERTURA_ENVIOS);
+    if (nuevos.length) return await completarDatosEnvio(datos, e);
   }
   if (esNegacion(textoLower) || esCancelacion(textoLower)) {
     return {
@@ -995,6 +1072,7 @@ async function flujoConfirmacion(e: PasoBot): Promise<BotResponse | null> {
     awaiting: 'confirmacion',
     pending_cart: pendingCart,
     pending_direccion: pendingDireccion,
+    ...(datosEnvio ? { pending_datos_envio: datosEnvio } : {}),
     pending_subtotal: pendingSubtotal,
     pending_costo_envio: pendingCostoEnvio,
     pending_total: pendingTotal,
@@ -1119,7 +1197,8 @@ const FLUJOS: Record<string, (e: PasoBot) => Promise<BotResponse | null>> = {
   carrito: flujoCarrito,
   tipo_entrega: flujoTipoEntrega,
   recoger_sede: flujoRecogerSede,
-  direccion: flujoDireccion,
+  direccion: flujoDatosEnvio,
+  datos_envio: flujoDatosEnvio,
   confirmacion: flujoConfirmacion,
   link_enviado: flujoLinkEnviado,
 };
@@ -1469,7 +1548,7 @@ function textoEstadoPedido(order: any, fila?: any): string {
     ? '🏪 Entregado en tienda'
     : `🏪 Para recoger en *${dirTexto ? nombreSedeDesdeDireccion(dirTexto) : 'la sede elegida'}*. Te avisamos por aquí cuando esté listo.`;
   else if (fulStatus === 'fulfilled') entrega = fulfillment?.shipment_status === 'delivered' ? '✅ Entregado' : '🚚 Despachado: va en camino';
-  else if (finStatus === 'paid') entrega = '📦 En preparación. Los envíos llegan en 24 a 48 horas.';
+  else if (finStatus === 'paid') entrega = `📦 En preparación. Los envíos llegan en ${TIEMPO_ENTREGA} desde la confirmación del pago.`;
   else entrega = '⏳ Pendiente de pago';
 
   let texto =
@@ -1900,7 +1979,7 @@ function respuestaEnvio(cart: CartItem[] = []): BotResponse {
         ? `🎁 Envío *GRATIS*, sin monto mínimo\n\n`
         : `💵 Costo de envío: ${formatearPrecioCOP(COSTO_ENVIO)}\n` +
           `🎁 *GRATIS* en compras mayores a ${formatearPrecioCOP(ENVIO_GRATIS_DESDE)}\n\n`) +
-      `⏰ Entregas L-S en 24-48 horas\n\n` +
+      `⏰ Entrega en ${TIEMPO_ENTREGA} después de confirmar el pago\n\n` +
       `¿Necesitas algo más? Cuéntame. 😊` + avisoCarrito,
     metadata: { awaiting: cart.length > 0 ? 'carrito' : '', pending_cart: cart },
   };

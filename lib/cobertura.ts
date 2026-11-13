@@ -48,6 +48,20 @@ const BARRIOS_MEDELLIN = [
   'Loma de los Bernal', 'Los Colores', 'Manila', 'Castropol', 'El Tesoro',
 ];
 
+/**
+ * Tiempo de entrega que se le promete al cliente, desde la confirmación del
+ * pago. Pedido del equipo (13 nov): con más pedidos no se puede prometer el
+ * mismo día ni el siguiente. Se usa en Sofi, en las respuestas del bot y en la
+ * confirmación del pago: cambiarlo aquí lo cambia en todas partes.
+ */
+export const TIEMPO_ENTREGA = '3 a 5 días hábiles';
+
+/** El texto es exactamente el nombre de un municipio conocido (dentro o fuera de la zona). */
+export function esNombreDeMunicipio(texto: string, cobertura: string[] = []): boolean {
+  const t = normalizar(texto);
+  return !!t && [...cobertura, ...FUERA_DE_ZONA, 'Medellín'].some((m) => normalizar(m) === t);
+}
+
 export type ResultadoCobertura =
   | { estado: 'dentro'; municipio: string }
   | { estado: 'fuera'; municipio: string }

@@ -95,7 +95,9 @@ describe('Sesión del CRM', () => {
     const [carga, firma] = valor.split('.');
     const falsa = Buffer.from(JSON.stringify({ sub: 'x', email: 'intruso', exp: 9_999_999_999 })).toString('base64url');
     expect(await leerSesion(`${falsa}.${firma}`)).toBeNull();
-    expect(await leerSesion(`${carga}.${firma.slice(0, -2)}AA`)).toBeNull();
+    // Siempre distinta: si la firma ya terminaba en "AA", la "alterada" era la misma
+    const otraCola = firma.endsWith('AA') ? 'BB' : 'AA';
+    expect(await leerSesion(`${carga}.${firma.slice(0, -2)}${otraCola}`)).toBeNull();
     expect(await leerSesion('commerk_auth=1')).toBeNull();
   });
   it('compara secretos sin aceptar vacíos', () => {

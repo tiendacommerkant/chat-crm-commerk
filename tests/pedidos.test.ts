@@ -75,7 +75,9 @@ describe('Estado del pedido', () => {
     sim.porId.mockResolvedValue(pedido2692);
     const r = await procesarMensajeBot('ya enviaron mi pedido?', contexto());
     expect(r.texto).toMatch(/En preparación/);
-    expect(r.texto).toMatch(/24 a 48 horas/);
+    // Pedido del equipo (13 nov): nunca prometer 24-48 horas
+    expect(r.texto).toMatch(/3 a 5 días hábiles/);
+    expect(r.texto).not.toMatch(/24 a 48|mañana/);
   });
 
   it('sin pedido en el CRM lo busca en Shopify por el celular', async () => {

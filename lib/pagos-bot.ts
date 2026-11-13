@@ -10,12 +10,14 @@ import { supabaseAdmin, actualizarEstadoVenta } from './supabase';
 import { crearPedidoShopifyMultiItem, formatearPrecioCOP } from './shopify';
 import { enviarMensajeWhatsApp } from './whatsapp';
 import { esIdUsuarioWhatsApp } from './whatsapp-id';
-import { enviarConfirmacionPago, enviarPedidoRecogerSede } from './whatsapp-templates';
+import { enviarConfirmacionPago, enviarPedidoRecogerSede, PLANTILLA_CONFIRMACION_PAGO } from './whatsapp-templates';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from './sedes';
 import { registrarEvento } from './eventos';
 import { REGALO, regaloAplica, varianteRegaloDisponible } from './temporada';
 import { SEPARADOR_VARIANTE } from './variantes';
 import { primerNombre } from './nombre';
+import { TIEMPO_ENTREGA } from './cobertura';
+import { CORREO_VALIDO, type DatosEnvio } from './bot/datos-envio';
 import type { WompiWebhookEvent } from '@/types';
 
 export type TransaccionWompi = WompiWebhookEvent['data']['transaction'];
@@ -44,6 +46,21 @@ async function ventasDeTransaccion(transaction: TransaccionWompi) {
   return data || [];
 }
 
+/**
+ * Datos del domicilio que el cliente dio en el chat. Viajan en el mensaje del
+ * link de pago (metadata.datos_envio, con la misma referencia), así no hace
+ * falta una columna nueva en ventas.
+ */
+async function datosEnvioDeLaVenta(conversacionId: string | null, reference: string): Promise<DatosEnvio | null> {
+  if (!conversacionId) return null;
+  const { data } = await supabaseAdmin.from('mensajes').select('metadata')
+    .eq('conversacion_id', conversacionId)
+    .eq('metadata->>referencia_pago', reference)
+    .order('created_at', { ascending: false })
+    .limit(5);
+  return ((data as any[]) || []).map((m) => m?.metadata?.datos_envio).find(Boolean) || null;
+}
+
 // Procesamiento en background — no bloquea la respuesta al webhook
 export async function procesarTransaccionBot(transaction: TransaccionWompi) {
 
@@ -68,8 +85,13 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
 
   const cliente = ventas[0].cliente as any;
   const telefono: string = cliente?.telefono || '';
-  const nombreCliente: string = cliente?.nombre || '';
   const conversacionId: string | null = ventas[0].conversacion_id || null;
+  // Nombre, cédula, correo, barrio y factura que el cliente dio en el chat
+  const datosEnvio = await datosEnvioDeLaVenta(conversacionId, reference);
+  const nombreCliente: string = datosEnvio?.nombre || cliente?.nombre || '';
+  const correoCliente: string | null = datosEnvio?.correo && CORREO_VALIDO.test(datosEnvio.correo)
+    ? datosEnvio.correo
+    : cliente?.email || null;
   const direccionEnvio: string = (ventas[0] as any).direccion_envio || 'Sin especificar';
 
   // ¿El cliente eligió recoger en tienda?
@@ -116,6 +138,10 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
     }));
     if (regalo) itemsPedido.push({ productoShopifyId: REGALO.productoShopifyId, cantidad: 1, productoNombre: `${REGALO.nombre}${SEPARADOR_VARIANTE}${regalo.title}`, precioUnitario: 0 });
     const resumenProductos = ventas.map((v) => `${v.producto_nombre} × ${v.cantidad}`).join(', ') + (regalo ? ` + ${REGALO.nombreCorto} (regalo)` : '');
+    // Línea de entrega de la confirmación (una sola línea: WhatsApp no acepta saltos en un campo)
+    const entregaConfirmacion = recogida
+      ? `queda listo para recoger en ${nombreSede}; te avisamos por aquí`
+      : `llega en ${TIEMPO_ENTREGA}; te avisamos por aquí cuando salga`;
     const [shopifyResult] = await Promise.allSettled([
       crearPedidoShopifyMultiItem({
         items: itemsPedido,
@@ -123,12 +149,13 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
         // Un cliente con nombre de usuario no tiene número: Shopify rechaza
         // un "teléfono" con formato de ID de usuario y el pedido no se crearía.
         clienteTelefono: esIdUsuarioWhatsApp(telefono) ? '' : telefono,
-        clienteEmail: cliente?.email || null,
+        clienteEmail: correoCliente,
         direccionEnvio,
+        datosEnvio: recogida ? null : datosEnvio,
         referenciaPago: reference,
         metodoPago: transaction.payment_method_type,
       }),
-      telefono ? enviarConfirmacionPago(telefono, nombreCliente, resumenProductos, formatearPrecioCOP(totalPedido)) : Promise.resolve(),
+      telefono ? enviarConfirmacionPago(telefono, nombreCliente, resumenProductos, formatearPrecioCOP(totalPedido), entregaConfirmacion) : Promise.resolve(),
     ]);
 
     const orderNumber = shopifyResult.status === 'fulfilled' ? (shopifyResult.value as any)?.orderNumber : null;
@@ -145,7 +172,7 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
         shopify_order_id: (shopifyResult as any).value?.orderId,
         shopify_order_number: String(orderNumber),
         cliente_id: cliente?.id || null,
-        email: cliente?.email || null,
+        email: correoCliente,
         telefono: telefono || null,
         nombre_cliente: nombreCliente || 'Cliente WhatsApp',
         total: totalPedido,
@@ -159,7 +186,18 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
           ...(regalo ? [{ title: `${REGALO.nombre}${SEPARADOR_VARIANTE}${regalo.title}`, quantity: 1, price: 0 }] : []),
         ],
         // origen y referencia: Ventas y el panel saben que es la misma compra que la fila de `ventas`
-        direccion_envio: { address1: direccionEnvio, origen: 'bot', referencia_pago: reference },
+        direccion_envio: {
+          address1: datosEnvio?.direccion && !recogida ? datosEnvio.direccion : direccionEnvio,
+          ...(datosEnvio && !recogida ? {
+            address2: datosEnvio.barrio ? `Barrio ${datosEnvio.barrio}` : undefined,
+            city: datosEnvio.municipio,
+            phone: datosEnvio.telefono,
+            cedula: datosEnvio.cedula,
+            factura_electronica: datosEnvio.factura === 'SI',
+          } : {}),
+          origen: 'bot',
+          referencia_pago: reference,
+        },
         shopify_created_at: ahora,
         notificado_whatsapp: true,
         updated_at: ahora,
@@ -174,7 +212,7 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
         .join('\n') + (regalo ? `\n🎁 *${REGALO.nombreCorto}* × 1 (regalo)` : '');
       const cierre = recogida
         ? `\n🏪 Tu pedido quedará *listo para recoger en ${nombreSede}*. Te avisamos apenas puedas pasar. ¡Gracias! 🎉`
-        : `\n🚚 Te enviaremos tu pedido en las próximas 24-48 horas. ¡Gracias! 🎉`;
+        : `\n🚚 Tu pedido llega en ${TIEMPO_ENTREGA}. Te avisamos por aquí cuando salga. ¡Gracias! 🎉`;
       const msgConfirmacion =
         `✅ *¡Pago confirmado!*\n\n` +
         `Hola ${primerNombre(nombreCliente) || 'amigo'}, recibimos tu pago correctamente.\n\n` +
@@ -190,7 +228,7 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
           contenido: msgConfirmacion,
           metadata: {
             tipo_wa: 'template',
-            plantilla: 'confirmacion_pago',
+            plantilla: PLANTILLA_CONFIRMACION_PAGO,
             evento: 'pago_confirmado',
             referencia_pago: reference,
             shopify_order_number: orderNumber || null,

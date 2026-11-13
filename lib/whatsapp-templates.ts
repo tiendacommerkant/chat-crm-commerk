@@ -4,6 +4,7 @@
 
 import { registrarEnvioPlantilla } from './costos';
 import { WHATSAPP_GRAPH_VERSION, destinatarioWhatsApp } from './whatsapp';
+import { TIEMPO_ENTREGA } from './cobertura';
 
 const WA_API = `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
 const TOKEN = process.env.WHATSAPP_ACCESS_TOKEN!;
@@ -37,15 +38,33 @@ async function enviarPlantilla(telefono: string, templateName: string, component
 }
 
 /**
- * confirmacion_pago — UTILITY
- * {{1}}=nombre, {{2}}=producto, {{3}}=total
+ * Plantilla de confirmación del pago. La anterior (confirmacion_pago) dice
+ * "Lo despachamos en las próximas 24-48 horas" y el equipo pidió no prometer
+ * menos de 3 a 5 días hábiles: esta lleva la entrega como campo.
+ */
+export const PLANTILLA_CONFIRMACION_PAGO = 'pago_confirmado';
+
+/**
+ * pago_confirmado — UTILITY
+ * {{1}}=nombre, {{2}}=producto, {{3}}=total, {{4}}=entrega
+ *   ("llega en 3 a 5 días hábiles; te avisamos por aquí cuando salga")
+ * Si Meta todavía no la aprueba (o falla), sale la anterior para que el
+ * cliente reciba su confirmación de todas formas.
  */
 export async function enviarConfirmacionPago(
   telefono: string,
   nombre: string,
   producto: string,
-  total: string
+  total: string,
+  entrega = `llega en ${TIEMPO_ENTREGA}; te avisamos por aquí cuando salga`
 ): Promise<boolean> {
+  const enviada = await enviarPlantilla(telefono, PLANTILLA_CONFIRMACION_PAGO, [
+    {
+      type: 'body',
+      parameters: [nombre || 'Cliente', producto, total, entrega].map((text) => ({ type: 'text', text })),
+    },
+  ]);
+  if (enviada) return true;
   return enviarPlantilla(telefono, 'confirmacion_pago', [
     {
       type: 'body',

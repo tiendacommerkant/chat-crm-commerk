@@ -4,6 +4,7 @@
 
 import type { ShopifyProduct } from '@/types';
 import { SEPARADOR_VARIANTE, type Variante } from './variantes';
+import { CORREO_VALIDO, type DatosEnvio } from './bot/datos-envio';
 
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE!;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
@@ -462,6 +463,8 @@ export async function crearPedidoShopifyMultiItem(params: {
   clienteTelefono: string;
   clienteEmail?: string | null;
   direccionEnvio: string;
+  /** Datos del domicilio que el cliente dio en el chat (cédula, barrio, factura…) */
+  datosEnvio?: DatosEnvio | null;
   referenciaPago: string;
   metodoPago?: string;
 }): Promise<{ success: boolean; orderId?: number; orderNumber?: number; error?: string }> {
@@ -494,9 +497,21 @@ export async function crearPedidoShopifyMultiItem(params: {
       return { success: false, error: 'Ningún producto válido para el pedido' };
     }
 
-    const nombreParts = (params.clienteNombre || 'Cliente WhatsApp').split(' ');
+    const d = params.datosEnvio || null;
+    const nombreParts = (d?.nombre || params.clienteNombre || 'Cliente WhatsApp').split(' ');
     const firstName = nombreParts[0] || 'Cliente';
     const lastName = nombreParts.slice(1).join(' ') || 'WhatsApp';
+    // Un correo mal escrito hace que Shopify rechace el pedido completo
+    const correo = [d?.correo, params.clienteEmail].find((c) => !!c && CORREO_VALIDO.test(c)) || undefined;
+    const telefonoEntrega = d?.telefono || params.clienteTelefono || undefined;
+    // Lo que el equipo necesita para despachar y facturar, visible en el pedido
+    const detalles = d ? [
+      d.cedula && { name: 'Cédula', value: d.cedula },
+      d.factura && { name: 'Factura electrónica', value: d.factura === 'SI' ? 'SÍ' : 'NO' },
+      d.correo && { name: 'Correo', value: d.correo },
+      d.telefono && { name: 'Teléfono de contacto', value: d.telefono },
+      d.barrio && { name: 'Barrio', value: d.barrio },
+    ].filter(Boolean) as Array<{ name: string; value: string }> : [];
 
     const orderPayload = {
       order: {
@@ -505,22 +520,27 @@ export async function crearPedidoShopifyMultiItem(params: {
           first_name: firstName,
           last_name: lastName,
           phone: params.clienteTelefono || undefined,
-          email: params.clienteEmail || undefined,
+          email: correo,
         },
         shipping_address: {
           first_name: firstName,
           last_name: lastName,
-          address1: params.direccionEnvio,
-          phone: params.clienteTelefono || undefined,
+          address1: d?.direccion || params.direccionEnvio,
+          ...(d?.barrio ? { address2: `Barrio ${d.barrio}` } : {}),
+          ...(d?.municipio ? { city: d.municipio, province: 'Antioquia' } : {}),
+          phone: telefonoEntrega,
           country: 'CO',
           country_code: 'CO',
         },
+        ...(correo ? { email: correo } : {}),
+        ...(detalles.length ? { note_attributes: detalles } : {}),
         financial_status: 'paid',
         // Descuenta el inventario (por defecto la API no lo hace); sin bloquear si
         // el stock quedó en cero: el cliente ya pagó y el pedido debe existir
         inventory_behaviour: 'decrement_ignoring_policy',
-        tags: `whatsapp,bot,ref:${params.referenciaPago}`,
-        note: `Venta por WhatsApp Bot | Pago: ${params.metodoPago || 'Wompi'} | Ref: ${params.referenciaPago}`,
+        tags: `whatsapp,bot,ref:${params.referenciaPago}${d?.factura === 'SI' ? ',factura-electronica' : ''}`,
+        note: `Venta por WhatsApp Bot | Pago: ${params.metodoPago || 'Wompi'} | Ref: ${params.referenciaPago}` +
+          (d ? ` | CC: ${d.cedula || '—'} | Factura electrónica: ${d.factura === 'SI' ? 'SÍ' : 'NO'}` : ''),
         send_receipt: false,
         send_fulfillment_receipt: false,
       },
