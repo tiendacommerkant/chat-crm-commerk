@@ -1,8 +1,9 @@
 // ============================================
 // PAGOS DEL BOT — qué pasa cuando Wompi aprueba (o rechaza) un pago
 // ============================================
-// Marca las ventas, crea el pedido en Shopify, confirma al cliente por
-// WhatsApp y avisa a la sede si es recogida. Lo llama el webhook de Wompi y
+// Marca las ventas, crea el pedido en Shopify y confirma al cliente por
+// WhatsApp. Una recogida en tienda queda en Estado del sistema (ya no se le
+// escribe a la sede: lo coordina el equipo). Lo llama el webhook de Wompi y
 // también el bot cuando el cliente dice "ya pagué" y el pago aparece aprobado
 // al consultar Wompi (red de seguridad si el webhook falló).
 
@@ -10,8 +11,8 @@ import { supabaseAdmin, actualizarEstadoVenta } from './supabase';
 import { crearPedidoShopifyMultiItem, formatearPrecioCOP } from './shopify';
 import { enviarMensajeWhatsApp } from './whatsapp';
 import { esIdUsuarioWhatsApp } from './whatsapp-id';
-import { enviarConfirmacionPago, enviarPedidoRecogerSede, PLANTILLA_CONFIRMACION_PAGO } from './whatsapp-templates';
-import { esRecogidaEnTienda, nombreSedeDesdeDireccion, buscarTelefonoSede } from './sedes';
+import { enviarConfirmacionPago, PLANTILLA_CONFIRMACION_PAGO } from './whatsapp-templates';
+import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from './sedes';
 import { registrarEvento } from './eventos';
 import { REGALO, regaloAplica, varianteRegaloDisponible } from './temporada';
 import { SEPARADOR_VARIANTE } from './variantes';
@@ -249,42 +250,14 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
       ]);
     }
 
-    // 4. Si es recogida en tienda, avisar a la sede para que tengan el pedido listo
+    // 4. Recogida en tienda: ya NO se le escribe a la sede por WhatsApp
+    // (decisión del equipo, 17 nov: el chat no se pasa a las tiendas). El
+    // equipo de ecommerce la ve en Estado del sistema y en Shopify (etiqueta
+    // recoger-en-tienda) y coordina la entrega con la sede.
     if (recogida && nombreSede) {
-      const telSede = buscarTelefonoSede(nombreSede);
-      if (telSede) {
-        const detalleProductos = ventas
-          .map((v) => `${v.producto_nombre} × ${v.cantidad}`)
-          .join(', ');
-        const totalFmt = formatearPrecioCOP(totalPedido);
-        const pedidoRef = shopifyOrderNum || reference;
-
-        // Plantilla (llega siempre, incluso fuera de la ventana de 24h)
-        const okPlantilla = await enviarPedidoRecogerSede(
-          telSede,
-          nombreSede,
-          nombreCliente || 'Cliente',
-          `+${telefono}`,
-          detalleProductos,
-          totalFmt,
-          pedidoRef
-        ).catch(() => false);
-
-        // Fallback a texto libre si la plantilla aún no está aprobada/disponible
-        if (!okPlantilla) {
-          const msgSede =
-            `🏪 *Nuevo pedido para RECOGER en ${nombreSede}*\n\n` +
-            `👤 Cliente: ${nombreCliente || 'Sin nombre'}\n` +
-            `📱 Tel: +${telefono}\n\n` +
-            `${ventas.map((v) => `• ${v.producto_nombre} × ${v.cantidad}`).join('\n')}\n` +
-            `💵 Total pagado: *${totalFmt}*\n` +
-            (shopifyOrderNum ? `🔢 Pedido: *${shopifyOrderNum}*\n` : '') +
-            `\n✅ *Pago confirmado por Wompi.* Por favor deja el pedido listo para entrega.`;
-          await enviarMensajeWhatsApp(telSede, msgSede).catch((e) =>
-            console.error('[Wompi] Error notificando a sede:', e?.message)
-          );
-        }
-      }
+      await registrarEvento('info', 'pedidos',
+        `Pedido ${shopifyOrderNum || reference} para recoger en ${nombreSede}: ${nombreCliente || 'Cliente'} · ${formatearPrecioCOP(totalPedido)}. Coordinar la entrega con la sede.`,
+        { referencia: reference, sede: nombreSede });
     }
 
   } else if (transaction.status === 'DECLINED' || transaction.status === 'VOIDED') {

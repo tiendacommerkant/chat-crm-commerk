@@ -5,6 +5,7 @@
 import type { ShopifyProduct } from '@/types';
 import { SEPARADOR_VARIANTE, type Variante } from './variantes';
 import { CORREO_VALIDO, type DatosEnvio } from './bot/datos-envio';
+import { PREFIJO_RECOGIDA } from './sedes';
 
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE!;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
@@ -538,7 +539,7 @@ export async function crearPedidoShopifyMultiItem(params: {
         // Descuenta el inventario (por defecto la API no lo hace); sin bloquear si
         // el stock quedó en cero: el cliente ya pagó y el pedido debe existir
         inventory_behaviour: 'decrement_ignoring_policy',
-        tags: `whatsapp,bot,ref:${params.referenciaPago}${d?.factura === 'SI' ? ',factura-electronica' : ''}`,
+        tags: `whatsapp,bot,ref:${params.referenciaPago}${d?.factura === 'SI' ? ',factura-electronica' : ''}${params.direccionEnvio.startsWith(PREFIJO_RECOGIDA) ? ',recoger-en-tienda' : ''}`,
         note: `Venta por WhatsApp Bot | Pago: ${params.metodoPago || 'Wompi'} | Ref: ${params.referenciaPago}` +
           (d ? ` | CC: ${d.cedula || '—'} | Factura electrónica: ${d.factura === 'SI' ? 'SÍ' : 'NO'}` : ''),
         send_receipt: false,
