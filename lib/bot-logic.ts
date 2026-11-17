@@ -798,6 +798,16 @@ async function flujoTipoEntrega(e: PasoBot): Promise<BotResponse | null> {
   if (numeroEntrega === '2' || /(recoger|recojo|recoge|recogerlo|paso por|pasar por|paso a|retiro|retirar|en tienda|en la tienda|tienda f[ií]sica|f[ií]sica|recogida|voy por)/i.test(textoLower)) {
     return preguntarSedeRecogida(pendingCart);
   }
+  // "¿Puedo pagar contra entrega?" es una pregunta de pago, no la elección del
+  // domicilio (antes "entrega" le mandaba la plantilla de datos). Como con el
+  // link de pago: la atiende un asesor, que puede darle otra opción.
+  if (/(contra ?entrega|pag(ar|o) al recibir|en efectivo|efectivo|transferencia|consignaci[oó]n|consignar|dat[aá]fono)/i.test(textoLower)) {
+    return {
+      texto: 'Entiendo 🙌 Te paso con un asesor de Tienda Commerk para ayudarte con el pago y ver la mejor opción para ti. Te escribe por aquí mismo.',
+      accion: 'transferir_a_asesor',
+      metadata: { awaiting: '', pending_cart: pendingCart, motivo_transferencia: 'pago' },
+    };
+  }
   // Domicilio: se piden los datos de envío con la plantilla del equipo
   if (numeroEntrega === '1' || /(domicilio|env[ií]o|env[ií]en|env[ií]ar|env[ií]amelo|mandar|m[aá]ndamelo|a mi casa|a casa|entrega|que llegue)/i.test(textoLower)) {
     return pedirDatosEnvio(context, pendingCart);

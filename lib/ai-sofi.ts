@@ -146,6 +146,20 @@ export async function procesarMensajeSofi(
       role: m.tipo === 'user' ? ('user' as const) : ('assistant' as const),
       content: m.contenido,
     }));
+  // El webhook guarda el mensaje antes de leer el historial: si el último es
+  // el mismo que se va a mandar, no se repite
+  const ultimo = historial[historial.length - 1];
+  if (ultimo?.role === 'user' && ultimo.content.trim() === mensaje.trim()) historial.pop();
+
+  // Fotos del cliente (lib/imagenes-whatsapp.ts): van en su mensaje para que Sofi las vea
+  const imagenes = context.imagenes || [];
+  const textoCliente = mensaje.trim() && mensaje.trim() !== '📷 Imagen' ? mensaje : 'Te envío esta imagen.';
+  const contenidoCliente: Anthropic.MessageParam['content'] = imagenes.length
+    ? [
+        ...imagenes.map((i) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: i.media_type, data: i.data } })),
+        { type: 'text' as const, text: textoCliente },
+      ]
+    : mensaje;
 
   const nombre = primerNombre(context.cliente.nombre);
   const sede   = context.cliente.sede_preferida ?? null;
@@ -221,6 +235,7 @@ REGLAS
 - Si algo está agotado, ofrece de inmediato una alternativa disponible parecida.
 - Solo vendemos a mayores de 18 años; si hay señales claras de que es menor, no continúes la venta.
 - Si no sabes un dato puntual que NO es crítico para decidir la compra (horario exacto de una sede, fotos del producto, detalles de añejamiento que no estén en la descripción, beneficios de un programa VIP, etc.), dilo con honestidad en una frase corta y sigue ayudando con lo que sí sabes (recomendaciones, precios, disponibilidad). NUNCA ofrezcas conectar con un asesor por esto: la conversación se pausa esperando a esa persona y el cliente puede quedar sin respuesta. Reserva "transferir" solo para lo que de verdad necesita una persona (ver REGLA de transferir abajo).
+- IMÁGENES QUE MANDA EL CLIENTE: SÍ puedes verlas cuando vienen en su mensaje. Si es el pantallazo de una publicación nuestra o la foto de un producto, identifícalo en el CATÁLOGO por lo que se ve (nombre o texto de la imagen, marca, botella, estuche, accesorios del kit) y responde con su nombre exacto y precio; si quiere llevarlo, usa "iniciar_compra" con ese producto. Si se parece a varios, nombra los 1 o 2 más parecidos con su precio y pregunta cuál es. Si es una ANCHETA armada (caja con licor y pasabocas, "Arma tu ancheta"), dile que la arma a su gusto en https://tiendacommerkant.com.co/pages/arma-tu-ancheta y que el precio depende de lo que lleve; no inventes un precio. Si la imagen no es de un producto (comprobante, documento, otra cosa), di brevemente qué ves y ayúdale. NUNCA digas que no puedes ver imágenes ni pidas que te describa lo que ya está claro en la foto. Cuando el cliente MANDA una imagen no uses "enviar_foto" (eso es para cuando PIDE ver una foto).
 - Si el cliente saluda o retoma la charla y hay productos en CARRITO ACTUAL, salúdalo cálido (por su nombre si lo sabes) y retoma ese carrito con naturalidad, ej. "¡Hola de nuevo! Todavía tienes el [producto] esperándote, ¿lo terminamos o prefieres ver algo más?". Nunca listes opciones tipo menú.
 
 TU DECISIÓN (elige UNA acción):
@@ -309,9 +324,11 @@ RESPONDE SOLO JSON:
         ],
         messages: [
           ...historial,
-          { role: 'user', content: mensaje },
+          { role: 'user', content: contenidoCliente },
         ],
       },
+      // Con una foto la IA tarda un poco más en responder
+      imagenes.length ? { timeout: 25_000 } : undefined,
     );
 
     // Registrar consumo real de tokens para el panel de costos (no bloquea)

@@ -277,6 +277,9 @@ export interface BotContext {
   // Estado guardado de la conversación (tabla estado_conversacion). Si no
   // viene, el bot lo deduce del último mensaje suyo como antes.
   estado?: { datos: Record<string, any>; updated_at: string } | null;
+  // Fotos que el cliente acaba de mandar (pantallazo de una publicación, foto
+  // de un producto): Sofi las ve. Ver lib/imagenes-whatsapp.ts
+  imagenes?: Array<{ media_type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'; data: string }>;
 }
 
 export interface BotResponse {

@@ -16,6 +16,7 @@ import { generarLinkPagoWompi } from '@/lib/wompi';
 import { formatearPrecioCOP } from '@/lib/shopify';
 import { esRecogidaEnTienda, nombreSedeDesdeDireccion } from '@/lib/sedes';
 import { CORREO_VALIDO, type DatosEnvio } from '@/lib/bot/datos-envio';
+import { descargarImagenWhatsApp, fotoAnteriorDelCliente, type ImagenCliente } from '@/lib/imagenes-whatsapp';
 import { pasarAPendiente, devolverAlBot, asesorInactivo, HORAS_ASESOR_INACTIVO, HORAS_ESPERA_PLANTILLA } from '@/lib/atencion';
 import { obtenerHorario, avisoFueraDeHorario } from '@/lib/horario';
 import { registrarEvento } from '@/lib/eventos';
@@ -291,17 +292,29 @@ export async function POST(req: Request) {
           // Si el agente tomó control manual, no responder con bot
           if (!botActivo) continue;
 
-          // El bot responde texto, respuestas interactivas, botones de plantilla y
-          // fotos con texto ("qué precio tiene esta ancheta" + pantallazo: se atiende el texto)
+          // Foto o PDF sin texto después del link de pago: casi siempre es el
+          // comprobante. Antes todo recibía el saludo genérico y el cliente quedaba sin saber nada.
+          const conCaption = String(metadata.caption || '').trim().length >= 3;
+          const esperandoPago = ['image', 'document'].includes(msgType) && !conCaption &&
+            (await leerEstadoConversacion(conversacion.id))?.datos?.awaiting === 'link_enviado';
+
+          // Sofi VE las fotos que manda el cliente (pantallazo de una publicación,
+          // foto de un producto). Antes recibía solo "📷 Imagen" y el bot respondía
+          // con un mensaje fijo: con Nora terminó en "no logro ver bien la foto".
+          const imagenes: ImagenCliente[] = [];
+          if (msgType === 'image' && metadata.media_id && !esperandoPago) {
+            const img = await descargarImagenWhatsApp(metadata.media_id);
+            if (img) imagenes.push(img);
+          }
+
+          // El bot responde texto, respuestas interactivas, botones de plantilla,
+          // fotos (las ve Sofi) y documentos o videos con texto
           const conTexto = ['text', 'interactive', 'button'].includes(msgType) ||
-            (['image', 'document', 'video'].includes(msgType) && String(metadata.caption || '').trim().length >= 3);
+            (['image', 'document', 'video'].includes(msgType) && conCaption) ||
+            imagenes.length > 0;
           if (!conTexto) {
             // Un sticker no necesita respuesta
             if (msgType === 'sticker') continue;
-            // Foto o PDF después del link de pago: casi siempre es el comprobante.
-            // Antes todo recibía el saludo genérico y el cliente quedaba sin saber nada.
-            const esperandoPago = ['image', 'document'].includes(msgType) &&
-              (await leerEstadoConversacion(conversacion.id))?.datos?.awaiting === 'link_enviado';
             let msgAcuse = esperandoPago
               ? '🧾 ¡Gracias! Recibimos tu comprobante. El pago se confirma solo con Wompi en pocos minutos y te avisamos por aquí mismo con el número de tu pedido.'
               : msgType === 'audio'
@@ -319,8 +332,14 @@ export async function POST(req: Request) {
           }
 
           const historial = await obtenerHistorialMensajes(conversacion.id, 15);
+          // "¿Cuánto vale?" o "ese mismo" justo después de mandar una foto: Sofi la mira
+          if (!imagenes.length && msgType === 'text') {
+            const fotoAnterior = fotoAnteriorDelCliente(historial);
+            const img = fotoAnterior ? await descargarImagenWhatsApp(fotoAnterior) : null;
+            if (img) imagenes.push(img);
+          }
           const estado = await leerEstadoConversacion(conversacion.id);
-          const contexto: BotContext = { cliente, conversacion, mensajes_previos: historial, estado };
+          const contexto: BotContext = { cliente, conversacion, mensajes_previos: historial, estado, ...(imagenes.length ? { imagenes } : {}) };
           const respuesta = await procesarMensajeBot(texto, contexto);
           await guardarEstadoConversacion(conversacion.id, respuesta.metadata);
 

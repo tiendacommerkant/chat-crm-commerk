@@ -209,6 +209,14 @@ describe('Compra completa a domicilio', () => {
     expect(ultima.texto).toMatch(/Cédula/);
   });
 
+  // Caso Hábitat (14 nov): "entrega" lo tomaba como domicilio y le mandaba la plantilla de datos
+  it('"¿puedo pagar contra entrega?" no es elegir domicilio: pasa a un asesor por el pago', async () => {
+    const { ultima } = await conversar(['Puede pagar contra entrega'], { historial: [bot('¿Domicilio o recoger?', { awaiting: 'tipo_entrega', pending_cart: carritoCarta() })] });
+    expect(ultima.accion).toBe('transferir_a_asesor');
+    expect(ultima.metadata?.motivo_transferencia).toBe('pago');
+    expect(ultima.texto).not.toMatch(/Cédula/);
+  });
+
   it('recoger en tienda no cobra envío', async () => {
     const carrito = [{ shopify_id: cartaDeOro.shopify_id, titulo: cartaDeOro.titulo, precio: cartaDeOro.precio, cantidad: 1 }];
     const { respuestas } = await conversar(['prefiero recoger', 'tesoro'], {
