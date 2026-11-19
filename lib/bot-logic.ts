@@ -39,6 +39,7 @@ import { asegurarOportunidad } from './oportunidades';
 import { esPedidoDeBaja } from './difusiones';
 import { avisoFueraDeHorario, obtenerHorario } from './horario';
 import { REGALO, regaloAplica } from './temporada';
+import { limiteActivo, unidadesCompradasHoy, unidadesCarrito, textoLimite, LIMITE_UNIDADES } from './limite-diario';
 import { primerNombre } from './nombre';
 import { recordatorioPendiente, respuestaRecordatorioCarrito } from './bot/carrito-tienda';
 import {
@@ -365,7 +366,7 @@ async function procesarMensajeBotInterno(
   // Si hay un estado activo (compra/confirmacion/cantidad), la máquina de estados
   // lo maneja abajo. Sin esta condición, "SI" en confirmación se intercepta aqui.
   if (awaiting === '' && pendingCart.length > 0 && esIntencionPago(textoLower)) {
-    return preguntarTipoEntrega(pendingCart);
+    return await iniciarEntrega(context, pendingCart);
   }
 
   // ── COMPRA DIRECTA: solo cuando hay alias ESPECÍFICO del banco de términos
@@ -508,7 +509,7 @@ async function flujoVariante(e: PasoBot): Promise<BotResponse | null> {
       if (volumen) return volumen;
       const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
       if (ajuste) return ajuste;
-      const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1);
+      const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1, null, context);
       if (cierre) return cierre;
       // Eligió la botella con otras palabras u otro producto: ese flujo ya quedó armado
       if (r.metadata?.awaiting === 'cantidad' || r.metadata?.awaiting === 'variante') return r;
@@ -615,7 +616,25 @@ async function flujoCantidad(e: PasoBot): Promise<BotResponse | null> {
       };
     }
 
-    let updatedCart = ponerEnCarrito(pendingCart, producto, cantidad, variante);
+    // Black Week: hasta LIMITE_UNIDADES al día por cliente (lib/limite-diario.ts).
+    // Si pide más de lo que le queda hoy, se le deja lo permitido y se le explica.
+    let cantidadFinal = cantidad;
+    let avisoLimite = '';
+    if (limiteActivo()) {
+      const compradas = await unidadesCompradasHoy({ id: context.cliente.id, telefono: context.cliente.telefono, email: context.cliente.email }).catch(() => 0);
+      const otros = unidadesCarrito(pendingCart.filter((i) => !mismoItem(i, producto.shopify_id, variante?.id)));
+      const permitidas = Math.max(0, LIMITE_UNIDADES - compradas - otros);
+      if (permitidas === 0) {
+        return { texto: textoLimite(compradas, otros), metadata: { awaiting: pendingCart.length ? 'carrito' : '', pending_cart: pendingCart } };
+      }
+      if (cantidad > permitidas) {
+        cantidadFinal = permitidas;
+        avisoLimite = `🛑 En Black Week cada cliente puede comprar hasta *${LIMITE_UNIDADES} unidades al día*, así que te dejé *${permitidas}*.\n\n`;
+      }
+    }
+    const conAviso = (r: BotResponse): BotResponse => (avisoLimite ? { ...r, texto: avisoLimite + r.texto } : r);
+
+    let updatedCart = ponerEnCarrito(pendingCart, producto, cantidadFinal, variante);
 
     // Quedan productos en cola (el cliente pidió varios a la vez)
     if (pendingQueue.length > 0) {
@@ -634,16 +653,16 @@ async function flujoCantidad(e: PasoBot): Promise<BotResponse | null> {
           updatedCart = ponerEnCarrito(updatedCart, siguiente, cantSiguiente, varSiguiente);
           // Continuar con el resto de la cola, si queda
           const resto = pedirSiguienteDeCola(productos, restoCola, updatedCart, '¡Listo!');
-          return resto || respuestaCarrito(updatedCart);
+          return conAviso(resto || respuestaCarrito(updatedCart));
         }
 
-        const intro = `¡Listo! Agregué *${tituloConVariante(producto.titulo, variante)}* ×${cantidad}.`;
+        const intro = `¡Listo! Agregué *${tituloConVariante(producto.titulo, variante)}* ×${cantidadFinal}.`;
         const resto = pedirSiguienteDeCola(productos, pendingQueue, updatedCart, intro);
-        if (resto) return resto;
+        if (resto) return conAviso(resto);
       }
     }
 
-    return respuestaCarrito(updatedCart);
+    return conAviso(respuestaCarrito(updatedCart));
   }
 
   // No es un número — si quiere cancelar o cambiar, resetear
@@ -683,7 +702,7 @@ async function flujoCantidad(e: PasoBot): Promise<BotResponse | null> {
         };
       }
       // Con carrito armado, "quiero pagar" cierra la compra (sin sumar el producto pendiente)
-      const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1);
+      const cierre = await checkoutDesdeSofi(r, pendingCart, '', 1, null, context);
       if (cierre) return cierre;
       // Cambió de producto ("mejor el de 375ml"): Sofi ya dejó la cantidad (o
       // la botella, si es un kit) de ESE producto pendiente
@@ -718,7 +737,7 @@ async function flujoCarrito(e: PasoBot): Promise<BotResponse | null> {
     esConfirmacion(textoLower) ||
     /(pagar|pago|finalizar|finalicemos|finaliza|proceder|checkout|cerrar|terminar|termina|nada m[aá]s|eso es todo)/i.test(textoLower)
   ) {
-    return preguntarTipoEntrega(pendingCart);
+    return await iniciarEntrega(context, pendingCart);
   }
   // 2) Se arrepintió / quiere quitar algo
   if (esCancelacion(textoLower)) {
@@ -769,7 +788,7 @@ async function flujoCarrito(e: PasoBot): Promise<BotResponse | null> {
   //    Si Sofi entiende que quiere cerrar, arranca el checkout de verdad.
   if (USE_AI) {
     const r = await procesarMensajeSofi(texto, context, pendingCart);
-    const cierre = await checkoutDesdeSofi(r, pendingCart, pendingProductId, pendingCantidad);
+    const cierre = await checkoutDesdeSofi(r, pendingCart, pendingProductId, pendingCantidad, null, context);
     if (cierre) return cierre;
     const ajuste = await aplicarAjusteCarrito(r, pendingCart, context);
     if (ajuste) return ajuste;
@@ -1047,6 +1066,11 @@ async function flujoConfirmacion(e: PasoBot): Promise<BotResponse | null> {
     const subtotal = pendingSubtotal || cart.reduce((s, i) => s + i.precio * i.cantidad, 0);
     const costoEnvio = pendingCostoEnvio !== undefined ? pendingCostoEnvio : (subtotal >= ENVIO_GRATIS_DESDE ? 0 : COSTO_ENVIO);
     const total = pendingTotal || subtotal + costoEnvio;
+
+    // Última revisión del límite del día antes del link (pudo comprar en la
+    // tienda mientras tanto)
+    const limite = await excedeLimiteDiario(context, cart);
+    if (limite) return limite;
 
     // ✅ Generar link directo en el chat — el cliente elige método de pago en Wompi
     return {
@@ -1825,7 +1849,7 @@ async function atenderConSofi(
 
   // Sofi detectó que el cliente quiere cerrar → el CÓDIGO toma el control
   // del checkout (entrega → dirección → confirmación → link de Wompi).
-  const cierre = await checkoutDesdeSofi(respuestaSofi, pendingCart, pendingProductId, pendingCantidad, pendingVariantId);
+  const cierre = await checkoutDesdeSofi(respuestaSofi, pendingCart, pendingProductId, pendingCantidad, pendingVariantId, context);
   if (cierre) return cierre;
 
   const ajuste = await aplicarAjusteCarrito(respuestaSofi, pendingCart, context);
@@ -1848,7 +1872,8 @@ async function checkoutDesdeSofi(
   pendingCart: CartItem[],
   pendingProductId: string,
   pendingCantidad: number,
-  pendingVariantId: string | null = null
+  pendingVariantId: string | null = null,
+  context?: BotContext
 ): Promise<BotResponse | null> {
   if ((respuestaSofi as any).accion !== 'iniciar_checkout') return null;
 
@@ -1858,7 +1883,7 @@ async function checkoutDesdeSofi(
   if (cart.length === 0) return null;
 
   // Arrancamos por la entrega (no saltamos pasos del flujo real)
-  const entrega = preguntarTipoEntrega(cart);
+  const entrega = context ? await iniciarEntrega(context, cart) : preguntarTipoEntrega(cart);
   const intro = respuestaSofi.texto?.trim();
   return intro ? { ...entrega, texto: `${intro}\n\n${entrega.texto}` } : entrega;
 }
@@ -1908,6 +1933,24 @@ async function aplicarAjusteCarrito(
   const resumen = respuestaCarrito(nuevoCart);
   const intro = r.texto?.trim();
   return { ...resumen, texto: intro ? `${intro}\n\n${resumen.texto}` : resumen.texto };
+}
+
+/**
+ * Black Week: el carrito más lo que el cliente ya compró hoy (chat y tienda)
+ * no puede pasar del límite diario (lib/limite-diario.ts). Si pasa, se le
+ * explica y vuelve al carrito para ajustarlo. null si está dentro del límite.
+ */
+async function excedeLimiteDiario(context: BotContext, cart: CartItem[]): Promise<BotResponse | null> {
+  if (!limiteActivo() || !cart.length) return null;
+  const compradas = await unidadesCompradasHoy({ id: context.cliente.id, telefono: context.cliente.telefono, email: context.cliente.email }).catch(() => 0);
+  const enCarrito = unidadesCarrito(cart);
+  if (compradas + enCarrito <= LIMITE_UNIDADES) return null;
+  return { texto: textoLimite(compradas, enCarrito), metadata: { awaiting: 'carrito', pending_cart: cart } };
+}
+
+/** Empieza el cierre (domicilio o tienda) si el carrito está dentro del límite del día. */
+async function iniciarEntrega(context: BotContext, cart: CartItem[]): Promise<BotResponse> {
+  return (await excedeLimiteDiario(context, cart)) || preguntarTipoEntrega(cart);
 }
 
 function preguntarTipoEntrega(cart: CartItem[]): BotResponse {

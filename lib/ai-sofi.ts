@@ -125,9 +125,13 @@ export async function procesarMensajeSofi(
   };
   // Kits "Arma tu kit": el precio depende de la botella, así que Sofi ve el de
   // cada una (antes veía uno solo, el más caro, y lo daba para cualquier botella)
+  // Black Friday: lo rebajado trae su precio de antes (lib/precios-mercado.ts)
   const precioCatalogo = (p: any) => {
     const vs = lineaVariantes(p, formatearPrecioCOP);
-    return vs ? `según botella: ${vs}` : formatearPrecioCOP(p.precio);
+    const kitEnOferta = (p.metadata?.variantes || []).some((v: any) => Number(v.precio_antes) > Number(v.precio));
+    if (vs) return `${kitEnOferta ? '🔥 BLACK, ' : ''}según botella: ${vs}`;
+    const antes = Number(p.metadata?.precio_antes);
+    return antes > Number(p.precio) ? `🔥 BLACK ${formatearPrecioCOP(p.precio)} (antes ${formatearPrecioCOP(antes)})` : formatearPrecioCOP(p.precio);
   };
   const catalogoTexto =
     `DISPONIBLES:\n` +

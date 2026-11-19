@@ -29,6 +29,13 @@ export async function POST(req: Request) {
   const cuerpo: string[] = Array.isArray(b.cuerpo) ? b.cuerpo.map((x: any) => String(x ?? '').trim()) : [];
   if (cuerpo.some((x) => !x)) return NextResponse.json({ success: false, error: 'Completa todos los campos de la plantilla' }, { status: 400 });
 
+  // Programada: queda en borrador con su hora; la tarea de cada 10 minutos la
+  // envía cuando llegue (lib/difusiones.ts enviarDifusionesProgramadas)
+  const programada = b.programada_para ? new Date(b.programada_para) : null;
+  if (programada && (isNaN(programada.getTime()) || programada.getTime() < Date.now() + 60_000)) {
+    return NextResponse.json({ success: false, error: 'La hora programada debe ser en el futuro' }, { status: 400 });
+  }
+
   const segmento: Segmento = b.segmento || {};
   const audiencia = await obtenerAudiencia(segmento);
   if (!audiencia.length) return NextResponse.json({ success: false, error: 'Ningún cliente cumple ese segmento' }, { status: 400 });
@@ -38,14 +45,23 @@ export async function POST(req: Request) {
     plantilla: b.plantilla,
     idioma: b.idioma || 'es',
     categoria: b.categoria || null,
-    parametros: { cuerpo, boton: b.boton || null, texto: String(b.texto || '').slice(0, 2000) },
+    parametros: {
+      cuerpo, boton: b.boton || null, texto: String(b.texto || '').slice(0, 2000),
+      ...(programada ? { programada_para: programada.toISOString() } : {}),
+    },
     segmento,
     total: audiencia.length,
-    estado: 'enviando',
+    estado: programada ? 'borrador' : 'enviando',
     creado_por: yo.email,
     creado_nombre: yo.nombre,
   }).select().single();
   if (error || !dif) return NextResponse.json({ success: false, error: MIGRACION }, { status: 503 });
+
+  if (programada) {
+    // La lista se arma a la hora del envío (sin quienes pidan la baja mientras tanto)
+    await auditarRequest(req, 'difusion.programar', 'difusion', dif.id, { nombre, plantilla: b.plantilla, programada_para: programada.toISOString(), estimado: audiencia.length });
+    return NextResponse.json({ success: true, difusion: dif, programada: true });
+  }
 
   for (let i = 0; i < audiencia.length; i += 500) {
     const { error: e } = await supabaseAdmin.from('difusion_envios').insert(

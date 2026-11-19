@@ -18,6 +18,7 @@ import { REGALO, regaloAplica, varianteRegaloDisponible } from './temporada';
 import { SEPARADOR_VARIANTE } from './variantes';
 import { primerNombre } from './nombre';
 import { TIEMPO_ENTREGA } from './cobertura';
+import { revisarLimiteDespuesDePago } from './limite-diario';
 import { CORREO_VALIDO, type DatosEnvio } from './bot/datos-envio';
 import type { WompiWebhookEvent } from '@/types';
 
@@ -205,6 +206,14 @@ export async function procesarTransaccionBot(transaction: TransaccionWompi) {
       }, { onConflict: 'shopify_order_id' });
       if (errPedido) console.error('[pagos-bot] No se pudo registrar el pedido en pedidos_shopify:', errPedido.message);
     }
+
+    // Black Week: si con este pago pasó el límite de unidades del día, se avisa al equipo
+    const orderId = shopifyResult.status === 'fulfilled' ? (shopifyResult.value as any)?.orderId : null;
+    await revisarLimiteDespuesDePago(
+      { id: cliente?.id || null, telefono, email: correoCliente, nombre: nombreCliente },
+      shopifyOrderNum || reference,
+      orderId ? `gid://shopify/Order/${orderId}` : null
+    ).catch((e) => console.error('[pagos-bot] No se pudo revisar el límite diario:', e?.message));
 
     // 3. Guardar mensaje de confirmación en conversación (no bloquea)
     if (telefono && conversacionId) {

@@ -102,6 +102,21 @@ describe('Sofi recibe la foto en el mensaje del cliente', () => {
     expect(ultimo.content[1]).toEqual({ type: 'text', text: '¿cuánto vale este kit?' });
   });
 
+  it('Black Friday: el catálogo de Sofi marca 🔥 BLACK con el precio de antes', async () => {
+    const { productos } = await import('./apoyo/simulador');
+    const simple = productos.find((p: any) => !p.metadata?.variantes?.length && p.precio > 0 && p.inventario > 0)!;
+    const original = simple.metadata;
+    simple.metadata = { ...(simple.metadata || {}), precio_antes: simple.precio + 7000 };
+    try {
+      await procesarMensajeSofi('hola', contexto());
+      const sistema: string = sim.crear.mock.calls[0][0].system[0].text;
+      expect(sistema).toContain(`${simple.titulo} | 🔥 BLACK`);
+      expect(sistema).toMatch(/\(antes \$\s?[\d.]+\)/);
+    } finally {
+      simple.metadata = original;
+    }
+  });
+
   it('sin foto, todo sigue igual: texto simple', async () => {
     await procesarMensajeSofi('hola', contexto());
     const ultimo = sim.crear.mock.calls[0][0].messages.at(-1);

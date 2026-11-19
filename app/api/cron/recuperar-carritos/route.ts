@@ -11,6 +11,7 @@ import { procesarCarritosPendientes } from '@/lib/recuperacion';
 import { actualizarPreciosMercado } from '@/lib/precios-mercado';
 import { registrarEvento } from '@/lib/eventos';
 import { vigilarPagosTienda, sincronizarEstadosPedidos, marcarCarritosComprados } from '@/lib/vigilancia-tienda';
+import { enviarDifusionesProgramadas } from '@/lib/difusiones';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -37,6 +38,16 @@ async function vigilarTienda() {
   return { pagos, pedidos, carritos };
 }
 
+/** Difusiones programadas cuya hora llegó (ej. Black Week, 23 nov 8:00 a. m.). */
+async function difusionesProgramadas() {
+  try {
+    return await enviarDifusionesProgramadas();
+  } catch (e: any) {
+    await registrarEvento('error', 'difusiones', `No se pudieron enviar las difusiones programadas: ${e.message}`);
+    return { error: e.message };
+  }
+}
+
 async function revisarPrecios() {
   try {
     const r = await actualizarPreciosMercado();
@@ -53,8 +64,8 @@ async function revisarPrecios() {
 export async function POST() {
   try {
     // Los precios y la vigilancia van aparte: si fallan, los carritos se procesan igual
-    const [carritos, precios, tienda] = await Promise.all([procesarCarritosPendientes(), revisarPrecios(), vigilarTienda()]);
-    return NextResponse.json({ success: true, ...carritos, precios, tienda });
+    const [carritos, precios, tienda, difusiones] = await Promise.all([procesarCarritosPendientes(), revisarPrecios(), vigilarTienda(), difusionesProgramadas()]);
+    return NextResponse.json({ success: true, ...carritos, precios, tienda, difusiones });
   } catch (error: any) {
     console.error('Error en cron recuperar-carritos:', error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

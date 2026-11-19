@@ -25,6 +25,7 @@ import {
 import type { ShopifyOrder, ShopifyCheckout } from '@/types';
 import { guardarCheckout } from '@/lib/carritos';
 import { registrarEvento } from '@/lib/eventos';
+import { revisarLimiteDespuesDePago } from '@/lib/limite-diario';
 
 // Hora del último aviso recibido por tema: los checkouts registrados en
 // Shopify no dejaban filas y no había forma de saber si llegaban.
@@ -120,6 +121,17 @@ async function handleOrderPaid(order: ShopifyOrder) {
       .update({ estado: 'convertido', updated_at: ts })
       .eq('telefono', telefonoFormateado)
       .in('estado', ['en_progreso', 'abandonado', 'notificado']);
+  }
+
+  // Black Week: si con este pedido de la tienda el cliente pasó el límite de
+  // unidades del día (sumando el chat), aviso al equipo y etiqueta en Shopify.
+  // Los del bot ya se revisan al pagar (lib/pagos-bot.ts).
+  if (!esPedidoBot) {
+    await revisarLimiteDespuesDePago(
+      { id: clienteId, telefono: telefonoFormateado, email: order.email || null, nombre: nombreCliente },
+      `#${order.order_number}`,
+      (order as any).admin_graphql_api_id || `gid://shopify/Order/${order.id}`
+    ).catch((e) => console.error('[Shopify] No se pudo revisar el límite diario:', e?.message));
   }
 
   // 4. Notificar por WhatsApp SOLO para pedidos del sitio web

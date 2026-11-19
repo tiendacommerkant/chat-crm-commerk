@@ -36,8 +36,12 @@ function agregar(precios: PreciosMercado, productoId: string, varianteId: string
   precios.get(productoId)!.set(varianteId, precio);
 }
 
-/** Precios en Colombia de todas las variantes activas (o solo de los productos indicados). */
-export async function preciosColombia(productoIds?: string[]): Promise<PreciosMercado> {
+/**
+ * Precios en Colombia de todas las variantes activas (o solo de los productos
+ * indicados). Si se pasa `bases`, se llena con el precio base de cada variante
+ * (el de siempre): sirve para decirle al cliente "antes $X" en Black Friday.
+ */
+export async function preciosColombia(productoIds?: string[], bases?: Map<string, number>): Promise<PreciosMercado> {
   const precios: PreciosMercado = new Map();
   if (productoIds?.length) {
     const data = await consultar(
@@ -52,10 +56,13 @@ export async function preciosColombia(productoIds?: string[]): Promise<PreciosMe
   let cursor: string | null = null;
   do {
     const data = await consultar(
-      `query($c: String) { productVariants(first: 250, after: $c, query: "product_status:active") { nodes { legacyResourceId product { legacyResourceId } contextualPricing(context: {country: ${PAIS}}) { price { amount } } } pageInfo { hasNextPage endCursor } } }`,
+      `query($c: String) { productVariants(first: 250, after: $c, query: "product_status:active") { nodes { legacyResourceId price product { legacyResourceId } contextualPricing(context: {country: ${PAIS}}) { price { amount } } } pageInfo { hasNextPage endCursor } } }`,
       { c: cursor }
     );
-    for (const v of data.productVariants.nodes) agregar(precios, String(v.product.legacyResourceId), String(v.legacyResourceId), v.contextualPricing?.price?.amount);
+    for (const v of data.productVariants.nodes) {
+      agregar(precios, String(v.product.legacyResourceId), String(v.legacyResourceId), v.contextualPricing?.price?.amount);
+      if (bases && Number(v.price) > 0) bases.set(String(v.legacyResourceId), Number(v.price));
+    }
     cursor = data.productVariants.pageInfo.hasNextPage ? data.productVariants.pageInfo.endCursor : null;
   } while (cursor);
   return precios;
@@ -76,23 +83,43 @@ export function conPreciosDeMercado(producto: ShopifyProduct, precios: PreciosMe
 
 interface FilaProducto { id: string; shopify_id: string; precio: number | string; metadata?: Record<string, any> | null }
 
+/** Precio de antes si la variante está rebajada (catálogo de Black Friday activo), si no null. */
+function precioAntes(bases: Map<string, number> | undefined, varianteId: string, precio: number): number | null {
+  const base = bases?.get(varianteId);
+  return base && base - precio >= 1 ? base : null;
+}
+
 /**
  * Precio y variantes que deberían quedar en la copia local, o null si no
  * cambió nada. Un producto de una sola variante toma el precio de esa variante;
- * los kits, el de cada botella y el "desde" (el menor).
+ * los kits, el de cada botella y el "desde" (el menor). Con `bases` también
+ * guarda el precio de antes de lo que está rebajado (metadata.precio_antes, o
+ * precio_antes en cada botella) y lo borra cuando termina la oferta.
  */
-export function preciosActualizados(fila: FilaProducto, delProducto: Map<string, number> | undefined) {
+export function preciosActualizados(fila: FilaProducto, delProducto: Map<string, number> | undefined, bases?: Map<string, number>) {
   if (!delProducto?.size) return null;
   const variantes: Variante[] | undefined = fila.metadata?.variantes;
   if (variantes?.length) {
-    const nuevas = variantes.map((v) => ({ ...v, precio: delProducto.get(String(v.id)) ?? v.precio }));
-    const cambio = nuevas.some((v, i) => Math.abs(v.precio - variantes[i].precio) >= 1);
+    const nuevas = variantes.map((v) => {
+      const precio = delProducto.get(String(v.id)) ?? v.precio;
+      const { precio_antes: _viejo, ...resto } = v;
+      const antes = bases ? precioAntes(bases, String(v.id), precio) : v.precio_antes ?? null;
+      return { ...resto, precio, ...(antes ? { precio_antes: antes } : {}) };
+    });
+    const cambio = nuevas.some((v, i) =>
+      Math.abs(v.precio - variantes[i].precio) >= 1 || (v.precio_antes ?? null) !== (variantes[i].precio_antes ?? null));
     if (!cambio) return null;
     return { precio: Math.min(...nuevas.map((v) => v.precio)), metadata: { ...fila.metadata, variantes: nuevas } };
   }
   if (delProducto.size !== 1) return null;
-  const precio = [...delProducto.values()][0];
-  return Math.abs(precio - Number(fila.precio)) >= 1 ? { precio } : null;
+  const [varianteId, precio] = [...delProducto.entries()][0];
+  const cambioPrecio = Math.abs(precio - Number(fila.precio)) >= 1;
+  if (!bases) return cambioPrecio ? { precio } : null;
+  const antes = precioAntes(bases, varianteId, precio);
+  const antesGuardado = fila.metadata?.precio_antes ?? null;
+  if (!cambioPrecio && antes === antesGuardado) return null;
+  const { precio_antes: _viejo, ...metadata } = fila.metadata || {};
+  return { precio, metadata: antes ? { ...metadata, precio_antes: antes } : metadata };
 }
 
 /**
@@ -101,14 +128,15 @@ export function preciosActualizados(fila: FilaProducto, delProducto: Map<string,
  * que el lanzamiento encienda o apague el catálogo de Black Friday.
  */
 export async function actualizarPreciosMercado(): Promise<{ revisados: number; actualizados: string[] }> {
-  const precios = await preciosColombia();
+  const bases = new Map<string, number>();
+  const precios = await preciosColombia(undefined, bases);
   if (!precios.size) throw new Error('Shopify no devolvió precios');
   const { data, error } = await supabaseAdmin.from('productos').select('id, shopify_id, titulo, precio, metadata').eq('activo', true);
   if (error) throw error;
 
   const actualizados: string[] = [];
   for (const fila of (data as Array<FilaProducto & { titulo: string }>) || []) {
-    const cambios = preciosActualizados(fila, precios.get(String(fila.shopify_id)));
+    const cambios = preciosActualizados(fila, precios.get(String(fila.shopify_id)), bases);
     if (!cambios) continue;
     const { error: e } = await supabaseAdmin.from('productos')
       .update({ ...cambios, updated_at: new Date().toISOString() }).eq('id', fila.id);

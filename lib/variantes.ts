@@ -12,6 +12,8 @@ export interface Variante {
   titulo: string;
   precio: number;
   inventario: number;
+  /** Precio normal cuando la botella está rebajada (Black Friday); ver lib/precios-mercado.ts */
+  precio_antes?: number;
 }
 
 interface ProductoConVariantes {
